@@ -1,0 +1,35 @@
+Install dependencies:
+pip install opencv-python mediapipe scikit-learn pandas joblib numpy
+
+Collect data:
+python collect_data.py
+→ Taste food → press SPACE → enter valence/arousal
+
+Train model (after collecting 30+ samples):
+python train_model.py
+
+Run live demo:
+python live_predict.py
+
+List of tools:
+
+MSVC v143 - VS 2022 C++ x64/x86 build tools (v14.44-17.14) from visual studio
+Python 3.11.10
+mediapipe 0.10.14
+protobuf 4.25.3
+attrs and jax for dependency
+google
+
+:: 1. Install Python 3.11.10 (or near it):
+::    → Check "Add to PATH"
+
+:: 2. Install dependencies
+py -3.11 -m pip install --upgrade pip
+py -3.11 -m pip install protobuf==4.25.3
+py -3.11 -m pip install google attrs numpy opencv-python pandas scikit-learn joblib
+py -3.11 -m pip install attrs
+py -3.11 -m pip install jax
+py -3.11 -m pip install numpy opencv-python
+
+:: 3. Install MediaPipe 0.10.14 from official wheel
+py -3.11 -m pip install mediapipe==0.10.14 --force-reinstall --no-deps

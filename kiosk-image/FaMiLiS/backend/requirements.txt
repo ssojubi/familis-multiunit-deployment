@@ -1,0 +1,10 @@
+# Emotion inference service (6.3) — run: pip install -r requirements.txt
+# Train models first: python train_model.py (produces *.pkl in this folder)
+flask>=3.0.0
+flask-cors>=4.0.0
+opencv-python-headless>=4.8.0
+# 0.10.15+ wheels dropped `mediapipe.solutions` (FaceMesh); emotion_service needs the classic API.
+mediapipe==0.10.14
+numpy>=1.24.0
+joblib>=1.3.0
+scikit-learn>=1.3.0

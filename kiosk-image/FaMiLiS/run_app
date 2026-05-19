@@ -1,0 +1,13 @@
+#!/bin/bash
+
+open -a Safari "http://localhost:5173"
+
+osascript -e 'tell application "Terminal" to do script "cd ~/Desktop/trial/FaMiLis-/src && npm run dev"'
+
+osascript -e 'tell application "Terminal" to do script "cd ~/Desktop/trial/FaMiLis-/src && npm run server"'
+
+python3.11 -m venv venv
+source venv/bin/activate
+cd backend
+python3.11 emotion_service.py
+
