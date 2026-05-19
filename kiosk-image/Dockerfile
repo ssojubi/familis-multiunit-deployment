@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Install system dependencies for OpenCV (NO MySQL - will connect to separate container)
+# Install system dependencies
 RUN apt-get update && \
     apt-get install -y curl \
     libgl1 \
@@ -14,14 +14,14 @@ RUN apt-get update && \
     libxcb-xfixes0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js 20 LTS
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+# Install Node.js 22 LTS
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy their FaMiLiS folder
+# Copy FaMiLiS to the container
 COPY FaMiLiS /app/familis/
 
 # Install Python backend dependencies
@@ -38,7 +38,7 @@ EXPOSE 8765
 EXPOSE 5173
 EXPOSE 8080
 
-# Startup script - NO MySQL, will connect to external DB
+# Startup script to run both the backend, frontend(src), and server
 RUN echo '#!/bin/bash\n\
     # Start FER WebSocket\n\
     cd /app/familis/backend\n\
