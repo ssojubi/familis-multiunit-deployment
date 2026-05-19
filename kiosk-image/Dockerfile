@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Install system dependencies
+# install system dependencies
 RUN apt-get update && \
     apt-get install -y curl \
     libgl1 \
@@ -14,31 +14,32 @@ RUN apt-get update && \
     libxcb-xfixes0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js 22 LTS
+# install node.js 22
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy FaMiLiS to the container
+# cp FaMiLiS to the container
 COPY FaMiLiS /app/familis/
 
-# Install Python backend dependencies
+# install python backend dependencies
 WORKDIR /app/familis/backend
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install --no-cache-dir opencv-python-headless mediapipe scikit-learn pandas joblib numpy
 
-# Install Node dependencies (including Tailwind CSS)
+# install Node dependencies (including tailwind CSS)
 WORKDIR /app/familis
 RUN npm install
 RUN npm install tailwindcss @tailwindcss/vite tw-animate-css
+#possibly add npm install -g npm@11.14.1
 
 EXPOSE 8765
 EXPOSE 5173
 EXPOSE 8080
 
-# Startup script to run both the backend, frontend(src), and server
+# startup script to run both the backend, frontend(src), and server
 RUN echo '#!/bin/bash\n\
     # Start FER WebSocket\n\
     cd /app/familis/backend\n\
