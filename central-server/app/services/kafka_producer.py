@@ -1,3 +1,4 @@
+import os
 from aiokafka import AIOKafkaProducer
 import json
 
@@ -16,10 +17,11 @@ class KafkaProducerService:
         self.ready = False
 
     async def start(self):
+        bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
         self.producer = AIOKafkaProducer(
-            bootstrap_servers='localhost:9092', # Update with actual Kafka server address. this is for local testing - martina
+            bootstrap_servers=bootstrap_servers,
             value_serializer=lambda v: json.dumps(v).encode()
-        )
+    )
         await self.producer.start()
         self.ready = True
 

@@ -10,36 +10,82 @@ import numpy as np
 import joblib
 import warnings
 from collections import defaultdict, deque
+import os
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # ------------------------------
-# Configuration
+# Configuration from environment
 # ------------------------------
-# Path to model files (copy them from FaMiLiS/backend/)
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+VIDEO_FRAMES_TOPIC = os.getenv("VIDEO_FRAMES_TOPIC", "video-frames")
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = int(os.getenv("DB_PORT", "3308"))
+DB_USER = os.getenv("DB_USER", "root")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "root")
+DB_NAME = os.getenv("DB_NAME", "familis_central")
 MODEL_DIR = Path(__file__).parent.parent.parent / "models"
-FRAME_STORAGE_ROOT = Path("C:/frames")
+FRAME_STORAGE_ROOT = Path(os.getenv("FRAME_STORAGE_ROOT", "C:/frames"))
 FRAME_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 
-# MySQL connection pool
-db_pool = mysql.connector.pooling.MySQLConnectionPool(
-    pool_name="emotion_pool",
-    pool_size=10,
-    host="localhost",
-    port=3308,
-    user="root",
-    password="root",
-    database="familis_central"
-)
 
-# ------------------------------
-# Direct FER prediction (copy of their logic, no Flask)
-# ------------------------------
+db_pool = None
+
+
 _FACE_MESH = None
 _MODEL = None
 _SCALER = None
 _TRAIN_MAE = 1.0
 _HISTORY = defaultdict(lambda: deque(maxlen=15))
+
+def _create_db_pool():
+    return mysql.connector.pooling.MySQLConnectionPool(
+        pool_name="emotion_pool",
+        pool_size=10,
+        host=DB_HOST,
+        port=DB_PORT,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        database=DB_NAME
+    )
+
+def _ensure_db_schema():
+    conn = db_pool.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS emotion_results (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            session_id VARCHAR(255) NOT NULL,
+            frame_id VARCHAR(255) NOT NULL,
+            face_detected BOOLEAN,
+            hedonic_score DOUBLE,
+            confidence DOUBLE,
+            valence DOUBLE,
+            sentiment VARCHAR(32),
+            processed_at DATETIME NOT NULL,
+            INDEX idx_emotion_results_session_id (session_id),
+            INDEX idx_emotion_results_processed_at (processed_at)
+        )
+    """)
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+async def wait_for_db(max_attempts: int = 30, delay_seconds: int = 2):
+    global db_pool
+    for attempt in range(1, max_attempts + 1):
+        try:
+            db_pool = _create_db_pool()
+            conn = db_pool.get_connection()
+            conn.close()
+            _ensure_db_schema()
+            print("MySQL connection pool ready")
+            return
+        except mysql.connector.Error as e:
+            print(f"MySQL not ready ({attempt}/{max_attempts}): {e}")
+            await asyncio.sleep(delay_seconds)
+
+    raise RuntimeError("MySQL unavailable after retrying")
 
 def _load_models():
     global _MODEL, _SCALER, _TRAIN_MAE, _FACE_MESH
@@ -151,6 +197,8 @@ def predict_frame(session_id: str, jpeg_bytes: bytes) -> dict:
 # ------------------------------
 async def store_emotion_result(session_id: str, frame_id: str, result: dict):
     try:
+        if db_pool is None:
+            await wait_for_db()
         conn = db_pool.get_connection()
         cursor = conn.cursor()
         query = """
@@ -187,16 +235,33 @@ async def save_frame_to_storage(kiosk_id: str, session_id: str, frame_id: str, f
 # Main Kafka consumer
 # ------------------------------
 async def start_fer_consumer():
+    await wait_for_db()
+
     # Load models before consuming
     _load_models()
-    
-    consumer = AIOKafkaConsumer(
-        'video-frames',
-        bootstrap_servers='localhost:9092',
-        value_deserializer=lambda v: json.loads(v.decode()),
-        group_id='fer-processor-group'
-    )
-    await consumer.start()
+
+    consumer = None
+    for attempt in range(1, 31):
+        consumer = AIOKafkaConsumer(
+            VIDEO_FRAMES_TOPIC,
+            bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+            value_deserializer=lambda v: json.loads(v.decode()),
+            group_id='fer-processor-group',
+        )
+        try:
+            await consumer.start()
+            print(f"Kafka consumer ready for topic {VIDEO_FRAMES_TOPIC}")
+            break
+        except Exception as e:
+            print(f"Kafka consumer not ready ({attempt}/30): {e}")
+            try:
+                await consumer.stop()
+            except Exception:
+                pass
+            consumer = None
+            await asyncio.sleep(2)
+    else:
+        raise RuntimeError("Kafka consumer unavailable after retrying")
     
     try:
         async for msg in consumer:

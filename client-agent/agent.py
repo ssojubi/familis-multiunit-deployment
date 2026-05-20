@@ -15,21 +15,24 @@ import socket
 import logging
 import aiohttp
 import os
+import platform
 import time
 from datetime import datetime
 from websockets.exceptions import ConnectionClosed
 
 # ========== CONFIGURATION ==========
 CENTRAL_SERVER_HTTP = "http://localhost:8000"        # Change to central server IP
-KIOSK_ID = socket.gethostname()
+KIOSK_ID = os.getenv("KIOSK_ID", "kiosk-01")
 WEBCAM_ID = int(os.getenv("WEBCAM_ID", "0"))
 FPS = 30
+DEFAULT_CAMERA_BACKEND = "avfoundation" if platform.system() == "Darwin" else "dshow"
+CAMERA_BACKEND = os.getenv("CAMERA_BACKEND", DEFAULT_CAMERA_BACKEND).lower()
 WS_HEARTBEAT_INTERVAL = 5
 WS_PING_INTERVAL = 20
 WS_PING_TIMEOUT = 30
 SHOW_PREVIEW = os.getenv("SHOW_PREVIEW", "1") != "0"
 PREVIEW_WINDOW_NAME = "Kiosk Agent Camera"
-WARM_CAMERA_ON_CONNECT = os.getenv("WARM_CAMERA_ON_CONNECT", "1") != "0"
+WARM_CAMERA_ON_CONNECT = os.getenv("WARM_CAMERA_ON_CONNECT", "0") != "0"
 # ====================================
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -49,6 +52,7 @@ class KioskAgent:
         self.frames_uploaded = 0
         self.camera_open_lock = asyncio.Lock()
         self.camera_warmup_task = None
+        self.preview_initialized = False
 
     async def connect_websocket(self):
         """Maintain WebSocket connection with automatic reconnection"""
@@ -67,7 +71,9 @@ class KioskAgent:
                     self.websocket = ws
                     await self.register()
                     if WARM_CAMERA_ON_CONNECT and not self.camera_warmup_task:
-                        self.camera_warmup_task = asyncio.create_task(self.ensure_camera_open())
+                        self.camera_warmup_task = asyncio.create_task(
+                            self.ensure_camera_open("warming up camera")
+                        )
                     await self.resume_active_session()
                     self.heartbeat_task = asyncio.create_task(self.send_heartbeat(ws))
                     async for message in ws:
@@ -145,7 +151,7 @@ class KioskAgent:
         self.current_session_id = data.get("session_id")
         logger.info(f"Starting session {self.current_session_id}")
 
-        if not await self.ensure_camera_open():
+        if not await self.ensure_camera_open("starting camera for session"):
             logger.error("Cannot open webcam")
             self.current_session_id = None
             return
@@ -163,12 +169,13 @@ class KioskAgent:
             "session_id": self.current_session_id
         })
 
-    async def ensure_camera_open(self):
+    async def ensure_camera_open(self, reason="opening camera"):
         async with self.camera_open_lock:
             if self.cap and self.cap.isOpened():
+                logger.info(f"Webcam already open ({reason})")
                 return True
 
-            logger.info(f"Opening webcam index {WEBCAM_ID}")
+            logger.info(f"{reason.capitalize()} on webcam index {WEBCAM_ID}")
             self.cap = await asyncio.to_thread(self.open_camera)
             if not self.cap.isOpened():
                 self.cap.release()
@@ -185,14 +192,23 @@ class KioskAgent:
             return True
 
     def open_camera(self):
-        cap = cv2.VideoCapture(WEBCAM_ID)
+        backends = {
+            "any": cv2.CAP_ANY,
+            "dshow": cv2.CAP_DSHOW,
+            "avfoundation": cv2.CAP_AVFOUNDATION,
+        }
+        backend = backends.get(CAMERA_BACKEND, cv2.CAP_ANY)
+        logger.info(f"Creating VideoCapture with backend={CAMERA_BACKEND}")
+        cap = cv2.VideoCapture(WEBCAM_ID, backend)
         if cap.isOpened():
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             cap.set(cv2.CAP_PROP_FPS, FPS)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         return cap
 
     def camera_has_frames(self):
+        logger.info("Waiting for first webcam frame")
         for _ in range(10):
             ret, frame = self.cap.read()
             if ret and frame is not None:
@@ -202,7 +218,7 @@ class KioskAgent:
             time.sleep(0.1)
         return False
 
-    def read_encoded_frame(self):
+    def read_frame(self):
         if not self.cap:
             return None
 
@@ -210,10 +226,21 @@ class KioskAgent:
         if not ret:
             return None
 
-        if SHOW_PREVIEW:
-            cv2.imshow(PREVIEW_WINDOW_NAME, frame)
-            cv2.waitKey(1)
+        return frame
 
+    def show_preview(self, frame):
+        if not SHOW_PREVIEW:
+            return
+
+        if not self.preview_initialized:
+            cv2.namedWindow(PREVIEW_WINDOW_NAME, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(PREVIEW_WINDOW_NAME, 640, 480)
+            self.preview_initialized = True
+
+        cv2.imshow(PREVIEW_WINDOW_NAME, frame)
+        cv2.waitKey(1)
+
+    def encode_frame(self, frame):
         _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
         return base64.b64encode(buffer).decode('utf-8')
 
@@ -223,10 +250,12 @@ class KioskAgent:
         try:
             while self.is_recording and self.running:
                 start = asyncio.get_event_loop().time()
-                frame_b64 = await asyncio.to_thread(self.read_encoded_frame)
-                if frame_b64 is None:
+                frame = await asyncio.to_thread(self.read_frame)
+                if frame is None:
                     await asyncio.sleep(0.01)
                     continue
+                self.show_preview(frame)
+                frame_b64 = await asyncio.to_thread(self.encode_frame, frame)
 
                 # Attempt upload with retries
                 uploaded = False
@@ -303,7 +332,15 @@ class KioskAgent:
         logger.info("Stopping session")
         self.is_recording = False
         if self.frame_task:
-            await self.frame_task
+            try:
+                await asyncio.wait_for(self.frame_task, timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.warning("Frame upload task did not stop quickly; cancelling")
+                self.frame_task.cancel()
+                try:
+                    await self.frame_task
+                except asyncio.CancelledError:
+                    pass
             self.frame_task = None
         await asyncio.sleep(0.5)
         try:
@@ -315,14 +352,22 @@ class KioskAgent:
         except (ConnectionClosed, RuntimeError):
             logger.warning("Could not send session_stopped because WebSocket is disconnected")
 
+        logger.info("Closing camera")
         if self.cap:
             self.cap.release()
             self.cap = None
+            logger.info("Camera closed")
         if SHOW_PREVIEW:
             try:
+                logger.info("Closing camera preview")
                 cv2.destroyWindow(PREVIEW_WINDOW_NAME)
+                cv2.destroyAllWindows()
+                cv2.waitKey(1)
+                self.preview_initialized = False
+                logger.info("Camera preview closed")
             except cv2.error:
-                pass
+                logger.warning("Camera preview was already closed")
+                self.preview_initialized = False
         if self.session:
             await self.session.close()
             self.session = None

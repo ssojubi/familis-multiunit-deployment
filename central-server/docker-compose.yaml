@@ -1,7 +1,4 @@
-version: '3.8'
-
 services:
-  # Zookeeper is the cluster coordinator for Kafka
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.1
     container_name: zookeeper
@@ -11,7 +8,6 @@ services:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
 
-  # The Kafka message broker
   kafka:
     image: confluentinc/cp-kafka:7.4.1
     container_name: kafka
@@ -22,11 +18,37 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
-      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
       KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092"
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
 
-  # Central MySQL database (persistent data volume)
+  kafka-init:
+    image: confluentinc/cp-kafka:7.4.1
+    container_name: kafka-init
+    depends_on:
+      - kafka
+    command: >
+      bash -c '
+        echo "Waiting for Kafka broker..."
+        for i in {1..60}; do
+          kafka-topics --bootstrap-server kafka:9092 --list >/dev/null 2>&1 && break
+          sleep 2
+        done
+
+        echo "Creating Kafka topics..."
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic video-frames --partitions 1 --replication-factor 1
+
+        echo "Waiting for Kafka group coordinator..."
+        for i in {1..60}; do
+          kafka-consumer-groups --bootstrap-server kafka:9092 --list >/dev/null 2>&1 && break
+          sleep 2
+        done
+
+        echo "Kafka topics ready:"
+        kafka-topics --bootstrap-server kafka:9092 --list
+      '
+
   mysql:
     image: mysql:8
     container_name: central-mysql
@@ -37,6 +59,33 @@ services:
       MYSQL_DATABASE: familis_central
     volumes:
       - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  central-server:
+    build: .
+    container_name: central-server
+    ports:
+      - "8000:8000"
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_NAME: familis_central
+      FRAME_STORAGE_ROOT: /frames
+    volumes:
+      - C:/frames:/frames
 
 volumes:
   mysql_data:
