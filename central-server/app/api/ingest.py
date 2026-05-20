@@ -1,0 +1,43 @@
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from datetime import datetime
+import base64
+import uuid
+import os
+
+from ..services.kafka_producer import get_kafka_producer
+
+router = APIRouter()
+
+class FrameData(BaseModel):
+    kiosk_id: str
+    session_id: str
+    frame: str  # base64 encoded JPEG
+    timestamp: datetime
+
+@router.post("/frame")
+async def ingest_frame(frame_data: FrameData):
+    """
+    Receive video frame from kiosk client agent
+    Pushes to Kafka for async processing
+    """
+    try:
+        producer = get_kafka_producer()
+        
+        # Decode base64 frame and save temporarily
+        frame_bytes = base64.b64decode(frame_data.frame)
+        frame_id = f"{frame_data.kiosk_id}_{frame_data.session_id}_{uuid.uuid4().hex}"
+        
+        # Send to Kafka topic "video-frames"
+        await producer.send("video-frames", {
+            "frame_id": frame_id,
+            "kiosk_id": frame_data.kiosk_id,
+            "session_id": frame_data.session_id,
+            "frame_bytes": frame_bytes.hex(),  # Convert to hex for JSON
+            "timestamp": frame_data.timestamp.isoformat()
+        })
+        
+        return {"status": "queued", "frame_id": frame_id}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
