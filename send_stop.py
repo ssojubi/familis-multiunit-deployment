@@ -5,7 +5,7 @@ import urllib.error
 
 KIOSK_ID = os.getenv("KIOSK_ID", "kiosk-01")
 SESSION_ID = os.getenv("SESSION_ID", "testv5")
-CENTRAL_SERVER_HTTP = "http://localhost:8000"
+CENTRAL_SERVER_HTTP = os.getenv("CENTRAL_SERVER_HTTP", "http://localhost:8000")
 
 payload = {
     "kiosk_id": KIOSK_ID,

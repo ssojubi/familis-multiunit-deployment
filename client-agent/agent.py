@@ -21,7 +21,11 @@ from datetime import datetime
 from websockets.exceptions import ConnectionClosed
 
 # ========== CONFIGURATION ==========
-CENTRAL_SERVER_HTTP = "http://localhost:8000"        # Change to central server IP
+CENTRAL_SERVER_HTTP = os.getenv("CENTRAL_SERVER_HTTP", "http://localhost:8000")
+CENTRAL_SERVER_WS = os.getenv(
+    "CENTRAL_SERVER_WS",
+    CENTRAL_SERVER_HTTP.replace("http://", "ws://").replace("https://", "wss://"),
+)
 KIOSK_ID = os.getenv("KIOSK_ID", "kiosk-01")
 WEBCAM_ID = int(os.getenv("WEBCAM_ID", "0"))
 FPS = 30
@@ -59,7 +63,7 @@ class KioskAgent:
         while self.running:
             ws = None
             try:
-                uri = f"ws://localhost:8000/ws/kiosk/{KIOSK_ID}"
+                uri = f"{CENTRAL_SERVER_WS}/ws/kiosk/{KIOSK_ID}"
                 logger.info(f"Connecting to {uri}")
                 async with websockets.connect(
                     uri,
