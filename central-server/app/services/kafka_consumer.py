@@ -1,5 +1,3 @@
-# central-server/app/services/kafka_consumer.py
-
 from aiokafka import AIOKafkaConsumer
 import json
 import asyncio

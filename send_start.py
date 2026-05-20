@@ -1,22 +1,22 @@
-import asyncio
-import websockets
 import json
 import socket
+import urllib.request
 
 KIOSK_ID = socket.gethostname()
+CENTRAL_SERVER_HTTP = "http://localhost:8000"
 
-async def start():
-    uri = f"ws://localhost:8000/ws/kiosk/{KIOSK_ID}"
-    print(f"Connecting to {uri}")
-    async with websockets.connect(uri) as ws:
-        # Send start command
-        await ws.send(json.dumps({
-            "type": "start_session",
-            "session_id": "test-001",
-            "food_name": "Potato Bites"
-        }))
-        # Wait for response from agent
-        response = await ws.recv()
-        print("Response:", response)
+payload = {
+    "kiosk_id": KIOSK_ID,
+    "session_id": "test-001",
+    "food_name": "Potato Bites"
+}
 
-asyncio.run(start())
+request = urllib.request.Request(
+    f"{CENTRAL_SERVER_HTTP}/api/commands/start",
+    data=json.dumps(payload).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="POST"
+)
+
+with urllib.request.urlopen(request, timeout=10) as response:
+    print(response.read().decode("utf-8"))

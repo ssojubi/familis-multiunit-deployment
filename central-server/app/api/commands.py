@@ -27,6 +27,8 @@ async def start_session(request: Request):
             "food_name": food_name
         }))
         return {"status": "command_sent", "kiosk_id": kiosk_id, "session_id": session_id}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -45,11 +47,14 @@ async def stop_session(request: Request):
         if not websocket:
             raise HTTPException(status_code=404, detail=f"Kiosk {kiosk_id} not connected")
         
+        await registry.set_idle(kiosk_id)
         await websocket.send_text(json.dumps({
             "type": "stop_session",
             "session_id": session_id
         }))
         return {"status": "command_sent", "kiosk_id": kiosk_id}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

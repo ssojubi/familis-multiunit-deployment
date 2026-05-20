@@ -1,5 +1,3 @@
-# central-server/app/services/kiosk_registry.py
-
 from datetime import datetime
 
 class KioskRegistry:
@@ -40,6 +38,12 @@ class KioskRegistry:
     def get_websocket(self, kiosk_id: str):
         kiosk = self.kiosks.get(kiosk_id)
         return kiosk.get("websocket") if kiosk else None
+
+    def is_recording_session(self, kiosk_id: str, session_id: str):
+        kiosk = self.kiosks.get(kiosk_id)
+        if not kiosk:
+            return False
+        return kiosk.get("status") == "recording" and kiosk.get("session_id") == session_id
 
     def get_all_status(self):
         return {
