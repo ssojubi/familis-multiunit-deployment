@@ -1,13 +1,14 @@
 /**
  * notes:
  * - backend: change table columns
- * - Manage Kiosks is not yet finalized. Video streams should come from nodes.
- * - also, change ui if need be
+ * - Manage Kiosks is not yet finalized. There should be multiple videos.
  * 
  * references:
  * - table: https://stackoverflow.com/questions/60518353/how-to-display-mysql-table-in-react-js-table
  * - table: https://github.com/machadop1407/react-table-tutorial.git
  * - table: https://youtu.be/Q3ixb1w-QaY?si=AhrthqljoNJg1D6u
+ * - remote device connection: https://github.com/mehmetkahya0/local-web-camera
+ * - remote device connection: https://github.com/versatica/mediasoup-demo
  **/
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -27,6 +28,7 @@ import {
 } from "chart.js";
 import { Line, Radar } from "react-chartjs-2";
 import React from "react";
+import { io, Socket } from 'socket.io-client';
 
 ChartJS.register(
   RadialLinearScale,
@@ -50,7 +52,7 @@ type Session = {
   endTime: string | null;
   status: SessionStatus;
   frames: number;
-  meanConfidence: number | null; // 0-1
+  meanConfidence: number | null;
 };
 
 type Food = {
@@ -80,9 +82,13 @@ type Analytics = {
 
 type Participant = {
   id: number;
-  testerLabel: string | null;
+  name: string | null;
+  kioskId?: number | null;
+  contactNumber?: string | null;
+  gcashNumber?: string | null;
   age: number;
   gender: Gender;
+  photoUrl?: string | null;
   createdAt: string | null;
 }
 
@@ -92,7 +98,22 @@ type Kiosk = {
   id: number;
   status: KioskStatus;
   elapsedSeconds: number;
+  slotName: string | null;
 };
+
+type Role = 'host' | 'viewer' | null;
+
+interface ServerToClientEvents {
+  'viewer-connected': () => void;
+  'user-disconnected': (userId: string) => void;
+  'host-disconnected': () => void;
+  'signal': (data: { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) => void;
+}
+
+interface ClientToServerEvents {
+  'join-room': (roomId: string, role: Role) => void;
+  'signal': (data: { room: string; sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) => void;
+}
 
 function clampPct(n: number) {
   return Math.max(0, Math.min(100, n));
@@ -117,11 +138,24 @@ function statusClasses(status: SessionStatus) {
   }
 }
 
-const API_BASE = "http://localhost:8080";
+// dynamic API base
+const API_BASE = window.location.hostname === 'localhost'
+  ? 'https://localhost:8888'
+  : `https://${window.location.hostname}:8888`;
+
 const toApiUrl = (url: string | null) => {
   if (!url) return null;
   if (url.startsWith("http://") || url.startsWith("https://")) return url;
   return `${API_BASE}${url}`;
+};
+
+const SOCKET_SERVER_URL = API_BASE; 
+
+const WEBRTC_CONFIG: RTCConfiguration = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' }
+  ]
 };
 
 function formatDateTime(iso: string | null) {
@@ -162,7 +196,7 @@ export default function Dashboard() {
   const [deleteFoodError, setDeleteFoodError] = useState<string | null>(null);
   const foodsAbortRef = useRef<AbortController | null>(null);
 
-  // NEW : Participant consts
+  // Participant consts
   const parAbortRef = useRef<AbortController | null>(null);
   const [parLoading, setParLoading] = useState(true);
   const [parError, setParError] = useState<string | null>(null);
@@ -181,57 +215,67 @@ export default function Dashboard() {
   const [editParError, setEditParError] = useState<string | null>(null);
   const [parToEdit, setParToEdit] = useState<Participant | null>(null);
 
-  // NEW : (placeholder) Manage Kiosk consts
-  const [kiosks, setKiosks] = useState<Kiosk[]>([
-    { id: 1, status: "recording", elapsedSeconds: 25 },
-    { id: 2, status: "recording", elapsedSeconds: 25 },
-    { id: 3, status: "recording", elapsedSeconds: 25 },
-    { id: 4, status: "recording", elapsedSeconds: 25 },
-    { id: 5, status: "recording", elapsedSeconds: 25 },
-    { id: 6, status: "recording", elapsedSeconds: 25 },
-    { id: 7, status: "not_connected", elapsedSeconds: 0 },
-    { id: 8, status: "not_connected", elapsedSeconds: 0 },
-  ]);
+  // Manage Kiosk consts -- sample stuff
+  // const [kiosks, setKiosks] = useState<Kiosk[]>([
+  //   { id: 1, status: "recording", elapsedSeconds: 25, slotName: "1" },
+  //   { id: 2, status: "recording", elapsedSeconds: 25, slotName: "2" },
+  //   { id: 3, status: "recording", elapsedSeconds: 25, slotName: "3" },
+  //   { id: 4, status: "recording", elapsedSeconds: 25, slotName: "4" },
+  //   { id: 5, status: "recording", elapsedSeconds: 25, slotName: "5" },
+  //   { id: 6, status: "recording", elapsedSeconds: 25, slotName: "6" },
+  //   { id: 7, status: "not_connected", elapsedSeconds: 0, slotName: "7" },
+  //   { id: 8, status: "not_connected", elapsedSeconds: 0, slotName: "8" },
+  // ]);
 
-  // recording timers
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setKiosks((prev) =>
-        prev.map((k) =>
-          k.status === "recording"
-            ? { ...k, elapsedSeconds: k.elapsedSeconds + 1 }
-            : k
-        )
-      );
-    }, 1000);
-    return () => clearInterval(interval);
-  }, []);
+  const [role, setRole] = useState<Role>(null);        
+  const [roomId, setRoomId] = useState<string>('');
+  const [kioskStatus, setKioskStatus] = useState<string>('Select a role to begin.');
+  const [shareUrl, setShareUrl] = useState<string>('');
 
-  // recording handlers
-  const onPauseKiosk = (id: number) => {
-    setKiosks((prev) =>
-      prev.map((k) =>
-        k.id === id
-          ? { ...k, status: k.status === "recording" ? "paused" : "recording" }
-          : k
-      )
-    );
-  };
+  const socketRef = useRef<Socket<ServerToClientEvents, ClientToServerEvents> | null>(null);
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const localVideoRef = useRef<HTMLVideoElement | null>(null); 
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
 
-  const onStopKiosk = (id: number) => {
-    setKiosks((prev) =>
-      prev.map((k) =>
-        k.id === id ? { ...k, status: "not_connected", elapsedSeconds: 0 } : k
-      )
-    );
-  };
+  // recording timers -- sample stuff
+  // useEffect(() => {
+  //   const interval = setInterval(() => {
+  //     setKiosks((prev) =>
+  //       prev.map((k) =>
+  //         k.status === "recording"
+  //           ? { ...k, elapsedSeconds: k.elapsedSeconds + 1 }
+  //           : k
+  //       )
+  //     );
+  //   }, 1000);
+  //   return () => clearInterval(interval);
+  // }, []);
 
-  // recording helper : time formatting
-  function formatElapsed(seconds: number) {
-    const m = Math.floor(seconds / 60).toString().padStart(2, "0");
-    const s = (seconds % 60).toString().padStart(2, "0");
-    return `${m}:${s}`;
-  }
+  // recording handlers -- sample stuff
+  // const onPauseKiosk = (id: number) => {
+  //   setKiosks((prev) =>
+  //     prev.map((k) =>
+  //       k.id === id
+  //         ? { ...k, status: k.status === "recording" ? "paused" : "recording" }
+  //         : k
+  //     )
+  //   );
+  // };
+
+  // const onStopKiosk = (id: number) => {
+  //   setKiosks((prev) =>
+  //     prev.map((k) =>
+  //       k.id === id ? { ...k, status: "not_connected", elapsedSeconds: 0 } : k
+  //     )
+  //   );
+  // };
+
+  // function formatElapsed(seconds: number) {
+  //   const m = Math.floor(seconds / 60).toString().padStart(2, "0");
+  //   const s = (seconds % 60).toString().padStart(2, "0");
+  //   return `${m}:${s}`;
+  // }
 
   useEffect(() => {
     foodsAbortRef.current?.abort();
@@ -281,9 +325,13 @@ export default function Dashboard() {
         }
         const list: Participant[] = (json.participants ?? []).map((p: any) => ({
           id: Number(p.id ?? p.participant_id),
-          testerLabel: p.testerLabel ?? p.tester_label ?? null,
+          name: p.name ?? p.testerLabel ?? p.tester_label ?? null,
+          kioskId: p.kioskId ?? p.kiosk_id ?? null,
+          contactNumber: p.contactNumber ?? p.contact_number ?? null,
+          gcashNumber: p.gcashNumber ?? p.gcash_number ?? null,
           age: p.age ?? 0,
           gender: (p.gender ?? "other") as Gender,
+          photoUrl: p.photoUrl ?? p.photo_url ?? null,
           createdAt: p.createdAt ?? p.created_at ?? null,
         }));
         setParticipants(list);
@@ -302,6 +350,227 @@ export default function Dashboard() {
     void loadParticipants();
     return () => ac.abort();
   }, []);
+
+  useEffect(() => {
+    // retrieve the logged-in user
+    const storedUser = localStorage.getItem("user"); 
+    const user = storedUser ? JSON.parse(storedUser) : null;
+    const userRole = user?.role;
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlRoom = urlParams.get('room');
+
+    if (userRole === 'admin') {
+      setRole('viewer'); // admin is automatically the remote viewer
+      if (urlRoom) {
+        setRoomId(urlRoom);
+      } else {
+        const newRoomId = Math.random().toString(36).substring(2, 9);
+        setRoomId(newRoomId);
+      }
+    } else if (userRole === 'staff') {  // TODO : might wanna change that
+      setRole('host'); // staff is automatically the camera host
+      if (urlRoom) {
+        setRoomId(urlRoom);
+      } else {
+        setRoomId('default-staff-room'); 
+      }
+    } else {
+      // fallback if no user is found
+      if (urlRoom) {
+        setRoomId(urlRoom);
+        setRole('viewer');
+      }
+    }
+  }, []);
+
+  // automatically update the shareable link when roomId changes
+  useEffect(() => {
+    if (roomId) {
+      const generatedLink = `${window.location.origin}${window.location.pathname}?room=${roomId}`;
+      setShareUrl(generatedLink);
+    }
+  }, [roomId]);
+
+  useEffect(() => {
+    if (!roomId || !role) return;
+
+    const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io(SOCKET_SERVER_URL, {
+      reconnection: true,
+      transports: ['websocket', 'polling'],
+    });
+    socketRef.current = socket;
+
+    socket.on('connect', () => {
+      setKioskStatus(`Connected as ${role}. Room: ${roomId}`);
+      // pass both roomId and role to help the server configure user sets
+      socket.emit('join-room', roomId, role);
+    });
+
+    socket.on('connect_error', () => {
+      setKioskStatus('Connection failed — check that server.js is running.');
+    });
+
+    // HOST: Changed listener from 'user-connected' to 'viewer-connected'
+    socket.on('viewer-connected', async () => {
+      if (role !== 'host') return;
+      setKioskStatus('Viewer connected! Starting stream...');
+
+      if (!localStreamRef.current) {
+        await startCamera();
+      }
+
+      const pc = await createPeerConnection();
+
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(track => {
+          pc.addTrack(track, localStreamRef.current!);
+        });
+      }
+
+      const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+      await pc.setLocalDescription(offer);
+      
+      // package inside the server's expected 'signal' wrapper
+      socket.emit('signal', { room: roomId, sdp: offer });
+    });
+
+    // Unified signaling listener for offers, answers, and candidates
+    socket.on('signal', async (data) => {
+      if (!peerConnectionRef.current && role === 'viewer') {
+        await createPeerConnection();
+      }
+      const pc = peerConnectionRef.current;
+      if (!pc) return;
+
+      if (data.sdp) {
+        if (data.sdp.type === 'offer' && role === 'viewer') {
+          setKioskStatus('Received stream offer...');
+          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          
+          // Return the answer packaged inside the signal wrapper
+          socket.emit('signal', { room: roomId, sdp: answer });
+        } else if (data.sdp.type === 'answer' && role === 'host') {
+          if (pc.signalingState === 'have-local-offer') {
+            await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+          }
+        }
+      } else if (data.candidate) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        } catch (e) {
+          console.error('ICE candidate error:', e);
+        }
+      }
+    });
+
+    socket.on('user-disconnected', () => {
+      setKioskStatus('Remote peer disconnected.');
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+      cleanupPeerConnection();
+    });
+
+    socket.on('host-disconnected', () => {
+      setKioskStatus('Host disconnected.');
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+      cleanupPeerConnection();
+    });
+
+    return () => {
+      socket.disconnect();
+      cleanupWebRTC();
+    };
+  }, [roomId, role]);
+
+  const createPeerConnection = async (): Promise<RTCPeerConnection> => {
+    if (peerConnectionRef.current) return peerConnectionRef.current;
+
+    const pc = new RTCPeerConnection(WEBRTC_CONFIG);
+    peerConnectionRef.current = pc;
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate && socketRef.current && roomId) {
+        // send ICE candidates wrapped inside the 'signal' packet structure
+        socketRef.current.emit('signal', { room: roomId, candidate: event.candidate });
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      setKioskStatus(`Connection: ${pc.connectionState}`);
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      console.log('ICE state:', pc.iceConnectionState);
+    };
+
+    // remote track appears on the remote video element for both roles
+    pc.ontrack = (event) => {
+      console.log('Remote track received:', event.track.kind);
+      if (remoteVideoRef.current && event.streams[0]) {
+        remoteVideoRef.current.srcObject = event.streams[0];
+        remoteVideoRef.current.play().catch(() => {
+          // autoplay policy — mute and retry
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.muted = true;
+            remoteVideoRef.current.play();
+          }
+        });
+      }
+    };
+
+    return pc;
+  };
+  
+  // start local camera (host only)
+  const startCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+        audio: { echoCancellation: true, noiseSuppression: true },
+      });
+      localStreamRef.current = stream;
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+        localVideoRef.current.play().catch(() => {});
+      }
+      setKioskStatus('Camera active.');
+    } catch (err) {
+      console.error('Camera error:', err);
+      setKioskStatus('Camera permission denied or unavailable.');
+    }
+  };
+
+  // stop everything
+  const stopCamera = () => {
+    cleanupWebRTC();
+    if (localVideoRef.current) localVideoRef.current.srcObject = null;
+    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+    setKioskStatus('Stopped.');
+  };
+
+  const copyLinkToClipboard = () => {
+    if (!shareUrl) return;
+    navigator.clipboard.writeText("https://localhost:5173/kiosk?room=" + roomId);
+    alert('Share link copied! Open it on the kiosk/remote device.');
+  };
+
+  const cleanupPeerConnection = () => {
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
+    }
+  };
+
+  const cleanupWebRTC = () => {
+    cleanupPeerConnection();
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(t => t.stop());
+      localStreamRef.current = null;
+    }
+  };
+
 
   const totalFoods = foods.length;
   const activeFoods = foods.filter((f) => f.sessionsActive > 0).length;
@@ -421,7 +690,6 @@ export default function Dashboard() {
     return issues;
   }, [selectedFood, stats.frameLogCount, stats.sessionCount, stats.surveyCount]);
 
-  // Hide analytics visuals when critical data is missing
   const hideAnalyticsGraphs = useMemo(() => {
     if (!selectedFood) return true;
     const sessionCount = Number(stats.sessionCount ?? 0);
@@ -632,9 +900,9 @@ export default function Dashboard() {
     }
   };
 
-  // NEW : Manage Participant Functions
+  // Manage Participant Functions
   const onDeleteParticipant = async (participantId: number) => {
-    if (!participantId) return;  
+    if (!participantId) return;
     try {
       setDeletingParId(participantId);
       setDeleteParError(null);
@@ -661,23 +929,22 @@ export default function Dashboard() {
     const name = newParticipant.name.trim();
     const age = newParticipant.age;
     const gender = newParticipant.gender;
-    // other fields
     if (!name || !age || !gender) return;
 
     try {
       const res = await fetch(`${API_BASE}/api/participants`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ testerLabel: name, age: Number(age), gender }),
+        body: JSON.stringify({ name: name, age: Number(age), gender }),
       });
       const json = await res.json();
       if (!res.ok || !json?.ok) {
         throw new Error(json?.error || "Failed to add participant.");
       }
-      const created = json.participant as { id: number; testerLabel: string | null; age: number | null; gender: Gender | null; createdAt: string };
+      const created = json.participant as { id: number; name: string | null; age: number | null; gender: Gender | null; createdAt: string };
       const newRow: Participant = {
         id: created.id,
-        testerLabel: created.testerLabel,
+        name: created.name,
         age: created.age ?? 0,
         gender: created.gender ?? "other",
         createdAt: created.createdAt,
@@ -695,7 +962,7 @@ export default function Dashboard() {
 
   const onEditParticipant = async () => {
     if (!parToEdit) return;
-    const name = parToEdit.testerLabel?.trim() ?? "";
+    const name = parToEdit.name?.trim() ?? "";
     if (!name) return;
     if (!parToEdit.id) return;  
 
@@ -705,7 +972,7 @@ export default function Dashboard() {
       const res = await fetch(`${API_BASE}/api/participants/${parToEdit.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ testerLabel: name, age: parToEdit.age, gender: parToEdit.gender }),
+        body: JSON.stringify({ name: name, age: parToEdit.age, gender: parToEdit.gender }),
       });
       const json = await res.json();
       if (!res.ok || !json?.ok) {
@@ -714,7 +981,7 @@ export default function Dashboard() {
       setParticipants((prev) =>
         prev.map((p) =>
           p.id === parToEdit.id
-            ? { ...p, testerLabel: name, age: parToEdit.age, gender: parToEdit.gender }
+            ? { ...p, name: name, age: parToEdit.age, gender: parToEdit.gender }
             : p
         )
       );
@@ -726,7 +993,6 @@ export default function Dashboard() {
     }
   };
 
-  // NOTE : eto yung ui
   return (
     <div
       className="min-h-screen bg-[#f6f7fb]"
@@ -1220,94 +1486,89 @@ export default function Dashboard() {
               </div>
             </section>
           ) : tab === "kiosks" ? (
-            // NEW : temp Manage Kiosks Tab
             <section className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-              <h2 className="text-gray-900 font-bold mb-4">Manage Kiosks</h2>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                {kiosks.map((kiosk) => {
-                  const isConnected = kiosk.status !== "not_connected";
-                  const isRecording = kiosk.status === "recording";
-                  const isPaused = kiosk.status === "paused";
+              <div className="flex justify-between items-center mb-4">
+                <div>
+                  <h2 className="text-gray-900 font-bold mb-1">Manage Kiosks</h2>
+                  <p className="text-[12px] text-gray-500">
+                    Status: <span className="font-semibold text-gray-700">{kioskStatus}</span>
+                  </p>
+                </div>
 
-                  return (
-                    <div key={kiosk.id} className="flex flex-col gap-2">
-                      {/* Camera card */}
-                      <div className="bg-gray-200 rounded-xl overflow-hidden relative aspect-[4/3]">
-                        {/* Timer + status badge */}
-                        <div className="absolute top-2 left-2 right-2 flex items-center justify-between z-10">
-                          <span className="text-[13px] font-bold text-gray-900">
-                            {formatElapsed(kiosk.elapsedSeconds)}
-                          </span>
-                          {isRecording && (
-                            <span className="inline-flex items-center gap-1.5 bg-[#e8174a] text-white text-[11px] font-semibold px-2.5 py-1 rounded-full">
-                              <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
-                              recording
-                            </span>
-                          )}
-                          {isPaused && (
-                            <span className="inline-flex items-center gap-1.5 bg-orange-400 text-white text-[11px] font-semibold px-2.5 py-1 rounded-full">
-                              <span className="w-1.5 h-1.5 rounded-full bg-white" />
-                              paused
-                            </span>
-                          )}
-                          {!isConnected && (
-                            <span className="inline-flex items-center gap-1.5 bg-gray-400 text-white text-[11px] font-semibold px-2.5 py-1 rounded-full">
-                              not connected
-                            </span>
-                          )}
-                        </div>
+                {/* copy share link available immediately for the Admin/Viewer */}
+                <button
+                  type="button"
+                  onClick={copyLinkToClipboard}
+                  disabled={!shareUrl}
+                  className="inline-flex items-center gap-2 bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200 px-3 py-2 rounded-md text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  🔗 Copy Kiosk Share Link
+                </button>
+              </div>
 
-                        {/* Camera feed / placeholder */}
-                        <div className="w-full h-full flex items-center justify-center">
-                          {isConnected ? (
-                            /* Person silhouette */
-                            <svg viewBox="0 0 80 90" className="w-2/3 h-2/3 text-gray-500" fill="currentColor">
-                              <circle cx="40" cy="28" r="18" />
-                              <ellipse cx="40" cy="80" rx="32" ry="22" />
-                            </svg>
-                          ) : (
-                            /* Camera off icon */
-                            <svg viewBox="0 0 24 24" className="w-16 h-16 text-gray-400" fill="none" stroke="currentColor" strokeWidth="1.5">
-                              <path d="M3 3l18 18M10.5 10.677A2 2 0 0 0 10 12a2 2 0 0 0 2 2c.48 0 .92-.17 1.255-.45M6.228 6.228A10.5 10.5 0 0 0 3 12c0 1.68.41 3.26 1.13 4.65M6.228 6.228A10.5 10.5 0 0 1 12 4.5c4.756 0 8.773 3.162 10.13 7.5-.47 1.47-1.24 2.8-2.23 3.9M6.228 6.228 3 3m3.228 3.228 3.65 3.65M16.5 16.5l2.272 2.272" strokeLinecap="round" strokeLinejoin="round"/>
-                            </svg>
-                          )}
-                        </div>
-                      </div>
+              <div className="space-y-4">
+                {/* Admin/Viewer dynamic stream portal window */}
+                <div>
+                  <p className="text-[12px] text-gray-600 font-semibold mb-1">
+                    Live Kiosk Stream
+                  </p>
+                  <div className="relative bg-black aspect-video w-full rounded-lg overflow-hidden border border-gray-200">
+                    <video
+                      ref={remoteVideoRef}
+                      autoPlay
+                      playsInline
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                  <p className="text-[11px] text-gray-400 mt-1">
+                    Click Start Recording below to request connection hooks and start the stream capture pipeline.
+                  </p>
+                </div>
 
-                      {/* Controls */}
-                      <div className="flex gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => onPauseKiosk(kiosk.id)}
-                          disabled={!isConnected}
-                          className={`flex-1 py-1.5 rounded-md text-[11px] font-bold transition-colors ${
-                            isConnected
-                              ? "bg-orange-400 hover:bg-orange-500 text-white"
-                              : "bg-gray-300 text-gray-500 cursor-not-allowed"
-                          }`}
-                        >
-                          {isPaused ? "Resume" : "Pause"} recording
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onStopKiosk(kiosk.id)}
-                          disabled={!isConnected}
-                          className={`flex-1 py-1.5 rounded-md text-[11px] font-bold transition-colors ${
-                            isConnected
-                              ? "bg-[#e8174a] hover:bg-[#c9143f] text-white"
-                              : "bg-gray-300 text-gray-500 cursor-not-allowed"
-                          }`}
-                        >
-                          Stop recording
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
+                {/* Admin Core Action Triggers */}
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (socketRef.current && roomId && role) {
+                        // Re-broadcast join-room parameters to wake the remote kiosk cameras up
+                        socketRef.current.emit('join-room', roomId, role);
+                        setKioskStatus('Requesting remote video capture...');
+                      }
+                    }}
+                    className="flex-1 bg-[#e8174a] hover:bg-[#c9143f] text-white py-2.5 rounded-md text-sm font-semibold transition-colors text-center"
+                  >
+                    ▶ Start Recording
+                  </button>
+                  
+                  <button
+                    type="button"
+                    onClick={() => {
+                      cleanupPeerConnection();
+                      if (remoteVideoRef.current) {
+                        remoteVideoRef.current.srcObject = null;
+                      }
+                      setKioskStatus('Stream session stopped.');
+                    }}
+                    className="flex-1 bg-white hover:bg-gray-50 text-gray-700 border border-gray-200 py-2.5 rounded-md text-sm font-semibold transition-colors text-center"
+                  >
+                    ⏹ Stop Recording
+                  </button>
+                </div>
+
+                {/* share URL Context Tracer block */}
+                {shareUrl && (
+                  <div className="text-[12px] text-gray-500 bg-gray-50 border border-gray-100 rounded-md px-3 py-2 break-all">
+                    <span className="font-semibold text-gray-700">Active Channel Node Link: </span>
+                    <span className="text-gray-600">https://localhost:5173/kiosk?room={roomId}</span>
+                    <p className="text-[11px] text-gray-400 mt-1">
+                      Provide this dynamic entry point string to your staff nodes to feed remote video tracks right here.
+                    </p>
+                  </div>
+                )}
               </div>
             </section>
           ) : tab === "participants" ? (
-            // NEW : Manage Participants Tab
             <section className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 overflow-x-auto">
               {parLoading ? (
                 <div className="text-center py-14 text-gray-500">
@@ -1345,20 +1606,20 @@ export default function Dashboard() {
                         <th scope="col">Name</th>
                         <th scope="col">Contact Number</th>
                         <th scope="col">GCash Number</th>
-                        <th scope="col">Date & Time</th>
+                        <th scope="col">Date &amp; Time</th>
                         <th scope="col">Actions</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {participants.sort((a, b) => a.id-b.id).map(p => {
+                      {participants.sort((a, b) => a.id - b.id).map(p => {
                         return (
                           <tr key={p.id}>
                             <td>{p.id}</td>
-                            <td>-</td>                {/*session_id*/}
-                            <td>-</td>                {/*kiosk_id*/}
-                            <td>{p.testerLabel}</td> {/*name*/}
-                            <td>-</td>                {/*contact_number*/}
-                            <td>-</td>                {/*gcash_number*/}
+                            <td>-</td>
+                            <td>-</td>
+                            <td>{p.name}</td> {/*name*/}
+                            <td>-</td>
+                            <td>-</td>
                             <td>{formatDateTime(p.createdAt)}</td>
                             <td>
                               <button
@@ -1542,7 +1803,7 @@ export default function Dashboard() {
           <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
             <h2 className="text-gray-900 font-bold mb-2">Delete participant?</h2>
             <p className="text-sm text-gray-600">
-              This will permanently remove <span className="font-semibold">{parToDelete.testerLabel}</span> and
+              This will permanently remove <span className="font-semibold">{parToDelete.name}</span> and
               its related sessions.
             </p>
             {deleteParError ? <p className="text-xs text-red-600 mt-2">{deleteParError}</p> : null}
@@ -1576,9 +1837,9 @@ export default function Dashboard() {
               <Field label="Participant Name *">
                 <input
                   type="text"
-                  value={parToEdit.testerLabel ?? ""}
+                  value={parToEdit.name ?? ""}
                   onChange={(e) =>
-                    setParToEdit((p) => p ? { ...p, testerLabel: e.target.value } : p)
+                    setParToEdit((p) => p ? { ...p, name: e.target.value } : p)
                   }
                   placeholder="e.g. John Doe"
                   className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"

@@ -9,9 +9,10 @@ import SessionDetail from "./pages/SessionDetail";
 import Survey from "./pages/Survey";
 
 // new
-import Setup_Tester from "./pages/Setup_Tester";
-import Session_Tester from "./pages/Session_Tester";
-import Survey_Tester from "./pages/Survey_Tester";
+// import Setup_Tester from "./pages/Setup_Tester";
+// import Session_Tester from "./pages/Session_Tester";
+// import Survey_Tester from "./pages/Survey_Tester";
+import KioskHost from "./pages/KioskHost";
 
 export default function App() {
   return (
@@ -26,9 +27,10 @@ export default function App() {
           <Route path="/survey" element={<Survey />} />
 
           {/* new */}
-          <Route path="/setup_tester" element={<Setup_Tester />} />
+          {/* <Route path="/setup_tester" element={<Setup_Tester />} />
           <Route path="/session_tester" element={<Session_Tester />} />
-          <Route path="/survey_tester" element={<Survey_Tester />} />
+          <Route path="/survey_tester" element={<Survey_Tester />} /> */}
+          <Route path="/kiosk" element={<KioskHost />} />
         </Route>
       </Routes>
     </BrowserRouter>

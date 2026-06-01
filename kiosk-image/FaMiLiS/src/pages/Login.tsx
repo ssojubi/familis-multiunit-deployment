@@ -119,7 +119,10 @@ export default function Login() {
 
     try {
       setLoading(true);
-      const res = await fetch("http://localhost:8080/api/login", {
+      const apiBase = window.location.hostname === 'localhost'
+        ? 'https://localhost:8888'
+        : `https://${window.location.hostname}:8888`;
+      const res = await fetch(`${apiBase}/api/login`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -144,7 +147,13 @@ export default function Login() {
         // ignore storage failures
       }
 
-      navigate("/dashboard");
+      const role = data.user?.role;
+      if (role === "staff") { // NOTE : might want to change that
+        navigate(`/kiosk?room=`);
+      } else {
+        navigate("/dashboard");
+      }
+
     } catch (err) {
       console.error(err);
       setError("Unable to reach the server. Please try again.");
