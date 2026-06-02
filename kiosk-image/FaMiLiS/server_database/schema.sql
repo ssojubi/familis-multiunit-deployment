@@ -1,17 +1,14 @@
 -- =====================================================
--- MySQL schema for Familis Project (Revised v2)
+-- MySQL schema for Familis Project (centralized)
 -- =====================================================
 
-CREATE DATABASE IF NOT EXISTS familis_db;
-USE familis_db;
-
--- USERS (staff/admin operators)
+-- USERS (tester/admin operators)
 CREATE TABLE IF NOT EXISTS users (
   user_id INT AUTO_INCREMENT PRIMARY KEY,
   username VARCHAR(50) NOT NULL,
   email VARCHAR(255) NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
-  role ENUM('staff', 'admin') NOT NULL DEFAULT 'staff',
+  role ENUM('tester', 'admin') NOT NULL DEFAULT 'tester',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   last_login TIMESTAMP NULL
 );
@@ -19,12 +16,28 @@ CREATE TABLE IF NOT EXISTS users (
 -- PARTICIPANTS (test subjects)
 CREATE TABLE IF NOT EXISTS participants (
   participant_id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(255) NULL,
   tester_label VARCHAR(50), -- e.g. "T-01"
+  kiosk_id INT NULL,
+  contact_number VARCHAR(50) NULL,
+  gcash_number VARCHAR(50) NULL,
   age INT,
   gender ENUM('male', 'female', 'other'),
+  photo_url TEXT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
+  INDEX idx_participant_name (name),
+  INDEX idx_participant_kiosk (kiosk_id),
   CONSTRAINT chk_participant_age CHECK (age >= 0 AND age <= 120)
+);
+
+-- KIOSKS
+CREATE TABLE IF NOT EXISTS kiosk (
+  kiosk_id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  location VARCHAR(255) NULL,
+  image_url TEXT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- FOOD PRODUCTS
@@ -41,6 +54,7 @@ CREATE TABLE IF NOT EXISTS food_products (
 CREATE TABLE IF NOT EXISTS sessions (
   session_id INT AUTO_INCREMENT PRIMARY KEY,
   user_id INT NOT NULL,
+  kiosk_id INT NULL,
   participant_id INT NULL,
   food_id INT NOT NULL,
   start_time TIMESTAMP NULL,
@@ -49,10 +63,12 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
   INDEX idx_session_user (user_id),
+  INDEX idx_session_kiosk (kiosk_id),
   INDEX idx_session_food (food_id),
   INDEX idx_session_participant (participant_id),
 
   CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+  CONSTRAINT fk_sessions_kiosk FOREIGN KEY (kiosk_id) REFERENCES kiosk(kiosk_id) ON DELETE SET NULL,
   CONSTRAINT fk_sessions_participant FOREIGN KEY (participant_id) REFERENCES participants(participant_id) ON DELETE SET NULL,
   CONSTRAINT fk_sessions_food FOREIGN KEY (food_id) REFERENCES food_products(food_id),
   CONSTRAINT chk_end_after_start CHECK (end_time IS NULL OR end_time >= start_time)
@@ -115,10 +131,25 @@ CREATE TABLE IF NOT EXISTS survey_results (
   CONSTRAINT chk_final CHECK (final_overall_rating BETWEEN 1 AND 9)
 );
 
+-- CENTRAL FER RESULTS (Kafka/client-agent path)
+CREATE TABLE IF NOT EXISTS emotion_results (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  session_id VARCHAR(255) NOT NULL,
+  frame_id VARCHAR(255) NOT NULL,
+  face_detected BOOLEAN,
+  hedonic_score DOUBLE,
+  confidence DOUBLE,
+  valence DOUBLE,
+  sentiment VARCHAR(32),
+  processed_at DATETIME NOT NULL,
+  INDEX idx_emotion_results_session_id (session_id),
+  INDEX idx_emotion_results_processed_at (processed_at)
+);
+
 -- =====================================================
 -- RELATIONSHIPS
 -- =====================================================
--- users (staff/admin) 1 ──▶ M sessions
+-- users (tester/admin) 1 ──▶ M sessions
 -- participants         1 ──▶ M sessions
 -- food_products        1 ──▶ M sessions
 -- sessions             1 ──▶ M frame_logs

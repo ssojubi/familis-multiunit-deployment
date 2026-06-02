@@ -139,9 +139,8 @@ function statusClasses(status: SessionStatus) {
 }
 
 // dynamic API base
-const API_BASE = window.location.hostname === 'localhost'
-  ? 'https://localhost:8888'
-  : `https://${window.location.hostname}:8888`;
+const API_BASE = `http://${window.location.hostname}:8080`;
+const DEFAULT_KIOSK_AGENT_ID = "kiosk-01";
 
 const toApiUrl = (url: string | null) => {
   if (!url) return null;
@@ -353,7 +352,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     // retrieve the logged-in user
-    const storedUser = localStorage.getItem("user"); 
+    const storedUser = localStorage.getItem("familis.user") || localStorage.getItem("user");
     const user = storedUser ? JSON.parse(storedUser) : null;
     const userRole = user?.role;
 
@@ -368,12 +367,12 @@ export default function Dashboard() {
         const newRoomId = Math.random().toString(36).substring(2, 9);
         setRoomId(newRoomId);
       }
-    } else if (userRole === 'staff') {  // TODO : might wanna change that
-      setRole('host'); // staff is automatically the camera host
+    } else if (userRole === 'tester') {
+      setRole('host'); // tester is automatically the camera host
       if (urlRoom) {
         setRoomId(urlRoom);
       } else {
-        setRoomId('default-staff-room'); 
+        setRoomId('default-tester-room'); 
       }
     } else {
       // fallback if no user is found
@@ -387,7 +386,7 @@ export default function Dashboard() {
   // automatically update the shareable link when roomId changes
   useEffect(() => {
     if (roomId) {
-      const generatedLink = `${window.location.origin}${window.location.pathname}?room=${roomId}`;
+      const generatedLink = `${window.location.origin}/setup?kiosk_id=${encodeURIComponent(DEFAULT_KIOSK_AGENT_ID)}`;
       setShareUrl(generatedLink);
     }
   }, [roomId]);
@@ -552,7 +551,7 @@ export default function Dashboard() {
 
   const copyLinkToClipboard = () => {
     if (!shareUrl) return;
-    navigator.clipboard.writeText("https://localhost:5173/kiosk?room=" + roomId);
+    navigator.clipboard.writeText(shareUrl);
     alert('Share link copied! Open it on the kiosk/remote device.');
   };
 
@@ -1560,9 +1559,9 @@ export default function Dashboard() {
                 {shareUrl && (
                   <div className="text-[12px] text-gray-500 bg-gray-50 border border-gray-100 rounded-md px-3 py-2 break-all">
                     <span className="font-semibold text-gray-700">Active Channel Node Link: </span>
-                    <span className="text-gray-600">https://localhost:5173/kiosk?room={roomId}</span>
+                    <span className="text-gray-600">{shareUrl}</span>
                     <p className="text-[11px] text-gray-400 mt-1">
-                      Provide this dynamic entry point string to your staff nodes to feed remote video tracks right here.
+                      Provide this link to the tester kiosk running the matching Python agent.
                     </p>
                   </div>
                 )}

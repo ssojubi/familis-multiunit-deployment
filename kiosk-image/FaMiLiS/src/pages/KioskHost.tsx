@@ -16,9 +16,7 @@ interface ClientToServerEvents {
 }
 
 // make API base dynamic
-const API_BASE = window.location.hostname === 'localhost'
-  ? 'https://localhost:8888'
-  : `https://${window.location.hostname}:8888`;
+const API_BASE = `http://${window.location.hostname}:8080`;
 
 const toApiUrl = (url: string | null) => {
   if (!url) return null;
@@ -66,17 +64,20 @@ export default function KioskHost() {
         const newRoomId = Math.random().toString(36).substring(2, 9);
         setRoomId(newRoomId);
       }
-    } else if (userRole === 'staff') {  // TODO : might wanna change this to tester or sumn
-      setRole('host'); // staff is automatically the camera host
+    } else if (userRole === 'tester') {
+      setRole('host'); // tester is automatically the camera host
       if (urlRoom) {
         setRoomId(urlRoom);
       } else {
-        setRoomId('default-staff-room');
+        setRoomId('default-tester-room');
       }
     } else {
       // fallback if no user is found
       if (urlRoom) {
         setRoomId(urlRoom);
+        setRole('host');
+      } else {
+        setRoomId('default-kiosk-room');
         setRole('host');
       }
     }
@@ -275,7 +276,7 @@ export default function KioskHost() {
       </div>
 
       <div className="space-y-4">
-        {/* local camera preview — locked for host/staff device */}
+        {/* local camera preview — locked for host/tester device */}
         <div>
           <p className="text-[12px] text-gray-600 font-semibold mb-1">
             Local Camera Feed (This Kiosk Device)

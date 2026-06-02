@@ -33,6 +33,9 @@ RUN pip install --no-cache-dir opencv-python-headless mediapipe scikit-learn pan
 WORKDIR /app/familis
 RUN npm install
 RUN npm install tailwindcss @tailwindcss/vite tw-animate-css
+RUN npm install socket.io
+RUN npm install socket.io-client
+RUN npm install -D @vitejs/plugin-basic-ssl
 #possibly add npm install -g npm@11.14.1
 
 EXPOSE 8765
@@ -41,6 +44,6 @@ EXPOSE 8080
 
 # startup script to run both the backend, frontend(src), and server
 COPY start.sh /app/start.sh
-RUN chmod +x /app/start.sh
+RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh
 
-CMD ["/app/start.sh"]
+CMD ["/bin/sh", "/app/start.sh"]

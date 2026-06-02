@@ -119,9 +119,7 @@ export default function Login() {
 
     try {
       setLoading(true);
-      const apiBase = window.location.hostname === 'localhost'
-        ? 'https://localhost:8888'
-        : `https://${window.location.hostname}:8888`;
+      const apiBase = `http://${window.location.hostname}:8080`;
       const res = await fetch(`${apiBase}/api/login`, {
         method: "POST",
         headers: {
@@ -147,9 +145,11 @@ export default function Login() {
         // ignore storage failures
       }
 
+      localStorage.setItem("user", JSON.stringify(data.user));
+
       const role = data.user?.role;
-      if (role === "staff") { // NOTE : might want to change that
-        navigate(`/kiosk?room=`);
+      if (role === "tester") {
+        navigate("/kiosk");
       } else {
         navigate("/dashboard");
       }

@@ -2,12 +2,17 @@
 
 Distributed Facial Emotion Recognition (FER) system for multiple kiosks.
 
-The central server runs in Docker. The kiosk camera agent runs natively on each kiosk machine because webcam access is more reliable outside Docker, especially on Windows and macOS.
+The central server and FaMiLiS UI run in Docker. The updated kiosk camera flow is handled by the FaMiLiS web UI at `/kiosk`, so the old native `client-agent` test camera path is now only a legacy/manual test option.
 
 ## Architecture
 
 ```text
-Kiosk camera agent
+FaMiLiS camera UI
+  -> Express API + emotion service
+  -> centralized MySQL schema
+  -> frame_logs / survey_results / dashboard analytics
+
+Legacy client-agent path, if used:
   -> FastAPI central server
   -> Kafka topic: video-frames
   -> FER processor
@@ -25,6 +30,13 @@ familis-multiunit-deployment/
     Dockerfile
     docker-compose.yaml
     requirements.txt
+  kiosk-image/
+    Dockerfile
+    start.sh
+    FaMiLiS/
+      server_database/schema.sql
+      server/
+      src/
   client-agent/
     agent.py
     requirements.txt
@@ -42,9 +54,8 @@ Central server machine:
 
 Kiosk/client machine:
 
-- Python 3.11
-- Webcam
-- Python dependencies from `client-agent/requirements.txt`
+- Browser with camera permissions
+- Access to the Docker host at port `5173`
 
 ## 1. Start The Central Server
 
@@ -63,9 +74,17 @@ central-mysql
 kafka
 zookeeper
 kafka-init
+familis
 ```
 
-`kafka-init` creates the `video-frames` topic automatically.
+`kafka-init` creates the `video-frames` topic automatically. MySQL initializes the centralized UI schema from `kiosk-image/FaMiLiS/server_database/schema.sql` on a fresh database volume.
+
+If you already had an old `mysql_data` volume and want to recreate the database from the updated centralized schema:
+
+```powershell
+docker compose down -v
+docker compose up -d --build
+```
 
 ## 2. Check The Central Server
 
@@ -86,6 +105,24 @@ Expected content:
 ```
 
 ## 3. Run The Kiosk Agent
+
+Open the FaMiLiS UI:
+
+```text
+http://localhost:5173
+```
+
+Log in, then use the tester/kiosk camera UI at:
+
+```text
+http://localhost:5173/kiosk
+```
+
+The Express API runs at `http://localhost:8080`, the emotion service at `http://localhost:8765`, and the FastAPI central service at `http://localhost:8000`.
+
+## Legacy Native Kiosk Agent
+
+Only use this if you still need to test the older Kafka/client-agent camera path.
 
 Open a new PowerShell terminal from the repo root:
 
@@ -110,7 +147,7 @@ $env:KIOSK_ID="kiosk-02"
 python agent.py
 ```
 
-## 4. Send Test Start And Stop Commands
+## Legacy: Send Test Start And Stop Commands
 
 Open another PowerShell terminal from the repo root:
 
@@ -248,10 +285,11 @@ Environment variables:
 KIOSK_ID              Default: kiosk-01
 CENTRAL_SERVER_HTTP   Default: http://localhost:8000
 CENTRAL_SERVER_WS     Default: derived from CENTRAL_SERVER_HTTP
-WEBCAM_ID             Default: 0
+WEBCAM_ID             Default: auto
+CAMERA_SCAN_MAX_INDEX Default: 5
 SHOW_PREVIEW          Default: 1
 WARM_CAMERA_ON_CONNECT Default: 0
-CAMERA_BACKEND        Windows default: dshow, macOS default: avfoundation
+CAMERA_BACKEND        Default: auto
 ```
 
 Disable preview:
@@ -273,6 +311,19 @@ Use another camera:
 ```powershell
 $env:WEBCAM_ID="1"
 python agent.py
+```
+
+Scan available camera indexes and backends:
+
+```powershell
+cd client-agent
+python scan_cameras.py
+```
+
+Check snapshots:
+
+```powershell
+explorer C:\frames\camera_scan
 ```
 
 ## Stop The System
@@ -342,6 +393,13 @@ If the camera opens slowly on macOS:
 
 ```powershell
 $env:CAMERA_BACKEND="avfoundation"
+python agent.py
+```
+
+If DirectShow fails on Windows, try Media Foundation:
+
+```powershell
+$env:CAMERA_BACKEND="msmf"
 python agent.py
 ```
 

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { performLogout } from "../RequireAuth";
 import logo from "../assets/logo.png";
 
@@ -15,7 +15,8 @@ type Participant = {
   gender: string | null;
 };
 
-const API_BASE = "http://localhost:8080";
+const API_BASE = `http://${window.location.hostname}:8080`;
+const DEFAULT_KIOSK_AGENT_ID = "kiosk-01";
 
 function getStoredUserId(): number {
   try {
@@ -30,6 +31,7 @@ function getStoredUserId(): number {
 
 export default function Setup() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [foods, setFoods] = useState<Food[]>([]);
   const [foodsLoading, setFoodsLoading] = useState(true);
   const [foodsError, setFoodsError] = useState<string | null>(null);
@@ -46,12 +48,18 @@ export default function Setup() {
     participant: false,
   });
 
-  const [cameraError, setCameraError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
 
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+  const kioskAgentId = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    return (
+      params.get("kiosk_id") ||
+      params.get("kioskId") ||
+      params.get("agentKioskId") ||
+      DEFAULT_KIOSK_AGENT_ID
+    ).trim();
+  }, [location.search]);
 
   useEffect(() => {
     async function loadFoods() {
@@ -98,31 +106,6 @@ export default function Setup() {
       }
     }
     void loadParticipants();
-  }, []);
-
-  useEffect(() => {
-    async function startCamera() {
-      setCameraError(null);
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "user" },
-          audio: false,
-        });
-        streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play().catch(() => {});
-        }
-      } catch (err: any) {
-        setCameraError(err?.message || "Camera permission denied or not available.");
-      }
-    }
-
-    void startCamera();
-    return () => {
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    };
   }, []);
 
   const selectedFood = useMemo(
@@ -182,6 +165,7 @@ export default function Setup() {
           userId: getStoredUserId(),
           foodId: selectedFoodId as number,
           participantId: createdParticipantId,
+          agentKioskId: kioskAgentId,
         }),
       });
 
@@ -209,6 +193,7 @@ export default function Setup() {
           foodId: started.foodId,
           status: started.status,
           startTime: started.startTime,
+          agentKioskId: kioskAgentId,
         })
       );
 
@@ -353,19 +338,17 @@ export default function Setup() {
 
             <div className="space-y-5">
               <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
-                <h3 className="text-sm text-gray-700 mb-3 font-semibold">Camera Preview</h3>
+                <h3 className="text-sm text-gray-700 mb-3 font-semibold">Kiosk Agent</h3>
                 <div className="aspect-video bg-gray-100 rounded-lg overflow-hidden border border-gray-200 flex items-center justify-center">
-                  {cameraError ? (
-                    <div className="text-center px-6">
-                      <p className="text-sm text-gray-600 font-semibold">Camera unavailable</p>
-                      <p className="text-xs text-gray-500 mt-1">{cameraError}</p>
-                    </div>
-                  ) : (
-                    <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
-                  )}
+                  <div className="text-center px-6">
+                    <p className="text-sm text-gray-600 font-semibold">{kioskAgentId}</p>
+                    <p className="text-xs text-gray-500 mt-1">
+                      The Python kiosk agent must be running with this KIOSK_ID.
+                    </p>
+                  </div>
                 </div>
                 <p className="text-[11px] text-gray-500 mt-2">
-                  Make sure your camera is connected and permissions are allowed.
+                  Start the agent on the kiosk machine before starting the session.
                 </p>
               </div>
 

@@ -27,10 +27,10 @@ CENTRAL_SERVER_WS = os.getenv(
     CENTRAL_SERVER_HTTP.replace("http://", "ws://").replace("https://", "wss://"),
 )
 KIOSK_ID = os.getenv("KIOSK_ID", "kiosk-01")
-WEBCAM_ID = int(os.getenv("WEBCAM_ID", "0"))
+WEBCAM_ID = os.getenv("WEBCAM_ID", "auto").lower()
+CAMERA_SCAN_MAX_INDEX = int(os.getenv("CAMERA_SCAN_MAX_INDEX", "5"))
 FPS = 30
-DEFAULT_CAMERA_BACKEND = "avfoundation" if platform.system() == "Darwin" else "dshow"
-CAMERA_BACKEND = os.getenv("CAMERA_BACKEND", DEFAULT_CAMERA_BACKEND).lower()
+CAMERA_BACKEND = os.getenv("CAMERA_BACKEND", "auto").lower()
 WS_HEARTBEAT_INTERVAL = 5
 WS_PING_INTERVAL = 20
 WS_PING_TIMEOUT = 30
@@ -109,9 +109,7 @@ class KioskAgent:
         await self.send_ws_json({
             "type": "register",
             "kiosk_id": KIOSK_ID,
-            # "ip": socket.gethostbyname(socket.gethostname()),
-            # change this back 
-            "ip": "127.0.0.1",
+            "ip": socket.gethostbyname(socket.gethostname()),
             "status": "idle"
         })
         logger.info(f"Registered as {KIOSK_ID}")
@@ -181,7 +179,7 @@ class KioskAgent:
                 logger.info(f"Webcam already open ({reason})")
                 return True
 
-            logger.info(f"{reason.capitalize()} on webcam index {WEBCAM_ID}")
+            logger.info(f"{reason.capitalize()} with webcam setting {WEBCAM_ID}")
             self.cap = await asyncio.to_thread(self.open_camera)
             if not self.cap.isOpened():
                 self.cap.release()
@@ -200,18 +198,42 @@ class KioskAgent:
     def open_camera(self):
         backends = {
             "any": cv2.CAP_ANY,
-            "dshow": cv2.CAP_DSHOW,
-            "avfoundation": cv2.CAP_AVFOUNDATION,
+            "dshow": getattr(cv2, "CAP_DSHOW", cv2.CAP_ANY),
+            "msmf": getattr(cv2, "CAP_MSMF", cv2.CAP_ANY),
+            "avfoundation": getattr(cv2, "CAP_AVFOUNDATION", cv2.CAP_ANY),
         }
-        backend = backends.get(CAMERA_BACKEND, cv2.CAP_ANY)
-        logger.info(f"Creating VideoCapture with backend={CAMERA_BACKEND}")
-        cap = cv2.VideoCapture(WEBCAM_ID, backend)
-        if cap.isOpened():
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            cap.set(cv2.CAP_PROP_FPS, FPS)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        return cap
+        system = platform.system()
+        if CAMERA_BACKEND != "auto":
+            backend_names = [CAMERA_BACKEND]
+        elif system == "Windows":
+            backend_names = ["dshow", "msmf", "any"]
+        elif system == "Darwin":
+            backend_names = ["avfoundation", "any"]
+        else:
+            backend_names = ["any"]
+
+        indexes = (
+            range(0, CAMERA_SCAN_MAX_INDEX + 1)
+            if WEBCAM_ID == "auto"
+            else [int(WEBCAM_ID)]
+        )
+
+        for index in indexes:
+            for backend_name in backend_names:
+                backend = backends.get(backend_name, cv2.CAP_ANY)
+                logger.info(f"Creating VideoCapture index={index} backend={backend_name}")
+                cap = cv2.VideoCapture(index, backend)
+                if cap.isOpened():
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    cap.set(cv2.CAP_PROP_FPS, FPS)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    logger.info(f"Selected webcam index={index} backend={backend_name}")
+                    return cap
+                cap.release()
+                logger.warning(f"Webcam index {index} failed with backend={backend_name}")
+
+        return cv2.VideoCapture()
 
     def camera_has_frames(self):
         logger.info("Waiting for first webcam frame")

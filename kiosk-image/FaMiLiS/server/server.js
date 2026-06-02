@@ -26,6 +26,8 @@ await mkdir(kiosksUploadsDir, { recursive: true });
 await mkdir(participantsUploadsDir, { recursive: true });
 
 const EMOTION_SERVICE_URL = (process.env.EMOTION_SERVICE_URL || "http://127.0.0.1:8765").replace(/\/$/, "");
+const CENTRAL_SERVER_URL = (process.env.CENTRAL_SERVER_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+const DEFAULT_KIOSK_AGENT_ID = (process.env.DEFAULT_KIOSK_AGENT_ID || "kiosk-01").trim();
 
 import { createServer as createHttpServer } from 'http';
 import { createServer as createHttpsServer } from 'https';
@@ -273,7 +275,7 @@ rl.on('line', (input) => {
   }
 });
 
-const port = process.env.PORT || 8888;
+const port = process.env.PORT || 8080;
 
 async function clearEmotionHistory(sessionId) {
   try {
@@ -386,6 +388,47 @@ async function start() {
   }
   const allowedSessionStatuses = new Set(["pending", "active", "completed", "cancelled"]);
 
+  function agentIdForKioskId(kioskId) {
+    if (kioskId == null || kioskId === "") {
+      return DEFAULT_KIOSK_AGENT_ID || null;
+    }
+
+    const numeric = Number.parseInt(String(kioskId), 10);
+    if (!Number.isFinite(numeric)) return null;
+    return `kiosk-${String(numeric).padStart(2, "0")}`;
+  }
+
+  async function sendCentralCommand(command, { kioskAgentId, sessionId, foodName }) {
+    if (!kioskAgentId) {
+      return { sent: false, skipped: true, reason: "No kiosk agent id configured." };
+    }
+
+    const endpoint = command === "start" ? "start" : "stop";
+    const body = {
+      kiosk_id: kioskAgentId,
+      session_id: String(sessionId),
+    };
+    if (foodName) body.food_name = foodName;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch(`${CENTRAL_SERVER_URL}/api/commands/${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const json = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(json?.detail || json?.error || `central-server HTTP ${response.status}`);
+      }
+      return { sent: true, skipped: false, response: json };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   async function prepareSessionFrameUpload(req, res, next) {
     const sessionId = Number.parseInt(req.params.sessionId, 10);
     if (!Number.isFinite(sessionId)) {
@@ -480,7 +523,7 @@ async function start() {
     try {
       const [rows] = await pool.query(
         `
-        SELECT participant_id, name, kiosk_id, contact_number, gcash_number, age, gender, photo_url, created_at
+        SELECT participant_id, name, tester_label, kiosk_id, contact_number, gcash_number, age, gender, photo_url, created_at
         FROM participants
         ORDER BY created_at DESC, participant_id DESC
       `
@@ -490,6 +533,7 @@ async function start() {
         participants: rows.map((r) => ({
           id: Number(r.participant_id),
           name: r.name == null ? null : String(r.name),
+          testerLabel: r.tester_label == null ? null : String(r.tester_label),
           kioskId: r.kiosk_id == null ? null : Number(r.kiosk_id),
           contactNumber: r.contact_number == null ? null : String(r.contact_number),
           gcashNumber: r.gcash_number == null ? null : String(r.gcash_number),
@@ -508,6 +552,8 @@ async function start() {
   app.post("/api/participants", async (req, res) => {
     const rawName = req.body?.name ?? req.body?.testerLabel;
     const name = typeof rawName === "string" ? rawName.trim() : "";
+    const rawTesterLabel = req.body?.testerLabel ?? req.body?.tester_label ?? req.body?.name;
+    const testerLabel = typeof rawTesterLabel === "string" ? rawTesterLabel.trim() : null;
     const kioskIdRaw = req.body?.kioskId ?? req.body?.kiosk_id;
     const ageRaw = req.body?.age;
     const genderRaw = req.body?.gender;
@@ -540,8 +586,13 @@ async function start() {
     try {
       // If a participant with the same name exists, update fields; otherwise insert.
       const [[existing]] = await pool.query(
-        `SELECT participant_id, name, kiosk_id, age, gender, contact_number, gcash_number, photo_url, created_at FROM participants WHERE name = ? LIMIT 1`,
-        [name]
+        `
+        SELECT participant_id, name, tester_label, kiosk_id, age, gender, contact_number, gcash_number, photo_url, created_at
+        FROM participants
+        WHERE name = ? OR tester_label = ?
+        LIMIT 1
+        `,
+        [name, testerLabel]
       );
 
       if (existing) {
@@ -549,16 +600,17 @@ async function start() {
           `
           UPDATE participants
           SET kiosk_id = COALESCE(?, kiosk_id),
+              tester_label = COALESCE(?, tester_label),
               age = COALESCE(?, age),
               gender = COALESCE(?, gender),
               contact_number = COALESCE(?, contact_number),
               gcash_number = COALESCE(?, gcash_number)
           WHERE participant_id = ?
         `,
-          [kioskId, age, gender, contactNumber, gcashNumber, Number(existing.participant_id)]
+          [kioskId, testerLabel, age, gender, contactNumber, gcashNumber, Number(existing.participant_id)]
         );
         const [[updated]] = await pool.query(
-          `SELECT participant_id, name, kiosk_id, contact_number, gcash_number, age, gender, photo_url, created_at FROM participants WHERE participant_id = ? LIMIT 1`,
+          `SELECT participant_id, name, tester_label, kiosk_id, contact_number, gcash_number, age, gender, photo_url, created_at FROM participants WHERE participant_id = ? LIMIT 1`,
           [Number(existing.participant_id)]
         );
         return res.json({
@@ -566,6 +618,7 @@ async function start() {
           participant: {
             id: Number(updated.participant_id),
             name: updated.name == null ? null : String(updated.name),
+            testerLabel: updated.tester_label == null ? null : String(updated.tester_label),
             kioskId: updated.kiosk_id == null ? null : Number(updated.kiosk_id),
             contactNumber: updated.contact_number == null ? null : String(updated.contact_number),
             gcashNumber: updated.gcash_number == null ? null : String(updated.gcash_number),
@@ -579,15 +632,16 @@ async function start() {
       }
 
       const [result] = await pool.query(
-        `INSERT INTO participants (name, kiosk_id, contact_number, gcash_number, age, gender) VALUES (?, ?, ?, ?, ?, ?)`,
-        [name, kioskId, contactNumber, gcashNumber, age, gender]
+        `INSERT INTO participants (name, tester_label, kiosk_id, contact_number, gcash_number, age, gender) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [name, testerLabel, kioskId, contactNumber, gcashNumber, age, gender]
       );
-      const [[inserted]] = await pool.query(`SELECT participant_id, name, kiosk_id, contact_number, gcash_number, age, gender, photo_url, created_at FROM participants WHERE participant_id = ? LIMIT 1`, [Number(result.insertId)]);
+      const [[inserted]] = await pool.query(`SELECT participant_id, name, tester_label, kiosk_id, contact_number, gcash_number, age, gender, photo_url, created_at FROM participants WHERE participant_id = ? LIMIT 1`, [Number(result.insertId)]);
       return res.json({
         ok: true,
         participant: {
           id: Number(result.insertId),
           name,
+          testerLabel: inserted.tester_label == null ? null : String(inserted.tester_label),
           kioskId: kioskId == null ? null : Number(kioskId),
           contactNumber,
           gcashNumber,
@@ -600,66 +654,6 @@ async function start() {
       });
     } catch (err) {
       console.error("POST /api/participants error:", err);
-      return res.status(500).json({ ok: false, error: "Server error." });
-    }
-  });
-
-  app.delete("/api/participants/:id", async (req, res) => {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id)) {
-      return res.status(400).json({ ok: false, error: "Invalid id." });
-    }
-    try {
-      const [result] = await pool.query(
-        `DELETE FROM participants WHERE participant_id = ?`,
-        [id]
-      );
-      if (result.affectedRows === 0) {
-        return res.status(404).json({ ok: false, error: "Participant not found." });
-      }
-      return res.json({ ok: true });
-    } catch (err) {
-      console.error("DELETE /api/participants error:", err);
-      return res.status(500).json({ ok: false, error: "Server error." });
-    }
-  });
-
-  app.put("/api/participants/:id", async (req, res) => {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id)) {
-      return res.status(400).json({ ok: false, error: "Invalid id." });
-    }
-    const rawLabel = req.body?.testerLabel;
-    const testerLabel = typeof rawLabel === "string" ? rawLabel.trim() : "";
-    const ageRaw = req.body?.age;
-    const genderRaw = req.body?.gender;
-    if (!testerLabel) {
-      return res.status(400).json({ ok: false, error: "testerLabel is required." });
-    }
-    const age =
-      ageRaw == null || ageRaw === ""
-        ? null
-        : Number.isFinite(Number(ageRaw))
-          ? Math.round(Number(ageRaw))
-          : null;
-    const allowedGenders = new Set(["male", "female", "other"]);
-    const gender = genderRaw == null || genderRaw === "" ? null : String(genderRaw);
-    if (gender != null && !allowedGenders.has(gender)) {
-      return res.status(400).json({ ok: false, error: "gender must be male, female, or other." });
-    }
-    try {
-      const [result] = await pool.query(
-        `UPDATE participants
-        SET tester_label = ?, age = ?, gender = ?
-        WHERE participant_id = ?`,
-        [testerLabel, age, gender, id]
-      );
-      if (result.affectedRows === 0) {
-        return res.status(404).json({ ok: false, error: "Participant not found." });
-      }
-      return res.json({ ok: true, participant: { id, testerLabel, age, gender } });
-    } catch (err) {
-      console.error("PUT /api/participants error:", err);
       return res.status(500).json({ ok: false, error: "Server error." });
     }
   });
@@ -736,14 +730,14 @@ async function start() {
     try {
       const [result] = await pool.query(
         `UPDATE participants
-        SET name = ?, kiosk_id = ?, contact_number = ?, gcash_number = ?, age = ?, gender = ?
+        SET name = ?, tester_label = ?, kiosk_id = ?, contact_number = ?, gcash_number = ?, age = ?, gender = ?
         WHERE participant_id = ?`,
-        [name, kioskId, contactNumber, gcashNumber, age, gender, id]
+        [name, testerLabel, kioskId, contactNumber, gcashNumber, age, gender, id]
       );
       if (result.affectedRows === 0) {
         return res.status(404).json({ ok: false, error: "Participant not found." });
       }
-      return res.json({ ok: true, participant: { id, name, kioskId, contactNumber, gcashNumber, age, gender } });
+      return res.json({ ok: true, participant: { id, name, testerLabel, kioskId, contactNumber, gcashNumber, age, gender } });
     } catch (err) {
       console.error("PUT /api/participants error:", err);
       return res.status(500).json({ ok: false, error: "Server error." });
@@ -1184,14 +1178,22 @@ async function start() {
 
   // Start a new session for a given food/user (used by Camera Setup)
   app.post("/api/sessions/start", async (req, res) => {
-    const { userId, foodId, participantId, kioskId } = req.body ?? {};
+    const { userId, foodId, participantId } = req.body ?? {};
+    const rawKioskId = req.body?.kioskId ?? req.body?.kioskDbId;
+    const rawAgentKioskId =
+      req.body?.agentKioskId ??
+      req.body?.kioskAgentId ??
+      req.body?.kiosk_id ??
+      (typeof req.body?.kioskId === "string" && !/^\d+$/.test(req.body.kioskId) ? req.body.kioskId : null);
     const uId = Number.parseInt(String(userId ?? ""), 10);
     const fId = Number.parseInt(String(foodId ?? ""), 10);
     const pId =
       participantId == null || participantId === ""
         ? null
         : Number.parseInt(String(participantId), 10);
-    const kId = kioskId == null || kioskId === "" ? null : Number.parseInt(String(kioskId), 10);
+    const kId = rawKioskId == null || rawKioskId === "" ? null : Number.parseInt(String(rawKioskId), 10);
+    const requestedAgentKioskId =
+      typeof rawAgentKioskId === "string" && rawAgentKioskId.trim() ? rawAgentKioskId.trim() : null;
 
     if (!Number.isFinite(uId) || !Number.isFinite(fId) || (pId != null && !Number.isFinite(pId)) || (kId != null && !Number.isFinite(kId))) {
       return res.status(400).json({ ok: false, error: "userId, foodId, and optional participantId/kioskId are required." });
@@ -1205,11 +1207,59 @@ async function start() {
       `,
         [uId, kId, pId, fId]
       );
+      const sessionId = Number(result.insertId);
+      const kioskAgentId = requestedAgentKioskId || agentIdForKioskId(kId);
+      const [[foodRow]] = await pool.query(
+        `SELECT name FROM food_products WHERE food_id = ? LIMIT 1`,
+        [fId]
+      );
+
+      let centralCommand = null;
+      try {
+        centralCommand = await sendCentralCommand("start", {
+          kioskAgentId,
+          sessionId,
+          foodName: foodRow?.name == null ? undefined : String(foodRow.name),
+        });
+        if (centralCommand.sent) {
+          await pool.query(
+            `
+            INSERT INTO system_logs (session_id, log_type, message)
+            VALUES (?, 'info', ?)
+            `,
+            [sessionId, `Sent start command to kiosk agent ${kioskAgentId}.`]
+          );
+        }
+      } catch (commandErr) {
+        await pool.query(
+          `
+          UPDATE sessions
+          SET status = 'cancelled',
+              end_time = NOW()
+          WHERE session_id = ?
+          `,
+          [sessionId]
+        );
+        await pool.query(
+          `
+          INSERT INTO system_logs (session_id, log_type, message)
+          VALUES (?, 'error', ?)
+          `,
+          [sessionId, `Failed to start kiosk agent ${kioskAgentId}: ${commandErr?.message || commandErr}`]
+        );
+        return res.status(502).json({
+          ok: false,
+          error: `Session was created but kiosk agent did not start: ${commandErr?.message || commandErr}`,
+          sessionId,
+          kioskAgentId,
+        });
+      }
 
       return res.json({
         ok: true,
+        centralCommand,
         session: {
-          id: Number(result.insertId),
+          id: sessionId,
           userId: uId,
           kioskId: kId,
           participantId: pId,
@@ -1577,6 +1627,7 @@ async function start() {
         SELECT
           session_id,
           user_id,
+          kiosk_id,
           participant_id,
           food_id,
           status,
@@ -1590,12 +1641,61 @@ async function start() {
       );
 
       void clearEmotionHistory(sessionId);
+      const rawAgentKioskId =
+        req.body?.agentKioskId ??
+        req.body?.kioskAgentId ??
+        req.body?.kiosk_id ??
+        (typeof req.body?.kioskId === "string" && !/^\d+$/.test(req.body.kioskId) ? req.body.kioskId : null);
+      const requestedAgentKioskId =
+        typeof rawAgentKioskId === "string" && rawAgentKioskId.trim() ? rawAgentKioskId.trim() : null;
+      const kioskAgentId = requestedAgentKioskId || agentIdForKioskId(row.kiosk_id);
+      let centralCommand = null;
+      try {
+        centralCommand = await sendCentralCommand("stop", {
+          kioskAgentId,
+          sessionId,
+        });
+        if (centralCommand.sent) {
+          await pool.query(
+            `
+            INSERT INTO system_logs (session_id, log_type, message)
+            VALUES (?, 'info', ?)
+            `,
+            [sessionId, `Sent stop command to kiosk agent ${kioskAgentId}.`]
+          );
+        }
+      } catch (commandErr) {
+        await pool.query(
+          `
+          INSERT INTO system_logs (session_id, log_type, message)
+          VALUES (?, 'error', ?)
+          `,
+          [sessionId, `Failed to stop kiosk agent ${kioskAgentId}: ${commandErr?.message || commandErr}`]
+        );
+        return res.status(502).json({
+          ok: false,
+          error: `Session was completed but kiosk agent did not stop: ${commandErr?.message || commandErr}`,
+          session: {
+            id: Number(row.session_id),
+            userId: Number(row.user_id),
+            kioskId: row.kiosk_id == null ? null : Number(row.kiosk_id),
+            participantId: row.participant_id == null ? null : Number(row.participant_id),
+            foodId: Number(row.food_id),
+            status: row.status,
+            startTime: toIsoOrNull(row.start_time),
+            endTime: toIsoOrNull(row.end_time),
+          },
+          kioskAgentId,
+        });
+      }
 
       return res.json({
         ok: true,
+        centralCommand,
         session: {
           id: Number(row.session_id),
           userId: Number(row.user_id),
+          kioskId: row.kiosk_id == null ? null : Number(row.kiosk_id),
           participantId: row.participant_id == null ? null : Number(row.participant_id),
           foodId: Number(row.food_id),
           status: row.status,
@@ -1828,7 +1928,7 @@ async function start() {
       console.log('\n📱 For mobile devices:');
       validIPs.forEach(({ ip }) => console.log(`  https://${ip}:${port}`));
     }
-    console.log('\n💻 Local: https://localhost:' + port);
+    console.log('\n💻 Local: http://localhost:' + port);
     if (validIPs.length > 0) console.log('\n✅ Recommended: https://' + validIPs[0].ip + ':' + port);
     console.log('\n=== Server is running ===\n');
   });

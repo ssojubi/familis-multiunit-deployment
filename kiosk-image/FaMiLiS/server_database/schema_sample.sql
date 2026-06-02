@@ -8,7 +8,8 @@
 
 -- password_hash: bcrypt for plaintext admin123 (regenerate: npm run hash-password -- admin123)
 INSERT INTO users (user_id, username, email, password_hash, role) VALUES
-(1,'adminXYZ','XYZ@familis.com','$2b$10$N8QL6lPJKkVZLqfO0aubDONoidtiq0FMVUQ7SdIXkufSJfuav7nKO','admin');
+(1,'adminXYZ','XYZ@familis.com','$2b$10$N8QL6lPJKkVZLqfO0aubDONoidtiq0FMVUQ7SdIXkufSJfuav7nKO','admin'),
+(2, 'kiosk-01', 'test@familis.com', '$2b$10$0z/TeIENMIVGnM.7974SO.atBn4WH1i6Zc8i1omm9pnbA.lTm7WC6', 'tester');
 
 -- =====================================================
 -- PARTICIPANTS

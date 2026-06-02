@@ -3,10 +3,11 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { performLogout } from "../RequireAuth";
 import logo from "../assets/logo.png";
 
-const API_BASE = "http://localhost:8080";
+const API_BASE = `http://${window.location.hostname}:8080`;
 const FRAME_CAPTURE_MS = 750;
 // Use backend so session_id in this page matches DB rows.
 const USE_DB = true;
+const USE_AGENT_CAPTURE = true;
 
 type Food = {
   id: number;
@@ -29,6 +30,7 @@ type StoredSession = {
   foodId: number;
   status: SessionRow["status"];
   startTime: string;
+  agentKioskId?: string;
 };
 
 function formatMmSs(totalSeconds: number) {
@@ -194,6 +196,7 @@ export default function Session() {
   }, []);
 
   useEffect(() => {
+    if (USE_AGENT_CAPTURE) return;
     cameraSessionActiveRef.current = true;
     void startCamera();
     return () => {
@@ -272,6 +275,7 @@ export default function Session() {
   }, [sessionId]);
 
   useEffect(() => {
+    if (USE_AGENT_CAPTURE) return;
     if (!sessionId || !isRecording || isPaused || cameraError) return;
 
     const id = window.setInterval(() => {
@@ -319,6 +323,10 @@ export default function Session() {
 
       const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/stop`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agentKioskId: storedCurrent?.agentKioskId,
+        }),
       });
       const json = await res.json().catch(() => null);
       if (!res.ok || !json?.ok) {
@@ -480,7 +488,16 @@ export default function Session() {
                   <h3 className="text-sm text-gray-700 font-semibold mb-3">Camera Preview</h3>
 
                   <div className="aspect-video bg-gray-100 rounded-lg overflow-hidden border border-gray-200 relative">
-                    {cameraError ? (
+                    {USE_AGENT_CAPTURE ? (
+                      <div className="text-center px-6 h-full flex items-center justify-center">
+                        <div>
+                          <p className="text-sm text-gray-700 font-semibold">Kiosk agent recording</p>
+                          <p className="text-xs text-gray-500 mt-1">
+                            Frames are captured by the Python kiosk agent and processed by the central server.
+                          </p>
+                        </div>
+                      </div>
+                    ) : cameraError ? (
                       <div className="text-center px-6 h-full flex items-center justify-center">
                         <div>
                           <p className="text-sm text-gray-700 font-semibold">Camera unavailable</p>
