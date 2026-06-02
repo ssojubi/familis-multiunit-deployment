@@ -4,7 +4,7 @@ websockets==14.2
 aiokafka==0.12.0
 mysql-connector-python==9.1.0
 opencv-python-headless==4.10.0.84
-mediapipe==0.10.20
+mediapipe==0.10.18
 joblib==1.4.2
 numpy<2
 aiohttp==3.11.11

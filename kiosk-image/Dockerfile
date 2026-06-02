@@ -40,18 +40,7 @@ EXPOSE 5173
 EXPOSE 8080
 
 # startup script to run both the backend, frontend(src), and server
-RUN echo '#!/bin/bash\n\
-    # Start FER WebSocket\n\
-    cd /app/familis/backend\n\
-    python emotion_service.py &\n\
-    \n\
-    # Start Backend API Server on port 8080\n\
-    cd /app/familis\n\
-    PORT=8080 npm run server &\n\
-    \n\
-    # Start Frontend (port 5173)\n\
-    cd /app/familis/src\n\
-    npm run dev -- --host 0.0.0.0\n\
-    ' > /app/start.sh && chmod +x /app/start.sh
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
 
 CMD ["/app/start.sh"]

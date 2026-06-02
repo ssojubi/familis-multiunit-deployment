@@ -35,16 +35,13 @@ services:
           kafka-topics --bootstrap-server kafka:9092 --list >/dev/null 2>&1 && break
           sleep 2
         done
-
         echo "Creating Kafka topics..."
         kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic video-frames --partitions 1 --replication-factor 1
-
         echo "Waiting for Kafka group coordinator..."
         for i in {1..60}; do
           kafka-consumer-groups --bootstrap-server kafka:9092 --list >/dev/null 2>&1 && break
           sleep 2
         done
-
         echo "Kafka topics ready:"
         kafka-topics --bootstrap-server kafka:9092 --list
       '
@@ -85,7 +82,22 @@ services:
       DB_NAME: familis_central
       FRAME_STORAGE_ROOT: /frames
     volumes:
-      - C:/frames:/frames
+      - ./frames:/frames
+
+  familis:
+    build:
+      context: ../kiosk-image
+      dockerfile: Dockerfile
+    container_name: familis
+    ports:
+      - "5173:5173"
+      - "8080:8080"
+      - "8765:8765"
+    depends_on:
+      - central-server
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql://root:root@central-mysql:3306/familis_central
 
 volumes:
   mysql_data:

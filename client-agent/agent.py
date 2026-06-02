@@ -109,7 +109,9 @@ class KioskAgent:
         await self.send_ws_json({
             "type": "register",
             "kiosk_id": KIOSK_ID,
-            "ip": socket.gethostbyname(socket.gethostname()),
+            # "ip": socket.gethostbyname(socket.gethostname()),
+            # change this back 
+            "ip": "127.0.0.1",
             "status": "idle"
         })
         logger.info(f"Registered as {KIOSK_ID}")
