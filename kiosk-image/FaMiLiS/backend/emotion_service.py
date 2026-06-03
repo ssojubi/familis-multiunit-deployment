@@ -210,5 +210,5 @@ def clear_history(session_id: str):
 
 if __name__ == "__main__":
     port = int(os.environ.get("EMOTION_SERVICE_PORT", "8765"))
-    print(f"Emotion service on http://127.0.0.1:{port} (modelLoaded={MODEL is not None})")
+    print(f"Emotion service on https://127.0.0.1:{port} (modelLoaded={MODEL is not None})")
     app.run(host="127.0.0.1", port=port, threaded=True)
