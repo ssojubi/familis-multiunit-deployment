@@ -16,7 +16,7 @@ interface ClientToServerEvents {
 }
 
 // make API base dynamic
-const API_BASE = `http://${window.location.hostname}:8080`;
+const API_BASE = `https://${window.location.hostname}:8080`;
 
 const toApiUrl = (url: string | null) => {
   if (!url) return null;
