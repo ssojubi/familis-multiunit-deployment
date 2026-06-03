@@ -119,7 +119,7 @@ export default function Login() {
 
     try {
       setLoading(true);
-      const apiBase = `http://${window.location.hostname}:8080`;
+      const apiBase = `https://${window.location.hostname}:8080`;
       const res = await fetch(`${apiBase}/api/login`, {
         method: "POST",
         headers: {
