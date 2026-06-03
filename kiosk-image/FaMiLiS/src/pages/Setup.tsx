@@ -15,7 +15,7 @@ type Participant = {
   gender: string | null;
 };
 
-const API_BASE = `http://${window.location.hostname}:8080`;
+const API_BASE = `https://${window.location.hostname}:8080`;
 const DEFAULT_KIOSK_AGENT_ID = "kiosk-01";
 
 function getStoredUserId(): number {
