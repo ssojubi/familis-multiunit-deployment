@@ -119,8 +119,7 @@ export default function Login() {
 
     try {
       setLoading(true);
-      const apiBase = `https://${window.location.hostname}:8080`;
-      const res = await fetch(`${apiBase}/api/login`, {
+      const res = await fetch(`/api/login`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -149,11 +148,10 @@ export default function Login() {
 
       const role = data.user?.role;
       if (role === "tester") {
-        navigate("/kiosk");
+        navigate("/tester-consent");
       } else {
         navigate("/dashboard");
       }
-
     } catch (err) {
       console.error(err);
       setError("Unable to reach the server. Please try again.");
@@ -180,7 +178,11 @@ export default function Login() {
           className="h-[80px] px-8 flex items-center gap-3 text-left"
           aria-label="Go to home"
         >
-          <img src={logo} alt="FaMiLis logo" className="w-[50px] h-[50px] object-contain" />
+          <img
+            src={logo}
+            alt="FaMiLis logo"
+            className="w-[50px] h-[50px] object-contain"
+          />
           <span className="text-white text-[24px] font-bold tracking-wide">
             FaMiLis
           </span>
@@ -201,8 +203,7 @@ export default function Login() {
           style={{ backgroundColor: "#fff" }}
         >
           <div className="bg-red-600 px-10 pt-10 pb-9 text-center">
-            <div className="flex justify-center mb-2">
-            </div>
+            <div className="flex justify-center mb-2"></div>
             <h2 className="text-white text-[34px] font-bold mt-2">
               Welcome Back!
             </h2>

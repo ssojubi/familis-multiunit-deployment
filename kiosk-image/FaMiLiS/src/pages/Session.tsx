@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { io, Socket } from "socket.io-client";
 import { performLogout } from "../RequireAuth";
 import logo from "../assets/logo.png";
 
-const API_BASE = `http://${window.location.hostname}:8080`;
+import { getApiBase, getSocketUrl, isKioskPublicPath, kioskRoute } from "../apiConfig";
+
+const API_BASE = getApiBase();
+const SOCKET_SERVER_URL = getSocketUrl();
 const FRAME_CAPTURE_MS = 750;
 // Use backend so session_id in this page matches DB rows.
 const USE_DB = true;
-const USE_AGENT_CAPTURE = true;
+const USE_AGENT_CAPTURE = false;
 
 type Food = {
   id: number;
@@ -31,6 +35,18 @@ type StoredSession = {
   status: SessionRow["status"];
   startTime: string;
   agentKioskId?: string;
+  roomId?: string;
+};
+type Role = "host" | "viewer" | null;
+type ServerToClientEvents = {
+  "viewer-connected": () => void;
+  "signal": (data: { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) => void;
+  "user-disconnected": () => void;
+  "host-disconnected": () => void;
+};
+type ClientToServerEvents = {
+  "join-room": (roomId: string, role: Role) => void;
+  "signal": (data: { room: string; sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) => void;
 };
 
 function formatMmSs(totalSeconds: number) {
@@ -47,6 +63,7 @@ function hedonic01ToScale(hedonic01: number) {
 export default function Session() {
   const navigate = useNavigate();
   const location = useLocation();
+  const kioskMode = isKioskPublicPath(location.pathname);
 
   const storedCurrent = useMemo((): StoredSession | null => {
     try {
@@ -72,6 +89,8 @@ export default function Session() {
   const [cameraError, setCameraError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const socketRef = useRef<Socket<ServerToClientEvents, ClientToServerEvents> | null>(null);
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
 
   const [isRecording, setIsRecording] = useState((initialSession?.status ?? "active") === "active");
   const [isPaused, setIsPaused] = useState(false);
@@ -87,6 +106,17 @@ export default function Session() {
 
   const frameInFlightRef = useRef(false);
   const cameraSessionActiveRef = useRef(true);
+  const roomId = storedCurrent?.roomId || `kiosk-${storedCurrent?.agentKioskId || "kiosk-01"}`;
+  const userRole = useMemo(() => {
+    try {
+      const raw = localStorage.getItem("familis.user") || localStorage.getItem("user");
+      if (!raw) return null;
+      return (JSON.parse(raw)?.role ?? null) as string | null;
+    } catch {
+      return null;
+    }
+  }, []);
+  const isAdmin = userRole === "admin";
 
   const startEpochMs = useMemo(() => {
     if (!session?.startTime) return null;
@@ -128,6 +158,33 @@ export default function Session() {
       v.srcObject = null;
     }
   };
+
+  const cleanupPeerConnection = () => {
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
+    }
+  };
+
+  const createPeerConnection = useCallback(async () => {
+    if (peerConnectionRef.current) return peerConnectionRef.current;
+
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+      ],
+    });
+    peerConnectionRef.current = pc;
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate && socketRef.current && roomId) {
+        socketRef.current.emit("signal", { room: roomId, candidate: event.candidate });
+      }
+    };
+
+    return pc;
+  }, [roomId]);
 
   const startCamera = async () => {
     setCameraError(null);
@@ -196,7 +253,6 @@ export default function Session() {
   }, []);
 
   useEffect(() => {
-    if (USE_AGENT_CAPTURE) return;
     cameraSessionActiveRef.current = true;
     void startCamera();
     return () => {
@@ -284,6 +340,74 @@ export default function Session() {
     return () => window.clearInterval(id);
   }, [sessionId, isRecording, isPaused, cameraError, sendFrame]);
 
+  useEffect(() => {
+    if (!roomId || !streamRef.current) return;
+
+    const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io(SOCKET_SERVER_URL, {
+      reconnection: true,
+      transports: ["websocket", "polling"],
+    });
+    socketRef.current = socket;
+
+    socket.on("connect", () => {
+      socket.emit("join-room", roomId, "host");
+    });
+
+    socket.on("viewer-connected", async () => {
+      if (!streamRef.current) return;
+      const pc = await createPeerConnection();
+      streamRef.current.getTracks().forEach((track) => {
+        if (streamRef.current) pc.addTrack(track, streamRef.current);
+      });
+      const offer = await pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: true });
+      await pc.setLocalDescription(offer);
+      socket.emit("signal", { room: roomId, sdp: offer });
+    });
+
+    socket.on("signal", async (data) => {
+      const pc = peerConnectionRef.current;
+      if (!pc) return;
+
+      if (data.sdp?.type === "answer" && pc.signalingState === "have-local-offer") {
+        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+      } else if (data.candidate) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        } catch {
+          // Ignore stale candidates after reconnects.
+        }
+      }
+    });
+
+    socket.on("user-disconnected", cleanupPeerConnection);
+    socket.on("host-disconnected", cleanupPeerConnection);
+
+    return () => {
+      socket.disconnect();
+      socketRef.current = null;
+      cleanupPeerConnection();
+    };
+  }, [createPeerConnection, roomId, streamRef.current]);
+
+  useEffect(() => {
+    if (!sessionId || isAdmin) return;
+
+    const id = window.setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/sessions/${sessionId}`);
+        const json = await res.json().catch(() => null);
+        if (res.ok && json?.session?.status === "completed") {
+          stopCamera();
+          navigate(kioskMode ? kioskRoute("/survey") : "/survey", { state: { sessionId } });
+        }
+      } catch {
+        // Non-blocking poll.
+      }
+    }, 1500);
+
+    return () => window.clearInterval(id);
+  }, [isAdmin, navigate, sessionId]);
+
   const togglePause = () => {
     if (!isRecording) return;
     setIsPaused((p) => {
@@ -325,7 +449,7 @@ export default function Session() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          agentKioskId: storedCurrent?.agentKioskId,
+          webKiosk: kioskMode,
         }),
       });
       const json = await res.json().catch(() => null);
@@ -333,7 +457,7 @@ export default function Session() {
         throw new Error(json?.error || "Unable to stop the session in the database.");
       }
 
-      navigate("/survey", { state: { sessionId } });
+      navigate(kioskMode ? kioskRoute("/survey") : "/survey", { state: { sessionId } });
     } catch (err: any) {
       setStopError(err?.message || "Unable to stop the session.");
       setConfirmOpen(true);
@@ -348,7 +472,7 @@ export default function Session() {
 
   const handleBackToDashboard = () => {
     stopCamera();
-    navigate("/dashboard");
+    navigate(kioskMode ? kioskRoute("/setup") : "/dashboard");
   };
 
   const hedonicDisplay =
@@ -362,37 +486,41 @@ export default function Session() {
         <div className="h-[72px] px-6 flex items-center justify-between">
           <button
             type="button"
-            onClick={handleBackToDashboard}
+            onClick={isAdmin ? handleBackToDashboard : undefined}
             className="flex items-center gap-3"
-            aria-label="Back to dashboard"
+            aria-label="FaMiLis"
           >
             <img src={logo} alt="FaMiLis logo" className="w-[44px] h-[44px] object-contain" />
             <span className="text-white text-[22px] font-bold tracking-wide">FaMiLis</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              stopCamera();
-              performLogout(navigate);
-            }}
-            className="bg-white/90 text-red-700 hover:bg-white transition-colors px-4 py-2 rounded-md text-sm font-semibold"
-          >
-            Log Out
-          </button>
+          {isAdmin ? (
+            <button
+              type="button"
+              onClick={() => {
+                stopCamera();
+                performLogout(navigate);
+              }}
+              className="bg-white/90 text-red-700 hover:bg-white transition-colors px-4 py-2 rounded-md text-sm font-semibold"
+            >
+              Log Out
+            </button>
+          ) : null}
         </div>
       </header>
 
       <main className="px-6 py-8">
         <div className="max-w-4xl mx-auto">
-          <button
-            type="button"
-            onClick={handleBackToDashboard}
-            className="flex items-center gap-2 text-gray-600 hover:text-gray-900 mb-4 text-sm transition-colors"
-          >
-            <span aria-hidden="true">←</span>
-            Back to Dashboard
-          </button>
+          {!kioskMode ? (
+            <button
+              type="button"
+              onClick={handleBackToDashboard}
+              className="flex items-center gap-2 text-gray-600 hover:text-gray-900 mb-4 text-sm transition-colors"
+            >
+              <span aria-hidden="true">←</span>
+              Back to Dashboard
+            </button>
+          ) : null}
 
           <div className="mb-6">
             <h1 className="text-[26px] font-bold text-gray-900">Camera Recording</h1>
@@ -592,3 +720,4 @@ export default function Session() {
     </div>
   );
 }
+

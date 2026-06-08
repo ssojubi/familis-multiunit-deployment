@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies for OpenCV and MediaPipe (updated for Debian Trixie)
+# Install system dependencies for OpenCV and MediaPipe
 RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
@@ -10,13 +10,14 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libxrender-dev \
     libgomp1 \
+    libxcb1 \
+    libxcb-shm0 \
+    libxcb-xfixes0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install Python packages
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application
 COPY . .
 
 EXPOSE 8000

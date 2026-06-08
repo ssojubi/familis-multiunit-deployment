@@ -12,7 +12,9 @@ import {
 } from "chart.js";
 import { Line } from "react-chartjs-2";
 
-const API_BASE = `https://${window.location.hostname}:8080`;
+import { getApiBase } from "../apiConfig";
+
+const API_BASE = getApiBase();
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend);
 
 type TabKey = "frame" | "system" | "survey";

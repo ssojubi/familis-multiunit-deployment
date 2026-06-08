@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { performLogout } from "../RequireAuth";
 import logo from "../assets/logo.png";
+import { getApiBase, isKioskPublicPath, kioskRoute } from "../apiConfig";
 
 type Food = {
   id: number;
@@ -15,7 +16,7 @@ type Participant = {
   gender: string | null;
 };
 
-const API_BASE = `https://${window.location.hostname}:8080`;
+const API_BASE = getApiBase();
 const DEFAULT_KIOSK_AGENT_ID = "kiosk-01";
 
 function getStoredUserId(): number {
@@ -32,6 +33,7 @@ function getStoredUserId(): number {
 export default function Setup() {
   const navigate = useNavigate();
   const location = useLocation();
+  const kioskMode = isKioskPublicPath(location.pathname);
   const [foods, setFoods] = useState<Food[]>([]);
   const [foodsLoading, setFoodsLoading] = useState(true);
   const [foodsError, setFoodsError] = useState<string | null>(null);
@@ -60,14 +62,30 @@ export default function Setup() {
       DEFAULT_KIOSK_AGENT_ID
     ).trim();
   }, [location.search]);
+  const roomId = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    return (params.get("room") || `kiosk-${kioskAgentId}`).trim();
+  }, [location.search, kioskAgentId]);
+
+  useEffect(() => {
+    if (kioskMode) {
+      // #region agent log
+      fetch('http://127.0.0.1:7575/ingest/ee988b9a-3295-425f-9a5b-c96caf767e73',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a7fb58'},body:JSON.stringify({sessionId:'a7fb58',hypothesisId:'H5',location:'Setup.tsx:mount',message:'public kiosk setup loaded',data:{kioskMode,roomId,kioskAgentId,pathname:location.pathname},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    }
+  }, [kioskMode, roomId, kioskAgentId, location.pathname]);
 
   useEffect(() => {
     async function loadFoods() {
       setFoodsLoading(true);
       setFoodsError(null);
       try {
-        const res = await fetch(`${API_BASE}/api/foods`);
+        const foodsUrl = `${API_BASE}/api/foods`;
+        const res = await fetch(foodsUrl);
         const json = await res.json();
+        // #region agent log
+        fetch('http://127.0.0.1:7575/ingest/ee988b9a-3295-425f-9a5b-c96caf767e73',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a7fb58'},body:JSON.stringify({sessionId:'a7fb58',hypothesisId:'H4',location:'Setup.tsx:loadFoods',message:'foods fetch result',data:{foodsUrl,status:res.status,ok:json?.ok,pageProtocol:window.location.protocol,port:window.location.port},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
         if (!res.ok || !json?.ok) throw new Error(json?.error || "Failed to load foods.");
         const list = (json.foods ?? []) as any[];
         setFoods(
@@ -165,7 +183,8 @@ export default function Setup() {
           userId: getStoredUserId(),
           foodId: selectedFoodId as number,
           participantId: createdParticipantId,
-          agentKioskId: kioskAgentId,
+          webKiosk: kioskMode,
+          roomId,
         }),
       });
 
@@ -194,10 +213,13 @@ export default function Setup() {
           status: started.status,
           startTime: started.startTime,
           agentKioskId: kioskAgentId,
+          roomId,
         })
       );
 
-      navigate("/session", { state: { session: started, food: selectedFood } });
+      navigate(kioskMode ? kioskRoute("/session") : "/session", {
+        state: { session: started, food: selectedFood },
+      });
     } catch (err: any) {
       const message = err?.message || "Failed to start session.";
       if (message.toLowerCase().includes("participant")) setParticipantError(message);
@@ -211,36 +233,35 @@ export default function Setup() {
     <div className="min-h-screen bg-[#f6f7fb]" style={{ fontFamily: "'Montserrat', sans-serif" }}>
       <header className="bg-red-600 text-white">
         <div className="h-[72px] px-6 flex items-center justify-between">
-          <button
-            type="button"
-            onClick={() => navigate("/dashboard")}
-            className="flex items-center gap-3"
-            aria-label="Go to dashboard"
-          >
+          <div className="flex items-center gap-3">
             <img src={logo} alt="FaMiLis logo" className="w-[44px] h-[44px] object-contain" />
             <span className="text-white text-[22px] font-bold tracking-wide">FaMiLis</span>
-          </button>
+          </div>
 
-          <button
-            type="button"
-            onClick={() => performLogout(navigate)}
-            className="bg-white/90 text-red-700 hover:bg-white transition-colors px-4 py-2 rounded-md text-sm font-semibold"
-          >
-            Log Out
-          </button>
+          {!kioskMode ? (
+            <button
+              type="button"
+              onClick={() => performLogout(navigate)}
+              className="bg-white/90 text-red-700 hover:bg-white transition-colors px-4 py-2 rounded-md text-sm font-semibold"
+            >
+              Log Out
+            </button>
+          ) : null}
         </div>
       </header>
 
       <main className="px-6 py-8">
         <div className="max-w-4xl mx-auto">
-          <button
-            type="button"
-            onClick={() => navigate("/dashboard")}
-            className="flex items-center gap-2 text-gray-600 hover:text-gray-900 mb-4 text-sm transition-colors"
-          >
-            <span aria-hidden="true">←</span>
-            Back to Dashboard
-          </button>
+          {!kioskMode ? (
+            <button
+              type="button"
+              onClick={() => navigate("/dashboard")}
+              className="flex items-center gap-2 text-gray-600 hover:text-gray-900 mb-4 text-sm transition-colors"
+            >
+              <span aria-hidden="true">←</span>
+              Back to Dashboard
+            </button>
+          ) : null}
 
           <div className="mb-6">
             <h1 className="text-[26px] font-bold text-gray-900">Camera Setup</h1>
@@ -338,17 +359,17 @@ export default function Setup() {
 
             <div className="space-y-5">
               <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
-                <h3 className="text-sm text-gray-700 mb-3 font-semibold">Kiosk Agent</h3>
+                <h3 className="text-sm text-gray-700 mb-3 font-semibold">Kiosk Device</h3>
                 <div className="aspect-video bg-gray-100 rounded-lg overflow-hidden border border-gray-200 flex items-center justify-center">
                   <div className="text-center px-6">
                     <p className="text-sm text-gray-600 font-semibold">{kioskAgentId}</p>
                     <p className="text-xs text-gray-500 mt-1">
-                      The Python kiosk agent must be running with this KIOSK_ID.
+                      Camera capture runs in this browser after you start the session.
                     </p>
                   </div>
                 </div>
                 <p className="text-[11px] text-gray-500 mt-2">
-                  Start the agent on the kiosk machine before starting the session.
+                  Room: {roomId}. Allow camera access when prompted on the next screen.
                 </p>
               </div>
 

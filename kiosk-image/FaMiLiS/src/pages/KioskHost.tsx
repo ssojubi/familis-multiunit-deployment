@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { io, Socket } from 'socket.io-client';
+import { getApiBase, getSocketUrl, toApiUrl } from '../apiConfig';
 
 type Role = 'host' | 'viewer' | null;
 
@@ -15,16 +16,8 @@ interface ClientToServerEvents {
   'signal': (data: { room: string; sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) => void;
 }
 
-// make API base dynamic
-const API_BASE = `https://${window.location.hostname}:8080`;
-
-const toApiUrl = (url: string | null) => {
-  if (!url) return null;
-  if (url.startsWith("http://") || url.startsWith("https://")) return url;
-  return `${API_BASE}${url}`;
-};
-
-const SOCKET_SERVER_URL = API_BASE; 
+const API_BASE = getApiBase();
+const SOCKET_SERVER_URL = getSocketUrl(); 
 
 const WEBRTC_CONFIG: RTCConfiguration = {
   iceServers: [

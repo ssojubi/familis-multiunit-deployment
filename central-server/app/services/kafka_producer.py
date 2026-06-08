@@ -4,12 +4,15 @@ import json
 
 _kafka_producer = None
 
+
 def get_kafka_producer():
     return _kafka_producer
+
 
 def set_kafka_producer(producer):
     global _kafka_producer
     _kafka_producer = producer
+
 
 class KafkaProducerService:
     def __init__(self):
@@ -21,7 +24,7 @@ class KafkaProducerService:
         self.producer = AIOKafkaProducer(
             bootstrap_servers=bootstrap_servers,
             value_serializer=lambda v: json.dumps(v).encode()
-    )
+        )
         await self.producer.start()
         self.ready = True
 
@@ -37,11 +40,3 @@ class KafkaProducerService:
 
     def is_ready(self):
         return self.ready
-
-def get_kafka_producer():
-    global _kafka_producer
-    return _kafka_producer
-
-def set_kafka_producer(producer):
-    global _kafka_producer
-    _kafka_producer = producer

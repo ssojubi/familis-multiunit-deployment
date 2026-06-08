@@ -34,7 +34,7 @@ CAMERA_BACKEND = os.getenv("CAMERA_BACKEND", "auto").lower()
 WS_HEARTBEAT_INTERVAL = 5
 WS_PING_INTERVAL = 20
 WS_PING_TIMEOUT = 30
-SHOW_PREVIEW = os.getenv("SHOW_PREVIEW", "1") != "0"
+SHOW_PREVIEW = os.getenv("SHOW_PREVIEW", "0") != "0"
 PREVIEW_WINDOW_NAME = "Kiosk Agent Camera"
 WARM_CAMERA_ON_CONNECT = os.getenv("WARM_CAMERA_ON_CONNECT", "0") != "0"
 # ====================================

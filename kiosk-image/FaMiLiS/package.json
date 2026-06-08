@@ -13,6 +13,7 @@
     "emotion-service": "python ./backend/emotion_service.py"
   },
   "dependencies": {
+    "axios": "^1.17.0",
     "bcryptjs": "^3.0.3",
     "chart.js": "^4.5.1",
     "cors": "^2.8.5",
@@ -23,7 +24,8 @@
     "react": "^19.2.4",
     "react-chartjs-2": "^5.3.1",
     "react-dom": "^19.2.4",
-    "react-router-dom": "^7.13.1",
+    "react-router-dom": "^7.17.0",
+    "recharts": "^3.8.1",
     "socket.io-client": "^4.8.3",
     "tinyglobby": "^0.2.15"
   },

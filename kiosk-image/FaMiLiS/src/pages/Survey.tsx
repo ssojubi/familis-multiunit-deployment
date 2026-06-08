@@ -3,7 +3,9 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { performLogout } from "../RequireAuth";
 import logo from "../assets/logo.png";
 
-const API_BASE = `https://${window.location.hostname}:8080`;
+import { getApiBase, isKioskPublicPath, kioskRoute } from "../apiConfig";
+
+const API_BASE = getApiBase();
 
 const RATING_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
 
@@ -54,6 +56,7 @@ function getGuideEmoji(score: number) {
 export default function Survey() {
   const location = useLocation() as any;
   const navigate = useNavigate();
+  const kioskMode = isKioskPublicPath(location.pathname);
 
   const sessionId = useMemo<number | null>(() => {
     const fromState = location.state?.sessionId;
@@ -165,7 +168,12 @@ export default function Survey() {
         throw new Error(json?.error || "Failed to submit survey.");
       }
 
-      navigate(`/session-detail?sessionId=${sessionId}`);
+      if (kioskMode) {
+        localStorage.removeItem("familis.currentSession");
+        navigate(kioskRoute("/setup"), { replace: true });
+      } else {
+        navigate(`/session-detail?sessionId=${sessionId}`);
+      }
     } catch (err: any) {
       setError(err?.message || "Failed to submit survey.");
     } finally {
@@ -177,15 +185,10 @@ export default function Survey() {
     <div className="min-h-screen bg-[#f6f7fb]" style={{ fontFamily: "'Montserrat', sans-serif" }}>
       <header className="bg-red-600 text-white">
         <div className="h-[72px] px-6 flex items-center justify-between">
-          <button
-            type="button"
-            onClick={() => navigate("/dashboard")}
-            className="flex items-center gap-3"
-            aria-label="Go to dashboard"
-          >
+          <div className="flex items-center gap-3">
             <img src={logo} alt="FaMiLis logo" className="w-[44px] h-[44px] object-contain" />
             <span className="text-white text-[22px] font-bold tracking-wide">FaMiLis</span>
-          </button>
+          </div>
 
           <div className="flex-1 text-center">
             <span className="text-white/95 text-[14px] font-semibold">Admin View</span>

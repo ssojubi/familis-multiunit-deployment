@@ -6,7 +6,7 @@ import multer from "multer";
 import { mkdir, readFile } from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
-import readline from 'readline';
+import readline from "readline";
 
 const app = express();
 app.use(cors());
@@ -25,38 +25,56 @@ await mkdir(frameLogsRoot, { recursive: true });
 await mkdir(kiosksUploadsDir, { recursive: true });
 await mkdir(participantsUploadsDir, { recursive: true });
 
-const EMOTION_SERVICE_URL = (process.env.EMOTION_SERVICE_URL || "http://127.0.0.1:8765").replace(/\/$/, "");
-const CENTRAL_SERVER_URL = (process.env.CENTRAL_SERVER_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
-const DEFAULT_KIOSK_AGENT_ID = (process.env.DEFAULT_KIOSK_AGENT_ID || "kiosk-01").trim();
+const EMOTION_SERVICE_URL = (
+  process.env.EMOTION_SERVICE_URL || "http://127.0.0.1:8765"
+).replace(/\/$/, "");
+const CENTRAL_SERVER_URL = (
+  process.env.CENTRAL_SERVER_URL || "http://127.0.0.1:8000"
+).replace(/\/$/, "");
+const DEFAULT_KIOSK_AGENT_ID = (
+  process.env.DEFAULT_KIOSK_AGENT_ID || "kiosk-01"
+).trim();
+const WEB_KIOSK_MODE = process.env.WEB_KIOSK_MODE === "true";
 
-import { createServer as createHttpServer } from 'http';
-import { createServer as createHttpsServer } from 'https';
-import { Server } from 'socket.io';
-import fs from 'fs';
-import os from 'os';
+import { createServer as createHttpServer } from "http";
+import { createServer as createHttpsServer } from "https";
+import { Server } from "socket.io";
+import fs from "fs";
+import os from "os";
 
-// use HTTPS if cert files exist, otherwise fall back to HTTP
+// HTTP by default; set USE_HTTPS=true and provide cert.pem/key.pem to enable TLS
 let http;
-try {
-  const sslOptions = {
-    key: fs.readFileSync('./key.pem'),
-    cert: fs.readFileSync('./cert.pem'),
-  };
-  http = createHttpsServer(sslOptions, app);
-  console.log('🔒 Running in HTTPS mode');
-} catch {
+let serverProtocol = "http";
+const useHttps = process.env.USE_HTTPS === "true";
+if (useHttps) {
+  try {
+    const sslOptions = {
+      key: fs.readFileSync("./key.pem"),
+      cert: fs.readFileSync("./cert.pem"),
+    };
+    http = createHttpsServer(sslOptions, app);
+    serverProtocol = "https";
+    console.log("🔒 Running in HTTPS mode (USE_HTTPS=true)");
+  } catch (err) {
+    console.warn("USE_HTTPS=true but cert/key missing — falling back to HTTP:", err?.message);
+    http = createHttpServer(app);
+  }
+} else {
   http = createHttpServer(app);
-  console.log('⚠️  cert/key not found — running in HTTP mode');
+  console.log("Running in HTTP mode");
 }
+// #region agent log
+try{const _lp=path.resolve(__dirname,"../../../debug-a7fb58.log");fs.appendFileSync(_lp,JSON.stringify({sessionId:"a7fb58",hypothesisId:"H3",location:"server.js:startup",message:"server protocol",data:{serverProtocol,useHttps,port:process.env.PORT||8080},timestamp:Date.now()})+"\n");}catch(_e){}
+// #endregion
 const io = new Server(http, {
   cors: {
     origin: "*",
     methods: ["GET", "POST"],
     transports: ["websocket", "polling"],
-    credentials: true
+    credentials: true,
   },
   pingTimeout: 60000,
-  pingInterval: 25000
+  pingInterval: 25000,
 });
 
 // ip detection
@@ -76,35 +94,40 @@ function getLocalIP() {
   });
 
   // return first non-internal IPv4 address or localhost as fallback
-  return addresses.length > 0 ? addresses[0] : '127.0.0.1';
+  return addresses.length > 0 ? addresses[0] : "127.0.0.1";
 }
 
 const localIP = getLocalIP();
-console.log('Using IO:', localIP);
+console.log("Using IO:", localIP);
 app.use(express.static(__dirname));
 
 // enable CORS for all routes
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', '*');
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "*");
   next();
 });
 
-// make IP address available to client
-app.get('/config', (req, res) => {
-  res.json({ serverIP: localIP });
+// make IP address available to client (HOST_LAN_IP overrides Docker bridge IP)
+app.get("/config", (req, res) => {
+  const envLan = (process.env.HOST_LAN_IP || "").trim();
+  const serverIP = envLan || localIP;
+  res.json({ serverIP, fromEnv: Boolean(envLan) });
 });
 
 const rooms = new Map();
 
 // Socket.io connection handling
-io.on('connection', (socket) => {
-  console.log('A user connected:', socket.id);
+io.on("connection", (socket) => {
+  console.log("A user connected:", socket.id);
+  // #region agent log
+  try{const _lp=path.resolve(__dirname,"../../../debug-a7fb58.log");fs.appendFileSync(_lp,JSON.stringify({sessionId:"a7fb58",hypothesisId:"H3",location:"server.js:connection",message:"socket connected",data:{socketId:socket.id,serverProtocol},timestamp:Date.now()})+"\n");}catch(_e){}
+  // #endregion
 
-  socket.on('join-room', (roomId, role) => {
+  socket.on("join-room", (roomId, role) => {
     if (!rooms.has(roomId)) {
-        rooms.set(roomId, new Map());
+      rooms.set(roomId, new Map());
     }
 
     const room = rooms.get(roomId);
@@ -113,165 +136,181 @@ io.on('connection', (socket) => {
 
     console.log(`User ${socket.id} joined room ${roomId} as ${role}`);
 
-    if (role === 'viewer') {
+    if (role === "viewer") {
       room.forEach((userData, userId) => {
-        if (userId !== socket.id && userData.role === 'host') {
-          io.to(userId).emit('viewer-connected');
+        if (userId !== socket.id && userData.role === "host") {
+          io.to(userId).emit("viewer-connected");
           console.log(`Notified host ${userId} that viewer joined`);
         }
       });
     }
 
-    const existingUsers = Array.from(room.keys()).filter(id => id !== socket.id);
-    socket.emit('existing-users', existingUsers);
+    const existingUsers = Array.from(room.keys()).filter(
+      (id) => id !== socket.id,
+    );
+    socket.emit("existing-users", existingUsers);
   });
 
-  socket.on('stream-started', (roomId, streamId) => {
-      const room = rooms.get(roomId);
-      if (room && room.has(socket.id)) {
-          const user = room.get(socket.id);
-          user.streams.add(streamId);
-          socket.to(roomId).emit('peer-stream-started', socket.id, streamId);
-      }
+  socket.on("stream-started", (roomId, streamId) => {
+    const room = rooms.get(roomId);
+    if (room && room.has(socket.id)) {
+      const user = room.get(socket.id);
+      user.streams.add(streamId);
+      socket.to(roomId).emit("peer-stream-started", socket.id, streamId);
+    }
   });
 
-  socket.on('stream-stopped', (roomId, streamId) => {
-      const room = rooms.get(roomId);
-      if (room && room.has(socket.id)) {
-          const user = room.get(socket.id);
-          user.streams.delete(streamId);
-          socket.to(roomId).emit('peer-stream-stopped', socket.id, streamId);
-      }
+  socket.on("stream-stopped", (roomId, streamId) => {
+    const room = rooms.get(roomId);
+    if (room && room.has(socket.id)) {
+      const user = room.get(socket.id);
+      user.streams.delete(streamId);
+      socket.to(roomId).emit("peer-stream-stopped", socket.id, streamId);
+    }
   });
 
-  socket.on('signal', (data) => {
+  socket.on("signal", (data) => {
     console.log(`Signal received from ${socket.id} for room ${data.room}`);
     // Extract room, then forward the rest of the signal packet (sdp or candidate) to everyone else in the room
     const { room, ...signalData } = data;
-    socket.to(room).emit('signal', signalData);
+    socket.to(room).emit("signal", signalData);
   });
 
   // list of all users in the room
-  socket.on('list-users', (roomId) => {
-      const room = rooms.get(roomId);
-      const users = [];
-      if (room) {
-          room.forEach((userData, userId) => {
-              users.push({
-                  id: userId,
-                  streams: Array.from(userData.streams)
-              });
-          });
-      }
-      socket.emit('list-users', users);
+  socket.on("list-users", (roomId) => {
+    const room = rooms.get(roomId);
+    const users = [];
+    if (room) {
+      room.forEach((userData, userId) => {
+        users.push({
+          id: userId,
+          streams: Array.from(userData.streams),
+        });
+      });
+    }
+    socket.emit("list-users", users);
   });
 
-  socket.on('console-command', (command) => {
-      switch(command) {
-          case 'people':
-              let response = '\n=== Current Rooms and Users ===\n';
-              if (rooms.size === 0) {
-                  response += 'No active rooms';
-              } else {
-                  rooms.forEach((users, roomId) => {
-                      response += `\nRoom ${roomId}:\n`;
-                      response += `Users: ${Array.from(users)}\n`;
-                      response += `Total users in room: ${users.size}\n`;
-                  });
-                  response += `\nTotal rooms: ${rooms.size}\n`;
-                  response += `Total users: ${Array.from(rooms.values()).reduce((acc, room) => acc + room.size, 0)}`;
-              }
-              socket.emit('console-response', response);
-              break;
+  socket.on("console-command", (command) => {
+    switch (command) {
+      case "people":
+        let response = "\n=== Current Rooms and Users ===\n";
+        if (rooms.size === 0) {
+          response += "No active rooms";
+        } else {
+          rooms.forEach((users, roomId) => {
+            response += `\nRoom ${roomId}:\n`;
+            response += `Users: ${Array.from(users)}\n`;
+            response += `Total users in room: ${users.size}\n`;
+          });
+          response += `\nTotal rooms: ${rooms.size}\n`;
+          response += `Total users: ${Array.from(rooms.values()).reduce((acc, room) => acc + room.size, 0)}`;
+        }
+        socket.emit("console-response", response);
+        break;
 
-          case 'clear':
-              const totalRooms = rooms.size;
-              const totalUsers = Array.from(rooms.values()).reduce((acc, room) => acc + room.size, 0);
-              
-              rooms.forEach((users, roomId) => {
-                  io.to(roomId).emit('force-disconnect', 'Server clearing all rooms');
-              });
-              
-              rooms.clear();
-              socket.emit('console-response', `Cleared ${totalRooms} rooms and disconnected ${totalUsers} users`);
-              break;
-      }
+      case "clear":
+        const totalRooms = rooms.size;
+        const totalUsers = Array.from(rooms.values()).reduce(
+          (acc, room) => acc + room.size,
+          0,
+        );
+
+        rooms.forEach((users, roomId) => {
+          io.to(roomId).emit("force-disconnect", "Server clearing all rooms");
+        });
+
+        rooms.clear();
+        socket.emit(
+          "console-response",
+          `Cleared ${totalRooms} rooms and disconnected ${totalUsers} users`,
+        );
+        break;
+    }
   });
 
   // handle disconnection
-  socket.on('disconnect', () => {
-      rooms.forEach((users, roomId) => {
-          if (users.has(socket.id)) {
-              const user = users.get(socket.id);
-              // notify others about all streams that were active
-              user.streams.forEach(streamId => {
-                  socket.to(roomId).emit('peer-stream-stopped', socket.id, streamId);
-              });
-              // notify viewers when the host disconnects
-              if (user.role === 'host') {
-                  socket.to(roomId).emit('host-disconnected');
-              }
-              users.delete(socket.id);
-              if (users.size === 0) {
-                  rooms.delete(roomId);
-              }
-              socket.to(roomId).emit('user-disconnected', socket.id);
-          }
-      });
-      console.log('User disconnected:', socket.id);
+  socket.on("disconnect", () => {
+    rooms.forEach((users, roomId) => {
+      if (users.has(socket.id)) {
+        const user = users.get(socket.id);
+        // notify others about all streams that were active
+        user.streams.forEach((streamId) => {
+          socket.to(roomId).emit("peer-stream-stopped", socket.id, streamId);
+        });
+        // notify viewers when the host disconnects
+        if (user.role === "host") {
+          socket.to(roomId).emit("host-disconnected");
+        }
+        users.delete(socket.id);
+        if (users.size === 0) {
+          rooms.delete(roomId);
+        }
+        socket.to(roomId).emit("user-disconnected", socket.id);
+      }
+    });
+    console.log("User disconnected:", socket.id);
   });
 
-  socket.on('force-disconnect', () => {
-      socket.disconnect(true);
+  socket.on("force-disconnect", () => {
+    socket.disconnect(true);
   });
 });
 
 // console commands for server management
 const rl = readline.createInterface({
   input: process.stdin,
-  output: process.stdout
+  output: process.stdout,
 });
 
-rl.on('line', (input) => {
-  switch(input.toLowerCase()) {
-      case 'people':
-          console.log('\n=== Current Rooms and Users ===');
-          if (rooms.size === 0) {
-              console.log('No active rooms');
-          } else {
-              rooms.forEach((users, roomId) => {
-                  console.log(`\nRoom ${roomId}:`);
-                  console.log('Users:', Array.from(users));
-                  console.log('Total users in room:', users.size);
-              });
-              console.log('\nTotal rooms:', rooms.size);
-              console.log('Total users:', Array.from(rooms.values()).reduce((acc, room) => acc + room.size, 0));
-          }
-          break;
+rl.on("line", (input) => {
+  switch (input.toLowerCase()) {
+    case "people":
+      console.log("\n=== Current Rooms and Users ===");
+      if (rooms.size === 0) {
+        console.log("No active rooms");
+      } else {
+        rooms.forEach((users, roomId) => {
+          console.log(`\nRoom ${roomId}:`);
+          console.log("Users:", Array.from(users));
+          console.log("Total users in room:", users.size);
+        });
+        console.log("\nTotal rooms:", rooms.size);
+        console.log(
+          "Total users:",
+          Array.from(rooms.values()).reduce((acc, room) => acc + room.size, 0),
+        );
+      }
+      break;
 
-      case 'clear':
-          const totalRooms = rooms.size;
-          const totalUsers = Array.from(rooms.values()).reduce((acc, room) => acc + room.size, 0);
-          
-          // notify all users in all rooms that they're being disconnected
-          rooms.forEach((users, roomId) => {
-              io.to(roomId).emit('force-disconnect', 'Server clearing all rooms');
-          });
-          
-          // clear all rooms
-          rooms.clear();
-          console.log(`Cleared ${totalRooms} rooms and disconnected ${totalUsers} users`);
-          break;
+    case "clear":
+      const totalRooms = rooms.size;
+      const totalUsers = Array.from(rooms.values()).reduce(
+        (acc, room) => acc + room.size,
+        0,
+      );
 
-      case 'help':
-          console.log('\nAvailable commands:');
-          console.log('people - Show all rooms and users');
-          console.log('clear  - Disconnect all users and clear all rooms');
-          console.log('help   - Show this help message');
-          break;
+      // notify all users in all rooms that they're being disconnected
+      rooms.forEach((users, roomId) => {
+        io.to(roomId).emit("force-disconnect", "Server clearing all rooms");
+      });
 
-      default:
-          console.log('Unknown command. Type "help" for available commands');
+      // clear all rooms
+      rooms.clear();
+      console.log(
+        `Cleared ${totalRooms} rooms and disconnected ${totalUsers} users`,
+      );
+      break;
+
+    case "help":
+      console.log("\nAvailable commands:");
+      console.log("people - Show all rooms and users");
+      console.log("clear  - Disconnect all users and clear all rooms");
+      console.log("help   - Show this help message");
+      break;
+
+    default:
+      console.log('Unknown command. Type "help" for available commands');
   }
 });
 
@@ -279,9 +318,12 @@ const port = process.env.PORT || 8080;
 
 async function clearEmotionHistory(sessionId) {
   try {
-    await fetch(`${EMOTION_SERVICE_URL}/session/${encodeURIComponent(String(sessionId))}/history`, {
-      method: "DELETE",
-    });
+    await fetch(
+      `${EMOTION_SERVICE_URL}/session/${encodeURIComponent(String(sessionId))}/history`,
+      {
+        method: "DELETE",
+      },
+    );
   } catch {
     /* Python emotion service is optional at runtime */
   }
@@ -291,7 +333,9 @@ const foodStorage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, foodUploadsDir),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname || "").toLowerCase();
-    const safeExt = [".jpg", ".jpeg", ".png", ".webp", ".gif"].includes(ext) ? ext : ".jpg";
+    const safeExt = [".jpg", ".jpeg", ".png", ".webp", ".gif"].includes(ext)
+      ? ext
+      : ".jpg";
     cb(null, `food-${req.params.foodId}-${Date.now()}${safeExt}`);
   },
 });
@@ -334,8 +378,10 @@ const kioskStorage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, kiosksUploadsDir),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname || "").toLowerCase();
-    const safeExt = [".jpg", ".jpeg", ".png", ".webp", ".gif"].includes(ext) ? ext : ".jpg";
-    cb(null, `kiosk-${req.params.kioskId || 'new'}-${Date.now()}${safeExt}`);
+    const safeExt = [".jpg", ".jpeg", ".png", ".webp", ".gif"].includes(ext)
+      ? ext
+      : ".jpg";
+    cb(null, `kiosk-${req.params.kioskId || "new"}-${Date.now()}${safeExt}`);
   },
 });
 
@@ -356,8 +402,10 @@ const participantStorage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, participantsUploadsDir),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname || "").toLowerCase();
-    const safeExt = [".jpg", ".jpeg", ".png", ".webp", ".gif"].includes(ext) ? ext : ".jpg";
-    cb(null, `participant-${req.params.id || 'new'}-${Date.now()}${safeExt}`);
+    const safeExt = [".jpg", ".jpeg", ".png", ".webp", ".gif"].includes(ext)
+      ? ext
+      : ".jpg";
+    cb(null, `participant-${req.params.id || "new"}-${Date.now()}${safeExt}`);
   },
 });
 
@@ -386,7 +434,12 @@ async function start() {
     const d = v instanceof Date ? v : new Date(v);
     return Number.isNaN(d.getTime()) ? null : d.toISOString();
   }
-  const allowedSessionStatuses = new Set(["pending", "active", "completed", "cancelled"]);
+  const allowedSessionStatuses = new Set([
+    "pending",
+    "active",
+    "completed",
+    "cancelled",
+  ]);
 
   function agentIdForKioskId(kioskId) {
     if (kioskId == null || kioskId === "") {
@@ -398,9 +451,23 @@ async function start() {
     return `kiosk-${String(numeric).padStart(2, "0")}`;
   }
 
-  async function sendCentralCommand(command, { kioskAgentId, sessionId, foodName }) {
+  async function sendCentralCommand(
+    command,
+    { kioskAgentId, sessionId, foodName, webKiosk = false },
+  ) {
+    if (WEB_KIOSK_MODE || webKiosk) {
+      return {
+        sent: false,
+        skipped: true,
+        reason: "Web kiosk mode — browser handles camera capture.",
+      };
+    }
     if (!kioskAgentId) {
-      return { sent: false, skipped: true, reason: "No kiosk agent id configured." };
+      return {
+        sent: false,
+        skipped: true,
+        reason: "No kiosk agent id configured.",
+      };
     }
 
     const endpoint = command === "start" ? "start" : "stop";
@@ -413,15 +480,22 @@ async function start() {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
     try {
-      const response = await fetch(`${CENTRAL_SERVER_URL}/api/commands/${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
+      const response = await fetch(
+        `${CENTRAL_SERVER_URL}/api/commands/${endpoint}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        },
+      );
       const json = await response.json().catch(() => null);
       if (!response.ok) {
-        throw new Error(json?.detail || json?.error || `central-server HTTP ${response.status}`);
+        throw new Error(
+          json?.detail ||
+            json?.error ||
+            `central-server HTTP ${response.status}`,
+        );
       }
       return { sent: true, skipped: false, response: json };
     } finally {
@@ -441,7 +515,9 @@ async function start() {
       return next();
     } catch (err) {
       console.error("prepareSessionFrameUpload:", err);
-      return res.status(500).json({ ok: false, error: "Could not prepare upload directory." });
+      return res
+        .status(500)
+        .json({ ok: false, error: "Could not prepare upload directory." });
     }
   }
 
@@ -460,7 +536,9 @@ async function start() {
     const { email, password } = req.body ?? {};
 
     if (!email || !password) {
-      return res.status(400).json({ ok: false, error: "Email and password are required." });
+      return res
+        .status(400)
+        .json({ ok: false, error: "Email and password are required." });
     }
 
     try {
@@ -470,11 +548,13 @@ async function start() {
         FROM users
         WHERE email = ?
       `,
-        [email]
+        [email],
       );
 
       if (rows.length === 0) {
-        return res.status(401).json({ ok: false, error: "Invalid email or password." });
+        return res
+          .status(401)
+          .json({ ok: false, error: "Invalid email or password." });
       }
 
       const user = rows[0];
@@ -491,17 +571,19 @@ async function start() {
         passwordOk = true;
         try {
           const newHash = await bcrypt.hash(password, 10);
-          await pool.query("UPDATE users SET password_hash = ? WHERE user_id = ?", [
-            newHash,
-            user.user_id,
-          ]);
+          await pool.query(
+            "UPDATE users SET password_hash = ? WHERE user_id = ?",
+            [newHash, user.user_id],
+          );
         } catch (migrateErr) {
           console.error("Password hash migration failed:", migrateErr);
         }
       }
 
       if (!passwordOk) {
-        return res.status(401).json({ ok: false, error: "Invalid email or password." });
+        return res
+          .status(401)
+          .json({ ok: false, error: "Invalid email or password." });
       }
 
       return res.json({
@@ -526,7 +608,7 @@ async function start() {
         SELECT participant_id, name, tester_label, kiosk_id, contact_number, gcash_number, age, gender, photo_url, created_at
         FROM participants
         ORDER BY created_at DESC, participant_id DESC
-      `
+      `,
       );
       return res.json({
         ok: true,
@@ -535,7 +617,8 @@ async function start() {
           name: r.name == null ? null : String(r.name),
           testerLabel: r.tester_label == null ? null : String(r.tester_label),
           kioskId: r.kiosk_id == null ? null : Number(r.kiosk_id),
-          contactNumber: r.contact_number == null ? null : String(r.contact_number),
+          contactNumber:
+            r.contact_number == null ? null : String(r.contact_number),
           gcashNumber: r.gcash_number == null ? null : String(r.gcash_number),
           age: r.age == null ? null : Number(r.age),
           gender: r.gender == null ? null : String(r.gender),
@@ -552,36 +635,53 @@ async function start() {
   app.post("/api/participants", async (req, res) => {
     const rawName = req.body?.name ?? req.body?.testerLabel;
     const name = typeof rawName === "string" ? rawName.trim() : "";
-    const rawTesterLabel = req.body?.testerLabel ?? req.body?.tester_label ?? req.body?.name;
-    const testerLabel = typeof rawTesterLabel === "string" ? rawTesterLabel.trim() : null;
+    const rawTesterLabel =
+      req.body?.testerLabel ?? req.body?.tester_label ?? req.body?.name;
+    const testerLabel =
+      typeof rawTesterLabel === "string" ? rawTesterLabel.trim() : null;
     const kioskIdRaw = req.body?.kioskId ?? req.body?.kiosk_id;
     const ageRaw = req.body?.age;
     const genderRaw = req.body?.gender;
-    const contactNumberRaw = req.body?.contactNumber ?? req.body?.contact_number;
+    const contactNumberRaw =
+      req.body?.contactNumber ?? req.body?.contact_number;
     const gcashNumberRaw = req.body?.gcashNumber ?? req.body?.gcash_number;
 
     if (!name) {
       return res.status(400).json({ ok: false, error: "name is required." });
     }
 
-    const kioskId = kioskIdRaw == null || kioskIdRaw === "" ? null : Number.parseInt(String(kioskIdRaw), 10);
+    const kioskId =
+      kioskIdRaw == null || kioskIdRaw === ""
+        ? null
+        : Number.parseInt(String(kioskIdRaw), 10);
     const age =
       ageRaw == null || ageRaw === ""
         ? null
         : Number.isFinite(Number(ageRaw))
-        ? Math.round(Number(ageRaw))
-        : null;
+          ? Math.round(Number(ageRaw))
+          : null;
     if (age != null && (age < 0 || age > 120)) {
-      return res.status(400).json({ ok: false, error: "age must be between 0 and 120." });
+      return res
+        .status(400)
+        .json({ ok: false, error: "age must be between 0 and 120." });
     }
     const allowedGenders = new Set(["male", "female", "other"]);
-    const gender = genderRaw == null || genderRaw === "" ? null : String(genderRaw);
+    const gender =
+      genderRaw == null || genderRaw === "" ? null : String(genderRaw);
     if (gender != null && !allowedGenders.has(gender)) {
-      return res.status(400).json({ ok: false, error: "gender must be male, female, or other." });
+      return res
+        .status(400)
+        .json({ ok: false, error: "gender must be male, female, or other." });
     }
 
-    const contactNumber = contactNumberRaw == null || contactNumberRaw === "" ? null : String(contactNumberRaw);
-    const gcashNumber = gcashNumberRaw == null || gcashNumberRaw === "" ? null : String(gcashNumberRaw);
+    const contactNumber =
+      contactNumberRaw == null || contactNumberRaw === ""
+        ? null
+        : String(contactNumberRaw);
+    const gcashNumber =
+      gcashNumberRaw == null || gcashNumberRaw === ""
+        ? null
+        : String(gcashNumberRaw);
 
     try {
       // If a participant with the same name exists, update fields; otherwise insert.
@@ -592,7 +692,7 @@ async function start() {
         WHERE name = ? OR tester_label = ?
         LIMIT 1
         `,
-        [name, testerLabel]
+        [name, testerLabel],
       );
 
       if (existing) {
@@ -607,24 +707,42 @@ async function start() {
               gcash_number = COALESCE(?, gcash_number)
           WHERE participant_id = ?
         `,
-          [kioskId, testerLabel, age, gender, contactNumber, gcashNumber, Number(existing.participant_id)]
+          [
+            kioskId,
+            testerLabel,
+            age,
+            gender,
+            contactNumber,
+            gcashNumber,
+            Number(existing.participant_id),
+          ],
         );
         const [[updated]] = await pool.query(
           `SELECT participant_id, name, tester_label, kiosk_id, contact_number, gcash_number, age, gender, photo_url, created_at FROM participants WHERE participant_id = ? LIMIT 1`,
-          [Number(existing.participant_id)]
+          [Number(existing.participant_id)],
         );
         return res.json({
           ok: true,
           participant: {
             id: Number(updated.participant_id),
             name: updated.name == null ? null : String(updated.name),
-            testerLabel: updated.tester_label == null ? null : String(updated.tester_label),
+            testerLabel:
+              updated.tester_label == null
+                ? null
+                : String(updated.tester_label),
             kioskId: updated.kiosk_id == null ? null : Number(updated.kiosk_id),
-            contactNumber: updated.contact_number == null ? null : String(updated.contact_number),
-            gcashNumber: updated.gcash_number == null ? null : String(updated.gcash_number),
+            contactNumber:
+              updated.contact_number == null
+                ? null
+                : String(updated.contact_number),
+            gcashNumber:
+              updated.gcash_number == null
+                ? null
+                : String(updated.gcash_number),
             age: updated.age == null ? null : Number(updated.age),
             gender: updated.gender == null ? null : String(updated.gender),
-            photoUrl: updated.photo_url == null ? null : String(updated.photo_url),
+            photoUrl:
+              updated.photo_url == null ? null : String(updated.photo_url),
             createdAt: toIsoOrNull(updated.created_at),
           },
           reused: true,
@@ -633,21 +751,28 @@ async function start() {
 
       const [result] = await pool.query(
         `INSERT INTO participants (name, tester_label, kiosk_id, contact_number, gcash_number, age, gender) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [name, testerLabel, kioskId, contactNumber, gcashNumber, age, gender]
+        [name, testerLabel, kioskId, contactNumber, gcashNumber, age, gender],
       );
-      const [[inserted]] = await pool.query(`SELECT participant_id, name, tester_label, kiosk_id, contact_number, gcash_number, age, gender, photo_url, created_at FROM participants WHERE participant_id = ? LIMIT 1`, [Number(result.insertId)]);
+      const [[inserted]] = await pool.query(
+        `SELECT participant_id, name, tester_label, kiosk_id, contact_number, gcash_number, age, gender, photo_url, created_at FROM participants WHERE participant_id = ? LIMIT 1`,
+        [Number(result.insertId)],
+      );
       return res.json({
         ok: true,
         participant: {
           id: Number(result.insertId),
           name,
-          testerLabel: inserted.tester_label == null ? null : String(inserted.tester_label),
+          testerLabel:
+            inserted.tester_label == null
+              ? null
+              : String(inserted.tester_label),
           kioskId: kioskId == null ? null : Number(kioskId),
           contactNumber,
           gcashNumber,
           age,
           gender,
-          photoUrl: inserted.photo_url == null ? null : String(inserted.photo_url),
+          photoUrl:
+            inserted.photo_url == null ? null : String(inserted.photo_url),
           createdAt: toIsoOrNull(inserted.created_at),
         },
         reused: false,
@@ -658,6 +783,36 @@ async function start() {
     }
   });
 
+  // Upload participant photo
+  app.post(
+    "/api/participants/:id/photo",
+    uploadParticipantPhoto,
+    async (req, res) => {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id))
+        return res.status(400).json({ ok: false, error: "Invalid id." });
+      if (!req.file)
+        return res
+          .status(400)
+          .json({ ok: false, error: "Photo file is required (field: photo)." });
+      try {
+        const imageUrl = `/uploads/participants/${req.file.filename}`;
+        const [result] = await pool.query(
+          `UPDATE participants SET photo_url = ? WHERE participant_id = ?`,
+          [imageUrl, id],
+        );
+        if (result.affectedRows === 0)
+          return res
+            .status(404)
+            .json({ ok: false, error: "Participant not found." });
+        return res.json({ ok: true, photoUrl: imageUrl });
+      } catch (err) {
+        console.error("POST /api/participants/:id/photo error:", err);
+        return res.status(500).json({ ok: false, error: "Server error." });
+      }
+    },
+  );
+
   app.delete("/api/participants/:id", async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) {
@@ -666,30 +821,16 @@ async function start() {
     try {
       const [result] = await pool.query(
         `DELETE FROM participants WHERE participant_id = ?`,
-        [id]
+        [id],
       );
       if (result.affectedRows === 0) {
-        return res.status(404).json({ ok: false, error: "Participant not found." });
+        return res
+          .status(404)
+          .json({ ok: false, error: "Participant not found." });
       }
       return res.json({ ok: true });
     } catch (err) {
       console.error("DELETE /api/participants error:", err);
-      return res.status(500).json({ ok: false, error: "Server error." });
-    }
-  });
-
-  // Upload participant photo
-  app.post("/api/participants/:id/photo", uploadParticipantPhoto, async (req, res) => {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "Invalid id." });
-    if (!req.file) return res.status(400).json({ ok: false, error: "Photo file is required (field: photo)." });
-    try {
-      const imageUrl = `/uploads/participants/${req.file.filename}`;
-      const [result] = await pool.query(`UPDATE participants SET photo_url = ? WHERE participant_id = ?`, [imageUrl, id]);
-      if (result.affectedRows === 0) return res.status(404).json({ ok: false, error: "Participant not found." });
-      return res.json({ ok: true, photoUrl: imageUrl });
-    } catch (err) {
-      console.error("POST /api/participants/:id/photo error:", err);
       return res.status(500).json({ ok: false, error: "Server error." });
     }
   });
@@ -704,40 +845,76 @@ async function start() {
     const kioskIdRaw = req.body?.kioskId ?? req.body?.kiosk_id;
     const ageRaw = req.body?.age;
     const genderRaw = req.body?.gender;
-    const contactNumberRaw = req.body?.contactNumber ?? req.body?.contact_number;
+    const contactNumberRaw =
+      req.body?.contactNumber ?? req.body?.contact_number;
     const gcashNumberRaw = req.body?.gcashNumber ?? req.body?.gcash_number;
 
     if (!name) {
       return res.status(400).json({ ok: false, error: "name is required." });
     }
 
-    const kioskId = kioskIdRaw == null || kioskIdRaw === "" ? null : Number.parseInt(String(kioskIdRaw), 10);
+    const kioskId =
+      kioskIdRaw == null || kioskIdRaw === ""
+        ? null
+        : Number.parseInt(String(kioskIdRaw), 10);
     const age =
       ageRaw == null || ageRaw === ""
         ? null
         : Number.isFinite(Number(ageRaw))
-        ? Math.round(Number(ageRaw))
-        : null;
+          ? Math.round(Number(ageRaw))
+          : null;
     const allowedGenders = new Set(["male", "female", "other"]);
-    const gender = genderRaw == null || genderRaw === "" ? null : String(genderRaw);
+    const gender =
+      genderRaw == null || genderRaw === "" ? null : String(genderRaw);
     if (gender != null && !allowedGenders.has(gender)) {
-      return res.status(400).json({ ok: false, error: "gender must be male, female, or other." });
+      return res
+        .status(400)
+        .json({ ok: false, error: "gender must be male, female, or other." });
     }
 
-    const contactNumber = contactNumberRaw == null || contactNumberRaw === "" ? null : String(contactNumberRaw);
-    const gcashNumber = gcashNumberRaw == null || gcashNumberRaw === "" ? null : String(gcashNumberRaw);
+    const contactNumber =
+      contactNumberRaw == null || contactNumberRaw === ""
+        ? null
+        : String(contactNumberRaw);
+    const gcashNumber =
+      gcashNumberRaw == null || gcashNumberRaw === ""
+        ? null
+        : String(gcashNumberRaw);
 
     try {
       const [result] = await pool.query(
         `UPDATE participants
         SET name = ?, tester_label = ?, kiosk_id = ?, contact_number = ?, gcash_number = ?, age = ?, gender = ?
         WHERE participant_id = ?`,
-        [name, testerLabel, kioskId, contactNumber, gcashNumber, age, gender, id]
+        [
+          name,
+          testerLabel,
+          kioskId,
+          contactNumber,
+          gcashNumber,
+          age,
+          gender,
+          id,
+        ],
       );
       if (result.affectedRows === 0) {
-        return res.status(404).json({ ok: false, error: "Participant not found." });
+        return res
+          .status(404)
+          .json({ ok: false, error: "Participant not found." });
       }
-      return res.json({ ok: true, participant: { id, name, testerLabel, kioskId, contactNumber, gcashNumber, age, gender } });
+      return res.json({
+        ok: true,
+        participant: {
+          id,
+          name,
+          testerLabel,
+          kioskId,
+          contactNumber,
+          gcashNumber,
+          age,
+          gender,
+        },
+      });
     } catch (err) {
       console.error("PUT /api/participants error:", err);
       return res.status(500).json({ ok: false, error: "Server error." });
@@ -767,7 +944,7 @@ async function start() {
         LEFT JOIN sessions s ON s.food_id = fp.food_id
         GROUP BY fp.food_id, fp.name, fp.category, fp.image_url, fp.created_at
         ORDER BY fp.created_at DESC, fp.food_id DESC
-      `
+      `,
       );
 
       const foods = rows.map((r) => ({
@@ -778,7 +955,8 @@ async function start() {
         createdAt: toIsoOrNull(r.created_at),
         sessionsTotal: Number(r.sessions_total ?? 0),
         sessionsActive: Number(r.sessions_active ?? 0),
-        avgDurationMin: r.avg_duration_min == null ? null : Number(r.avg_duration_min),
+        avgDurationMin:
+          r.avg_duration_min == null ? null : Number(r.avg_duration_min),
       }));
 
       return res.json({ ok: true, foods });
@@ -795,7 +973,9 @@ async function start() {
     const trimmedCategory = typeof category === "string" ? category.trim() : "";
 
     if (!trimmedName || !trimmedCategory) {
-      return res.status(400).json({ ok: false, error: "name and category are required." });
+      return res
+        .status(400)
+        .json({ ok: false, error: "name and category are required." });
     }
 
     try {
@@ -804,7 +984,7 @@ async function start() {
         INSERT INTO food_products (name, category)
         VALUES (?, ?)
       `,
-        [trimmedName, trimmedCategory]
+        [trimmedName, trimmedCategory],
       );
 
       return res.json({
@@ -822,40 +1002,57 @@ async function start() {
     }
   });
 
-  app.post("/api/foods/:foodId/image", uploadFoodImage.single("image"), async (req, res) => {
-    const foodId = Number.parseInt(req.params.foodId, 10);
-    if (!Number.isFinite(foodId)) {
-      return res.status(400).json({ ok: false, error: "Invalid foodId." });
-    }
-    if (!req.file) {
-      return res.status(400).json({ ok: false, error: "Image file is required." });
-    }
+  app.post(
+    "/api/foods/:foodId/image",
+    uploadFoodImage.single("image"),
+    async (req, res) => {
+      const foodId = Number.parseInt(req.params.foodId, 10);
+      if (!Number.isFinite(foodId)) {
+        return res.status(400).json({ ok: false, error: "Invalid foodId." });
+      }
+      if (!req.file) {
+        return res
+          .status(400)
+          .json({ ok: false, error: "Image file is required." });
+      }
 
-    try {
-      const imageUrl = `/uploads/foods/${req.file.filename}`;
-      const [result] = await pool.query(
-        `
+      try {
+        const imageUrl = `/uploads/foods/${req.file.filename}`;
+        const [result] = await pool.query(
+          `
         UPDATE food_products
         SET image_url = ?
         WHERE food_id = ?
       `,
-        [imageUrl, foodId]
-      );
-      if (result.affectedRows === 0) {
-        return res.status(404).json({ ok: false, error: "Food not found." });
+          [imageUrl, foodId],
+        );
+        if (result.affectedRows === 0) {
+          return res.status(404).json({ ok: false, error: "Food not found." });
+        }
+        return res.json({ ok: true, imageUrl });
+      } catch (err) {
+        console.error("POST /api/foods/:foodId/image error:", err);
+        return res.status(500).json({ ok: false, error: "Server error." });
       }
-      return res.json({ ok: true, imageUrl });
-    } catch (err) {
-      console.error("POST /api/foods/:foodId/image error:", err);
-      return res.status(500).json({ ok: false, error: "Server error." });
-    }
-  });
+    },
+  );
 
   // Kiosk endpoints
   app.get("/api/kiosks", async (_req, res) => {
     try {
-      const [rows] = await pool.query(`SELECT kiosk_id, name, location, image_url, created_at FROM kiosk ORDER BY created_at DESC, kiosk_id DESC`);
-      return res.json({ ok: true, kiosks: rows.map((r) => ({ id: Number(r.kiosk_id), name: r.name, location: r.location, imageUrl: r.image_url == null ? null : String(r.image_url), createdAt: toIsoOrNull(r.created_at) })) });
+      const [rows] = await pool.query(
+        `SELECT kiosk_id, name, location, image_url, created_at FROM kiosk ORDER BY created_at DESC, kiosk_id DESC`,
+      );
+      return res.json({
+        ok: true,
+        kiosks: rows.map((r) => ({
+          id: Number(r.kiosk_id),
+          name: r.name,
+          location: r.location,
+          imageUrl: r.image_url == null ? null : String(r.image_url),
+          createdAt: toIsoOrNull(r.created_at),
+        })),
+      });
     } catch (err) {
       console.error("GET /api/kiosks error:", err);
       return res.status(500).json({ ok: false, error: "Server error." });
@@ -866,11 +1063,24 @@ async function start() {
     const nameRaw = req.body?.name;
     const locationRaw = req.body?.location;
     const name = typeof nameRaw === "string" ? nameRaw.trim() : "";
-    const location = typeof locationRaw === "string" ? locationRaw.trim() : null;
-    if (!name) return res.status(400).json({ ok: false, error: "name is required." });
+    const location =
+      typeof locationRaw === "string" ? locationRaw.trim() : null;
+    if (!name)
+      return res.status(400).json({ ok: false, error: "name is required." });
     try {
-      const [result] = await pool.query(`INSERT INTO kiosk (name, location) VALUES (?, ?)`, [name, location]);
-      return res.json({ ok: true, kiosk: { id: Number(result.insertId), name, location, createdAt: new Date().toISOString() } });
+      const [result] = await pool.query(
+        `INSERT INTO kiosk (name, location) VALUES (?, ?)`,
+        [name, location],
+      );
+      return res.json({
+        ok: true,
+        kiosk: {
+          id: Number(result.insertId),
+          name,
+          location,
+          createdAt: new Date().toISOString(),
+        },
+      });
     } catch (err) {
       console.error("POST /api/kiosks error:", err);
       return res.status(500).json({ ok: false, error: "Server error." });
@@ -879,12 +1089,20 @@ async function start() {
 
   app.post("/api/kiosks/:kioskId/image", uploadKioskImage, async (req, res) => {
     const kioskId = Number.parseInt(req.params.kioskId, 10);
-    if (!Number.isFinite(kioskId)) return res.status(400).json({ ok: false, error: "Invalid kioskId." });
-    if (!req.file) return res.status(400).json({ ok: false, error: "Image file is required (field: image)." });
+    if (!Number.isFinite(kioskId))
+      return res.status(400).json({ ok: false, error: "Invalid kioskId." });
+    if (!req.file)
+      return res
+        .status(400)
+        .json({ ok: false, error: "Image file is required (field: image)." });
     try {
       const imageUrl = `/uploads/kiosks/${req.file.filename}`;
-      const [result] = await pool.query(`UPDATE kiosk SET image_url = ? WHERE kiosk_id = ?`, [imageUrl, kioskId]);
-      if (result.affectedRows === 0) return res.status(404).json({ ok: false, error: "Kiosk not found." });
+      const [result] = await pool.query(
+        `UPDATE kiosk SET image_url = ? WHERE kiosk_id = ?`,
+        [imageUrl, kioskId],
+      );
+      if (result.affectedRows === 0)
+        return res.status(404).json({ ok: false, error: "Kiosk not found." });
       return res.json({ ok: true, imageUrl });
     } catch (err) {
       console.error("POST /api/kiosks/:kioskId/image error:", err);
@@ -904,8 +1122,14 @@ async function start() {
       conn = await pool.getConnection();
       await conn.beginTransaction();
 
-      const [sessionDelete] = await conn.query(`DELETE FROM sessions WHERE food_id = ?`, [foodId]);
-      const [result] = await conn.query(`DELETE FROM food_products WHERE food_id = ?`, [foodId]);
+      const [sessionDelete] = await conn.query(
+        `DELETE FROM sessions WHERE food_id = ?`,
+        [foodId],
+      );
+      const [result] = await conn.query(
+        `DELETE FROM food_products WHERE food_id = ?`,
+        [foodId],
+      );
       if (result.affectedRows === 0) {
         await conn.rollback();
         return res.status(404).json({ ok: false, error: "Food not found." });
@@ -949,7 +1173,7 @@ async function start() {
         GROUP BY s.session_id, s.user_id, s.start_time, s.end_time, s.status
         ORDER BY COALESCE(s.start_time, s.created_at) DESC, s.session_id DESC
       `,
-        [foodId]
+        [foodId],
       );
 
       const sessions = rows.map((r) => ({
@@ -959,7 +1183,8 @@ async function start() {
         endTime: toIsoOrNull(r.end_time),
         status: r.status, // 'pending' | 'active' | 'completed' | 'cancelled'
         frames: Number(r.frames ?? 0),
-        meanConfidence: r.mean_confidence == null ? null : Number(r.mean_confidence),
+        meanConfidence:
+          r.mean_confidence == null ? null : Number(r.mean_confidence),
       }));
 
       return res.json({ ok: true, sessions });
@@ -983,7 +1208,7 @@ async function start() {
         FROM sessions
         WHERE food_id = ?
       `,
-        [foodId]
+        [foodId],
       );
 
       const [[confidenceRow]] = await pool.query(
@@ -993,7 +1218,7 @@ async function start() {
         INNER JOIN sessions s ON s.session_id = fl.session_id
         WHERE s.food_id = ? AND fl.confidence_score IS NOT NULL
       `,
-        [foodId]
+        [foodId],
       );
 
       const [[hedonicRow]] = await pool.query(
@@ -1003,7 +1228,7 @@ async function start() {
         INNER JOIN sessions s ON s.session_id = fl.session_id
         WHERE s.food_id = ? AND fl.hedonic_score IS NOT NULL
       `,
-        [foodId]
+        [foodId],
       );
 
       const [[distRow]] = await pool.query(
@@ -1017,19 +1242,33 @@ async function start() {
         INNER JOIN sessions s ON s.session_id = fl.session_id
         WHERE s.food_id = ? AND fl.hedonic_score IS NOT NULL
       `,
-        [foodId]
+        [foodId],
       );
 
       const totalCount = Number(distRow?.total_count ?? 0);
-      const pct = (n) => (totalCount === 0 ? 0 : Math.round((Number(n ?? 0) / totalCount) * 100));
+      const pct = (n) =>
+        totalCount === 0 ? 0 : Math.round((Number(n ?? 0) / totalCount) * 100);
       const distribution = [
-        { label: "Positive (7-9)", value: pct(distRow?.positive_count), color: "#22c55e" },
-        { label: "Neutral (5-6)", value: pct(distRow?.neutral_count), color: "#eab308" },
-        { label: "Negative (1-4)", value: pct(distRow?.negative_count), color: "#ef4444" },
+        {
+          label: "Positive (7-9)",
+          value: pct(distRow?.positive_count),
+          color: "#22c55e",
+        },
+        {
+          label: "Neutral (5-6)",
+          value: pct(distRow?.neutral_count),
+          color: "#eab308",
+        },
+        {
+          label: "Negative (1-4)",
+          value: pct(distRow?.negative_count),
+          color: "#ef4444",
+        },
       ];
       // Fix rounding drift to keep a stable 100% in the UI.
       const drift = 100 - distribution.reduce((a, b) => a + b.value, 0);
-      if (drift !== 0) distribution[0].value = Math.max(0, distribution[0].value + drift);
+      if (drift !== 0)
+        distribution[0].value = Math.max(0, distribution[0].value + drift);
 
       const [[radarRow]] = await pool.query(
         `
@@ -1043,21 +1282,43 @@ async function start() {
         INNER JOIN sessions s ON s.session_id = sr.session_id
         WHERE s.food_id = ?
       `,
-        [foodId]
+        [foodId],
       );
 
       const to9FromNormalized = (n) => (n == null ? null : Number(n) * 8 + 1);
       const radar = [
-        { label: "Color", score: radarRow?.color_rating == null ? 0 : Number(radarRow.color_rating) },
+        {
+          label: "Color",
+          score:
+            radarRow?.color_rating == null ? 0 : Number(radarRow.color_rating),
+        },
         {
           label: "Flavor/Aroma",
-          score: radarRow?.flavor_aroma_rating == null ? 0 : Number(radarRow.flavor_aroma_rating),
+          score:
+            radarRow?.flavor_aroma_rating == null
+              ? 0
+              : Number(radarRow.flavor_aroma_rating),
         },
-        { label: "Salt/Sweet", score: radarRow?.salt_sweet_rating == null ? 0 : Number(radarRow.salt_sweet_rating) },
-        { label: "Texture", score: radarRow?.texture_rating == null ? 0 : Number(radarRow.texture_rating) },
+        {
+          label: "Salt/Sweet",
+          score:
+            radarRow?.salt_sweet_rating == null
+              ? 0
+              : Number(radarRow.salt_sweet_rating),
+        },
+        {
+          label: "Texture",
+          score:
+            radarRow?.texture_rating == null
+              ? 0
+              : Number(radarRow.texture_rating),
+        },
         {
           label: "Overall",
-          score: radarRow?.final_overall_rating == null ? 0 : Number(radarRow.final_overall_rating),
+          score:
+            radarRow?.final_overall_rating == null
+              ? 0
+              : Number(radarRow.final_overall_rating),
         },
       ];
 
@@ -1084,18 +1345,35 @@ async function start() {
           GROUP BY bucket
           ORDER BY bucket
         `,
-          [foodId]
+          [foodId],
         );
 
-        const byBucket = new Map(timelineRows.map((r) => [Number(r.bucket), Number(r.avg_score)]));
+        const byBucket = new Map(
+          timelineRows.map((r) => [Number(r.bucket), Number(r.avg_score)]),
+        );
         timeline = [
-          { label: "First taste", score: to9FromNormalized(byBucket.get(1)) ?? 0, sub: "Early" },
-          { label: "Mid", score: to9FromNormalized(byBucket.get(2)) ?? 0, sub: "Middle" },
-          { label: "Aftertaste", score: to9FromNormalized(byBucket.get(3)) ?? 0, sub: "Late" },
+          {
+            label: "First taste",
+            score: to9FromNormalized(byBucket.get(1)) ?? 0,
+            sub: "Early",
+          },
+          {
+            label: "Mid",
+            score: to9FromNormalized(byBucket.get(2)) ?? 0,
+            sub: "Middle",
+          },
+          {
+            label: "Aftertaste",
+            score: to9FromNormalized(byBucket.get(3)) ?? 0,
+            sub: "Late",
+          },
         ];
       } catch (err) {
         // If NTILE/WITH isn't supported, keep timeline as zeros.
-        console.warn("Timeline query not supported, using zeros:", err?.message ?? err);
+        console.warn(
+          "Timeline query not supported, using zeros:",
+          err?.message || err,
+        );
       }
 
       const [ageRows] = await pool.query(
@@ -1115,7 +1393,7 @@ async function start() {
         WHERE s.food_id = ?
         GROUP BY age_group
       `,
-        [foodId]
+        [foodId],
       );
 
       const [genderRows] = await pool.query(
@@ -1129,15 +1407,19 @@ async function start() {
         WHERE s.food_id = ?
         GROUP BY gender
       `,
-        [foodId]
+        [foodId],
       );
 
       const byAge = ageRows
         .filter((r) => r.age_group !== "Unknown")
-        .map((r) => ({ label: r.age_group, score: r.avg_rating == null ? 0 : Number(r.avg_rating) }));
+        .map((r) => ({
+          label: r.age_group,
+          score: r.avg_rating == null ? 0 : Number(r.avg_rating),
+        }));
 
       const byGender = genderRows.map((r) => ({
-        label: String(r.gender).charAt(0).toUpperCase() + String(r.gender).slice(1),
+        label:
+          String(r.gender).charAt(0).toUpperCase() + String(r.gender).slice(1),
         score: r.avg_rating == null ? 0 : Number(r.avg_rating),
       }));
 
@@ -1148,7 +1430,7 @@ async function start() {
         INNER JOIN sessions s ON s.session_id = sr.session_id
         WHERE s.food_id = ?
       `,
-        [foodId]
+        [foodId],
       );
       const sessionCount = Number(sessionCountRow?.session_count ?? 0);
       const surveyCount = Number(surveyCountRow?.survey_count ?? 0);
@@ -1156,9 +1438,15 @@ async function start() {
       return res.json({
         ok: true,
         analytics: {
-          meanConfidence: confidenceRow?.mean_confidence == null ? 0 : Number(confidenceRow.mean_confidence),
+          meanConfidence:
+            confidenceRow?.mean_confidence == null
+              ? 0
+              : Number(confidenceRow.mean_confidence),
           // hedonic_score is normalized 0..1 in frame_logs; map to 1..9 for UI consistency.
-          meanHedonic: hedonicRow?.mean_hedonic == null ? 0 : Number(hedonicRow.mean_hedonic) * 8 + 1,
+          meanHedonic:
+            hedonicRow?.mean_hedonic == null
+              ? 0
+              : Number(hedonicRow.mean_hedonic) * 8 + 1,
           distribution,
           radar,
           timeline,
@@ -1184,19 +1472,37 @@ async function start() {
       req.body?.agentKioskId ??
       req.body?.kioskAgentId ??
       req.body?.kiosk_id ??
-      (typeof req.body?.kioskId === "string" && !/^\d+$/.test(req.body.kioskId) ? req.body.kioskId : null);
+      (typeof req.body?.kioskId === "string" && !/^\d+$/.test(req.body.kioskId)
+        ? req.body.kioskId
+        : null);
     const uId = Number.parseInt(String(userId ?? ""), 10);
     const fId = Number.parseInt(String(foodId ?? ""), 10);
     const pId =
       participantId == null || participantId === ""
         ? null
         : Number.parseInt(String(participantId), 10);
-    const kId = rawKioskId == null || rawKioskId === "" ? null : Number.parseInt(String(rawKioskId), 10);
+    const kId =
+      rawKioskId == null || rawKioskId === ""
+        ? null
+        : Number.parseInt(String(rawKioskId), 10);
     const requestedAgentKioskId =
-      typeof rawAgentKioskId === "string" && rawAgentKioskId.trim() ? rawAgentKioskId.trim() : null;
+      typeof rawAgentKioskId === "string" && rawAgentKioskId.trim()
+        ? rawAgentKioskId.trim()
+        : null;
 
-    if (!Number.isFinite(uId) || !Number.isFinite(fId) || (pId != null && !Number.isFinite(pId)) || (kId != null && !Number.isFinite(kId))) {
-      return res.status(400).json({ ok: false, error: "userId, foodId, and optional participantId/kioskId are required." });
+    if (
+      !Number.isFinite(uId) ||
+      !Number.isFinite(fId) ||
+      (pId != null && !Number.isFinite(pId)) ||
+      (kId != null && !Number.isFinite(kId))
+    ) {
+      return res
+        .status(400)
+        .json({
+          ok: false,
+          error:
+            "userId, foodId, and optional participantId/kioskId are required.",
+        });
     }
 
     try {
@@ -1205,29 +1511,42 @@ async function start() {
         INSERT INTO sessions (user_id, kiosk_id, participant_id, food_id, start_time, status)
         VALUES (?, ?, ?, ?, NOW(), 'active')
       `,
-        [uId, kId, pId, fId]
+        [uId, kId, pId, fId],
       );
       const sessionId = Number(result.insertId);
       const kioskAgentId = requestedAgentKioskId || agentIdForKioskId(kId);
       const [[foodRow]] = await pool.query(
         `SELECT name FROM food_products WHERE food_id = ? LIMIT 1`,
-        [fId]
+        [fId],
       );
 
+      const webKiosk = req.body?.webKiosk === true;
       let centralCommand = null;
       try {
         centralCommand = await sendCentralCommand("start", {
           kioskAgentId,
           sessionId,
           foodName: foodRow?.name == null ? undefined : String(foodRow.name),
+          webKiosk,
         });
+        // #region agent log
+        try{const _lp=path.resolve(__dirname,"../../../debug-a7fb58.log");fs.appendFileSync(_lp,JSON.stringify({sessionId:"a7fb58",hypothesisId:"H6",location:"server.js:sessionStart",message:"central command result",data:{webKiosk,WEB_KIOSK_MODE,skipped:centralCommand?.skipped,sent:centralCommand?.sent,sessionId},timestamp:Date.now()})+"\n");}catch(_e){}
+        // #endregion
         if (centralCommand.sent) {
           await pool.query(
             `
             INSERT INTO system_logs (session_id, log_type, message)
             VALUES (?, 'info', ?)
             `,
-            [sessionId, `Sent start command to kiosk agent ${kioskAgentId}.`]
+            [sessionId, `Sent start command to kiosk agent ${kioskAgentId}.`],
+          );
+        } else if (centralCommand.skipped && (WEB_KIOSK_MODE || webKiosk)) {
+          await pool.query(
+            `
+            INSERT INTO system_logs (session_id, log_type, message)
+            VALUES (?, 'info', ?)
+            `,
+            [sessionId, "Web kiosk session started — browser camera capture."],
           );
         }
       } catch (commandErr) {
@@ -1238,14 +1557,17 @@ async function start() {
               end_time = NOW()
           WHERE session_id = ?
           `,
-          [sessionId]
+          [sessionId],
         );
         await pool.query(
           `
           INSERT INTO system_logs (session_id, log_type, message)
           VALUES (?, 'error', ?)
           `,
-          [sessionId, `Failed to start kiosk agent ${kioskAgentId}: ${commandErr?.message || commandErr}`]
+          [
+            sessionId,
+            `Failed to start kiosk agent ${kioskAgentId}: ${commandErr?.message || commandErr}`,
+          ],
         );
         return res.status(502).json({
           ok: false,
@@ -1300,7 +1622,7 @@ async function start() {
         WHERE s.session_id = ?
         LIMIT 1
       `,
-        [sessionId]
+        [sessionId],
       );
 
       if (rows.length === 0) {
@@ -1314,7 +1636,8 @@ async function start() {
         session: {
           id: Number(r.session_id),
           userId: Number(r.user_id),
-          participantId: r.participant_id == null ? null : Number(r.participant_id),
+          participantId:
+            r.participant_id == null ? null : Number(r.participant_id),
           foodId: Number(r.food_id),
           status: r.status,
           startTime: toIsoOrNull(r.start_time),
@@ -1325,7 +1648,8 @@ async function start() {
               id: Number(r.food_id),
               name: String(r.food_name),
               category: String(r.food_category ?? ""),
-              imageUrl: r.food_image_url == null ? null : String(r.food_image_url),
+              imageUrl:
+                r.food_image_url == null ? null : String(r.food_image_url),
             }
           : null,
       });
@@ -1342,11 +1666,15 @@ async function start() {
       const j = await r.json().catch(() => null);
       return res.json({ ok: true, emotion: j });
     } catch (err) {
-      console.warn("GET /api/emotion/health: emotion service unreachable:", err?.message || err);
+      console.warn(
+        "GET /api/emotion/health: emotion service unreachable:",
+        err?.message || err,
+      );
       return res.json({
         ok: false,
         emotion: null,
-        error: "Emotion service unreachable. Start backend/6.3/emotion_service.py or set EMOTION_SERVICE_URL.",
+        error:
+          "Emotion service unreachable. Start backend/6.3/emotion_service.py or set EMOTION_SERVICE_URL.",
       });
     }
   });
@@ -1358,7 +1686,9 @@ async function start() {
     (req, res, next) => {
       uploadSessionFrame(req, res, (err) => {
         if (err) {
-          return res.status(400).json({ ok: false, error: err.message || "Upload failed." });
+          return res
+            .status(400)
+            .json({ ok: false, error: err.message || "Upload failed." });
         }
         next();
       });
@@ -1366,16 +1696,31 @@ async function start() {
     async (req, res) => {
       const sessionId = req._frameSessionId;
       if (!req.file?.path) {
-        return res.status(400).json({ ok: false, error: "Missing frame (multipart field name: frame)." });
+        return res
+          .status(400)
+          .json({
+            ok: false,
+            error: "Missing frame (multipart field name: frame).",
+          });
       }
 
       try {
-        const [[sess]] = await pool.query(`SELECT status FROM sessions WHERE session_id = ? LIMIT 1`, [sessionId]);
+        const [[sess]] = await pool.query(
+          `SELECT status FROM sessions WHERE session_id = ? LIMIT 1`,
+          [sessionId],
+        );
         if (!sess) {
-          return res.status(404).json({ ok: false, error: "Session not found." });
+          return res
+            .status(404)
+            .json({ ok: false, error: "Session not found." });
         }
         if (sess.status !== "active") {
-          return res.status(409).json({ ok: false, error: "Session is not active; cannot record frames." });
+          return res
+            .status(409)
+            .json({
+              ok: false,
+              error: "Session is not active; cannot record frames.",
+            });
         }
 
         let faceDetected = null;
@@ -1393,24 +1738,38 @@ async function start() {
           fd.append(
             "image",
             new Blob([buf], { type: req.file.mimetype || "image/jpeg" }),
-            req.file.filename || "frame.jpg"
+            req.file.filename || "frame.jpg",
           );
-          const predRes = await fetch(`${EMOTION_SERVICE_URL}/predict`, { method: "POST", body: fd });
+          const predRes = await fetch(`${EMOTION_SERVICE_URL}/predict`, {
+            method: "POST",
+            body: fd,
+          });
           const predJson = await predRes.json().catch(() => null);
           if (predRes.ok && predJson && predJson.ok === true) {
             inferenceOk = true;
-            sentiment = predJson.sentiment == null ? null : String(predJson.sentiment);
-            valence1to9 = typeof predJson.valence1to9 === "number" ? predJson.valence1to9 : null;
+            sentiment =
+              predJson.sentiment == null ? null : String(predJson.sentiment);
+            valence1to9 =
+              typeof predJson.valence1to9 === "number"
+                ? predJson.valence1to9
+                : null;
             if (predJson.faceDetected === true) {
               faceDetected = true;
-              hedonic = typeof predJson.hedonicScore === "number" ? predJson.hedonicScore : null;
-              conf = typeof predJson.confidenceScore === "number" ? predJson.confidenceScore : null;
+              hedonic =
+                typeof predJson.hedonicScore === "number"
+                  ? predJson.hedonicScore
+                  : null;
+              conf =
+                typeof predJson.confidenceScore === "number"
+                  ? predJson.confidenceScore
+                  : null;
             } else if (predJson.faceDetected === false) {
               faceDetected = false;
             }
           } else {
             inferenceError =
-              (predJson && predJson.error) || `Emotion service HTTP ${predRes.status}`;
+              (predJson && predJson.error) ||
+              `Emotion service HTTP ${predRes.status}`;
           }
         } catch (err) {
           inferenceError = err?.message || String(err);
@@ -1423,7 +1782,7 @@ async function start() {
           INSERT INTO frame_logs (session_id, timestamp, face_detected, confidence_score, hedonic_score, frame_image_url)
           VALUES (?, NOW(), ?, ?, ?, ?)
         `,
-          [sessionId, faceDetected, conf, hedonic, relUrl]
+          [sessionId, faceDetected, conf, hedonic, relUrl],
         );
 
         return res.json({
@@ -1442,7 +1801,7 @@ async function start() {
         console.error("POST /api/sessions/:sessionId/frames error:", err);
         return res.status(500).json({ ok: false, error: "Server error." });
       }
-    }
+    },
   );
 
   // Full session detail for the results page (frame logs, system logs, survey results)
@@ -1471,7 +1830,7 @@ async function start() {
         WHERE s.session_id = ?
         LIMIT 1
         `,
-        [sessionId]
+        [sessionId],
       );
 
       if (!sessionRow) {
@@ -1487,7 +1846,7 @@ async function start() {
         FROM frame_logs
         WHERE session_id = ?
         `,
-        [sessionId]
+        [sessionId],
       );
 
       const [frameRows] = await pool.query(
@@ -1502,7 +1861,7 @@ async function start() {
         WHERE session_id = ?
         ORDER BY timestamp ASC
         `,
-        [sessionId]
+        [sessionId],
       );
 
       const [systemRows] = await pool.query(
@@ -1515,7 +1874,7 @@ async function start() {
         WHERE session_id = ?
         ORDER BY created_at ASC
         `,
-        [sessionId]
+        [sessionId],
       );
 
       const [[surveyRow]] = await pool.query(
@@ -1535,7 +1894,7 @@ async function start() {
         WHERE s.session_id = ?
         LIMIT 1
         `,
-        [sessionId]
+        [sessionId],
       );
 
       return res.json({
@@ -1543,7 +1902,10 @@ async function start() {
         session: {
           id: Number(sessionRow.session_id),
           userId: Number(sessionRow.user_id),
-          participantId: sessionRow.participant_id == null ? null : Number(sessionRow.participant_id),
+          participantId:
+            sessionRow.participant_id == null
+              ? null
+              : Number(sessionRow.participant_id),
           foodId: Number(sessionRow.food_id),
           status: sessionRow.status,
           startTime: toIsoOrNull(sessionRow.start_time),
@@ -1554,22 +1916,34 @@ async function start() {
               id: Number(sessionRow.food_id),
               name: String(sessionRow.food_name),
               category: String(sessionRow.food_category ?? ""),
-              imageUrl: sessionRow.food_image_url == null ? null : String(sessionRow.food_image_url),
+              imageUrl:
+                sessionRow.food_image_url == null
+                  ? null
+                  : String(sessionRow.food_image_url),
             }
           : null,
         metrics: {
           totalFrames: Number(frameStatsRow?.total_frames ?? 0),
           meanConfidence:
-            frameStatsRow?.mean_confidence == null ? null : Number(frameStatsRow.mean_confidence),
+            frameStatsRow?.mean_confidence == null
+              ? null
+              : Number(frameStatsRow.mean_confidence),
           // hedonic_score is stored 0..1 in frame_logs; convert to 0..1, then the frontend scales to /10.
-          meanHedonic: frameStatsRow?.mean_hedonic == null ? null : Number(frameStatsRow.mean_hedonic),
+          meanHedonic:
+            frameStatsRow?.mean_hedonic == null
+              ? null
+              : Number(frameStatsRow.mean_hedonic),
         },
         frameLogs: (frameRows ?? []).map((r) => ({
           timestamp: toIsoOrNull(r.timestamp),
-          faceDetected: r.face_detected == null ? null : Boolean(r.face_detected),
-          confidenceScore: r.confidence_score == null ? null : Number(r.confidence_score),
-          hedonicScore: r.hedonic_score == null ? null : Number(r.hedonic_score),
-          frameImageUrl: r.frame_image_url == null ? null : String(r.frame_image_url),
+          faceDetected:
+            r.face_detected == null ? null : Boolean(r.face_detected),
+          confidenceScore:
+            r.confidence_score == null ? null : Number(r.confidence_score),
+          hedonicScore:
+            r.hedonic_score == null ? null : Number(r.hedonic_score),
+          frameImageUrl:
+            r.frame_image_url == null ? null : String(r.frame_image_url),
         })),
         systemLogs: (systemRows ?? []).map((r) => ({
           logType: r.log_type,
@@ -1578,18 +1952,36 @@ async function start() {
         })),
         surveyResults: surveyRow
           ? {
-              age: surveyRow.participant_age == null ? null : Number(surveyRow.participant_age),
-              gender: surveyRow.participant_gender == null ? null : String(surveyRow.participant_gender),
-              colorRating: surveyRow.color_rating == null ? null : Number(surveyRow.color_rating),
+              age:
+                surveyRow.participant_age == null
+                  ? null
+                  : Number(surveyRow.participant_age),
+              gender:
+                surveyRow.participant_gender == null
+                  ? null
+                  : String(surveyRow.participant_gender),
+              colorRating:
+                surveyRow.color_rating == null
+                  ? null
+                  : Number(surveyRow.color_rating),
               flavorAromaRating:
-                surveyRow.flavor_aroma_rating == null ? null : Number(surveyRow.flavor_aroma_rating),
+                surveyRow.flavor_aroma_rating == null
+                  ? null
+                  : Number(surveyRow.flavor_aroma_rating),
               saltSweetRating:
-                surveyRow.salt_sweet_rating == null ? null : Number(surveyRow.salt_sweet_rating),
+                surveyRow.salt_sweet_rating == null
+                  ? null
+                  : Number(surveyRow.salt_sweet_rating),
               textureRating:
-                surveyRow.texture_rating == null ? null : Number(surveyRow.texture_rating),
+                surveyRow.texture_rating == null
+                  ? null
+                  : Number(surveyRow.texture_rating),
               finalOverallRating:
-                surveyRow.final_overall_rating == null ? null : Number(surveyRow.final_overall_rating),
-              remarks: surveyRow.remarks == null ? null : String(surveyRow.remarks),
+                surveyRow.final_overall_rating == null
+                  ? null
+                  : Number(surveyRow.final_overall_rating),
+              remarks:
+                surveyRow.remarks == null ? null : String(surveyRow.remarks),
             }
           : null,
       });
@@ -1614,7 +2006,7 @@ async function start() {
             status = 'completed'
         WHERE session_id = ?
       `,
-        [sessionId]
+        [sessionId],
       );
 
       if (result.affectedRows === 0) {
@@ -1637,7 +2029,7 @@ async function start() {
         WHERE session_id = ?
         LIMIT 1
       `,
-        [sessionId]
+        [sessionId],
       );
 
       void clearEmotionHistory(sessionId);
@@ -1645,15 +2037,23 @@ async function start() {
         req.body?.agentKioskId ??
         req.body?.kioskAgentId ??
         req.body?.kiosk_id ??
-        (typeof req.body?.kioskId === "string" && !/^\d+$/.test(req.body.kioskId) ? req.body.kioskId : null);
+        (typeof req.body?.kioskId === "string" &&
+        !/^\d+$/.test(req.body.kioskId)
+          ? req.body.kioskId
+          : null);
       const requestedAgentKioskId =
-        typeof rawAgentKioskId === "string" && rawAgentKioskId.trim() ? rawAgentKioskId.trim() : null;
-      const kioskAgentId = requestedAgentKioskId || agentIdForKioskId(row.kiosk_id);
+        typeof rawAgentKioskId === "string" && rawAgentKioskId.trim()
+          ? rawAgentKioskId.trim()
+          : null;
+      const kioskAgentId =
+        requestedAgentKioskId || agentIdForKioskId(row.kiosk_id);
+      const webKiosk = req.body?.webKiosk === true;
       let centralCommand = null;
       try {
         centralCommand = await sendCentralCommand("stop", {
           kioskAgentId,
           sessionId,
+          webKiosk,
         });
         if (centralCommand.sent) {
           await pool.query(
@@ -1661,7 +2061,7 @@ async function start() {
             INSERT INTO system_logs (session_id, log_type, message)
             VALUES (?, 'info', ?)
             `,
-            [sessionId, `Sent stop command to kiosk agent ${kioskAgentId}.`]
+            [sessionId, `Sent stop command to kiosk agent ${kioskAgentId}.`],
           );
         }
       } catch (commandErr) {
@@ -1670,7 +2070,10 @@ async function start() {
           INSERT INTO system_logs (session_id, log_type, message)
           VALUES (?, 'error', ?)
           `,
-          [sessionId, `Failed to stop kiosk agent ${kioskAgentId}: ${commandErr?.message || commandErr}`]
+          [
+            sessionId,
+            `Failed to stop kiosk agent ${kioskAgentId}: ${commandErr?.message || commandErr}`,
+          ],
         );
         return res.status(502).json({
           ok: false,
@@ -1679,7 +2082,8 @@ async function start() {
             id: Number(row.session_id),
             userId: Number(row.user_id),
             kioskId: row.kiosk_id == null ? null : Number(row.kiosk_id),
-            participantId: row.participant_id == null ? null : Number(row.participant_id),
+            participantId:
+              row.participant_id == null ? null : Number(row.participant_id),
             foodId: Number(row.food_id),
             status: row.status,
             startTime: toIsoOrNull(row.start_time),
@@ -1696,7 +2100,8 @@ async function start() {
           id: Number(row.session_id),
           userId: Number(row.user_id),
           kioskId: row.kiosk_id == null ? null : Number(row.kiosk_id),
-          participantId: row.participant_id == null ? null : Number(row.participant_id),
+          participantId:
+            row.participant_id == null ? null : Number(row.participant_id),
           foodId: Number(row.food_id),
           status: row.status,
           startTime: toIsoOrNull(row.start_time),
@@ -1716,7 +2121,8 @@ async function start() {
       return res.status(400).json({ ok: false, error: "Invalid sessionId." });
     }
     const statusRaw = req.body?.status;
-    const status = typeof statusRaw === "string" ? statusRaw.trim().toLowerCase() : "";
+    const status =
+      typeof statusRaw === "string" ? statusRaw.trim().toLowerCase() : "";
     if (!allowedSessionStatuses.has(status)) {
       return res.status(400).json({
         ok: false,
@@ -1735,7 +2141,7 @@ async function start() {
             END
         WHERE session_id = ?
       `,
-        [status, status, sessionId]
+        [status, status, sessionId],
       );
       if (result.affectedRows === 0) {
         return res.status(404).json({ ok: false, error: "Session not found." });
@@ -1748,14 +2154,15 @@ async function start() {
         WHERE session_id = ?
         LIMIT 1
       `,
-        [sessionId]
+        [sessionId],
       );
       return res.json({
         ok: true,
         session: {
           id: Number(row.session_id),
           userId: Number(row.user_id),
-          participantId: row.participant_id == null ? null : Number(row.participant_id),
+          participantId:
+            row.participant_id == null ? null : Number(row.participant_id),
           foodId: Number(row.food_id),
           status: row.status,
           startTime: toIsoOrNull(row.start_time),
@@ -1774,7 +2181,10 @@ async function start() {
       return res.status(400).json({ ok: false, error: "Invalid sessionId." });
     }
     try {
-      const [result] = await pool.query(`DELETE FROM sessions WHERE session_id = ?`, [sessionId]);
+      const [result] = await pool.query(
+        `DELETE FROM sessions WHERE session_id = ?`,
+        [sessionId],
+      );
       if (result.affectedRows === 0) {
         return res.status(404).json({ ok: false, error: "Session not found." });
       }
@@ -1830,7 +2240,8 @@ async function start() {
     ) {
       return res.status(400).json({
         ok: false,
-        error: "All ratings (Color, Flavor/Aroma, Salt/Sweet, Texture, Overall) are required.",
+        error:
+          "All ratings (Color, Flavor/Aroma, Salt/Sweet, Texture, Overall) are required.",
       });
     }
 
@@ -1843,7 +2254,9 @@ async function start() {
       ["finalOverallRating", finalInt],
     ]) {
       if (n < 1 || n > 9) {
-        return res.status(400).json({ ok: false, error: `${k} must be between 1 and 9.` });
+        return res
+          .status(400)
+          .json({ ok: false, error: `${k} must be between 1 and 9.` });
       }
     }
 
@@ -1852,7 +2265,7 @@ async function start() {
     try {
       const [[sessionRow]] = await pool.query(
         `SELECT session_id FROM sessions WHERE session_id = ? LIMIT 1`,
-        [sessionId]
+        [sessionId],
       );
 
       if (!sessionRow) {
@@ -1867,7 +2280,7 @@ async function start() {
             end_time = COALESCE(end_time, NOW())
         WHERE session_id = ?
       `,
-        [sessionId]
+        [sessionId],
       );
 
       await pool.query(
@@ -1895,7 +2308,7 @@ async function start() {
           textureInt,
           finalInt,
           remarksVal,
-        ]
+        ],
       );
 
       return res.json({ ok: true, sessionId });
@@ -1905,32 +2318,36 @@ async function start() {
     }
   });
 
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../index.html'));
+  app.get("*", (req, res) => {
+    res.sendFile(path.join(__dirname, "../index.html"));
   });
 
-  http.listen(port, '0.0.0.0', () => {
+  http.listen(port, "0.0.0.0", () => {
     const networks = os.networkInterfaces();
-    console.log('\n=== Network Interfaces ===');
+    console.log("\n=== Network Interfaces ===");
     let validIPs = [];
-    Object.keys(networks).forEach(name => {
-      networks[name].forEach(net => {
-        if (net.family === 'IPv4' && !net.internal) {
+    Object.keys(networks).forEach((name) => {
+      networks[name].forEach((net) => {
+        if (net.family === "IPv4" && !net.internal) {
           validIPs.push({ interface: name, ip: net.address });
           console.log(`\n${name}:`);
           console.log(`  IP: ${net.address}`);
         }
       });
     });
-    const protocol = (http.constructor.name === 'Server' && http._events && http._tlsOptions) || http.constructor.name === 'Server' ? 'https' : 'http';
-    console.log('\n=== Connection URLs ===');
+    console.log("\n=== Connection URLs ===");
     if (validIPs.length > 0) {
-      console.log('\n📱 For mobile devices:');
-      validIPs.forEach(({ ip }) => console.log(`  https://${ip}:${port}`));
+      console.log("\n📱 For mobile devices:");
+      validIPs.forEach(({ ip }) =>
+        console.log(`  ${serverProtocol}://${ip}:${port}`),
+      );
     }
-    console.log('\n💻 Local: http://localhost:' + port);
-    if (validIPs.length > 0) console.log('\n✅ Recommended: https://' + validIPs[0].ip + ':' + port);
-    console.log('\n=== Server is running ===\n');
+    console.log(`\n💻 Local: ${serverProtocol}://localhost:` + port);
+    if (validIPs.length > 0)
+      console.log(
+        `\n✅ Recommended: ${serverProtocol}://${validIPs[0].ip}:${port}`,
+      );
+    console.log("\n=== Server is running ===\n");
   });
 
   // const port = process.env.PORT || 8080;
@@ -1943,4 +2360,3 @@ start().catch((err) => {
   console.error("Failed to start server:", err);
   process.exit(1);
 });
-

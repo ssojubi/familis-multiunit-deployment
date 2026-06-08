@@ -7,30 +7,38 @@ import Setup from "./pages/Setup";
 import Session from "./pages/Session";
 import SessionDetail from "./pages/SessionDetail";
 import Survey from "./pages/Survey";
-
-// new
-// import Setup_Tester from "./pages/Setup_Tester";
-// import Session_Tester from "./pages/Session_Tester";
-// import Survey_Tester from "./pages/Survey_Tester";
-import KioskHost from "./pages/KioskHost";
+import Kiosk from "./pages/Kiosk";
+// New tester routes
+import TesterConsent from "./pages/TesterConsent";
+import TesterSession from "./pages/TesterSession";
+import TesterSurvey from "./pages/TesterSurvey";
 
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
+        {/* Public route - login page */}
         <Route path="/" element={<Login />} />
+
+        {/* Public kiosk routes — no login required; browser handles camera */}
+        <Route path="/kiosk/setup" element={<Setup />} />
+        <Route path="/kiosk/session" element={<Session />} />
+        <Route path="/kiosk/survey" element={<Survey />} />
+
+        {/* Protected routes - require authentication */}
         <Route element={<RequireAuth />}>
+          {/* Admin routes */}
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/setup" element={<Setup />} />
           <Route path="/session" element={<Session />} />
           <Route path="/session-detail" element={<SessionDetail />} />
           <Route path="/survey" element={<Survey />} />
+          <Route path="/kiosk" element={<Kiosk />} />
 
-          {/* new */}
-          {/* <Route path="/setup_tester" element={<Setup_Tester />} />
-          <Route path="/session_tester" element={<Session_Tester />} />
-          <Route path="/survey_tester" element={<Survey_Tester />} /> */}
-          <Route path="/kiosk" element={<KioskHost />} />
+          {/* Tester routes */}
+          <Route path="/tester-consent" element={<TesterConsent />} />
+          <Route path="/tester-session" element={<TesterSession />} />
+          <Route path="/tester-survey" element={<TesterSurvey />} />
         </Route>
       </Routes>
     </BrowserRouter>
