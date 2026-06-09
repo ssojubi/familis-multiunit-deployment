@@ -237,6 +237,12 @@ export default function Dashboard() {
   const [shareUrl, setShareUrl] = useState<string>("");
   const [hostIP, setHostIP] = useState<string>("");
 
+  // Kiosk session control
+  const [kioskFoodId, setKioskFoodId] = useState<number | null>(null);
+  const [kioskSessionId, setKioskSessionId] = useState<number | null>(null);
+  const [kioskCmdLoading, setKioskCmdLoading] = useState(false);
+  const [kioskCmdError, setKioskCmdError] = useState<string | null>(null);
+
   const socketRef = useRef<Socket<
     ServerToClientEvents,
     ClientToServerEvents
@@ -273,6 +279,7 @@ export default function Dashboard() {
         }
         const list: Food[] = json.foods ?? [];
         setFoods(list);
+        setKioskFoodId((prev) => prev ?? list[0]?.id ?? null);
         setExpandedFoodId((prev) => {
           if (prev && list.some((f) => f.id === prev)) return prev;
           return null;
@@ -387,7 +394,6 @@ export default function Dashboard() {
 
     socket.on("connect", () => {
       setKioskStatus(`Connected as ${role}. Room: ${roomId}`);
-      // pass both roomId and role to help the server configure user sets
       socket.emit("join-room", roomId, role);
     });
 
@@ -395,7 +401,6 @@ export default function Dashboard() {
       setKioskStatus("Connection failed — check that server.js is running.");
     });
 
-    // HOST: Changed listener from 'user-connected' to 'viewer-connected'
     socket.on("viewer-connected", async () => {
       if (role !== "host") return;
       setKioskStatus("Viewer connected! Starting stream...");
@@ -417,12 +422,9 @@ export default function Dashboard() {
         offerToReceiveVideo: true,
       });
       await pc.setLocalDescription(offer);
-
-      // package inside the server's expected 'signal' wrapper
       socket.emit("signal", { room: roomId, sdp: offer });
     });
 
-    // Unified signaling listener for offers, answers, and candidates
     socket.on("signal", async (data) => {
       if (!peerConnectionRef.current && role === "viewer") {
         await createPeerConnection();
@@ -436,8 +438,6 @@ export default function Dashboard() {
           await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
-
-          // Return the answer packaged inside the signal wrapper
           socket.emit("signal", { room: roomId, sdp: answer });
         } else if (data.sdp.type === "answer" && role === "host") {
           if (pc.signalingState === "have-local-offer") {
@@ -462,6 +462,32 @@ export default function Dashboard() {
     socket.on("host-disconnected", () => {
       setKioskStatus("Host disconnected.");
       if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+      cleanupPeerConnection();
+    });
+
+    // Admin → tester commands
+    socket.on("admin-start-stream", async () => {
+      if (role !== "host") return;
+      if (peerConnectionRef.current) {
+        console.warn("PC already exists, skipping duplicate offer");
+        return;
+      }
+      if (!localStreamRef.current) await startCamera();
+      const pc = await createPeerConnection();
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((track) => {
+          pc.addTrack(track, localStreamRef.current!);
+        });
+      }
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket.emit("signal", { room: roomId, sdp: offer });
+      setKioskStatus("Streaming started.");
+    });
+
+    socket.on("admin-stop-stream", () => {
+      if (role !== "host") return;
+      stopCamera();
       cleanupPeerConnection();
     });
 
@@ -1635,8 +1661,6 @@ export default function Dashboard() {
                     </span>
                   </p>
                 </div>
-
-                {/* copy share link available immediately for the Admin/Viewer */}
                 <button
                   type="button"
                   onClick={copyLinkToClipboard}
@@ -1648,7 +1672,35 @@ export default function Dashboard() {
               </div>
 
               <div className="space-y-4">
-                {/* Admin/Viewer dynamic stream portal window */}
+                {/* Food selector */}
+                <div>
+                  <label className="block text-[12px] font-semibold text-gray-700 mb-1">
+                    Food being tested
+                  </label>
+                  {foods.length === 0 ? (
+                    <p className="text-[12px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                      No foods added yet. Add a food in Food Management first.
+                    </p>
+                  ) : (
+                    <select
+                      value={kioskFoodId ?? ""}
+                      onChange={(e) => setKioskFoodId(Number(e.target.value))}
+                      disabled={!!kioskSessionId}
+                      className="w-full text-[12px] border border-gray-200 rounded-md px-3 py-2 bg-white disabled:opacity-50"
+                    >
+                      <option value="" disabled>
+                        Select a food…
+                      </option>
+                      {foods.map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {f.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
+                {/* Live stream */}
                 <div>
                   <p className="text-[12px] text-gray-600 font-semibold mb-1">
                     Live Kiosk Stream
@@ -1662,43 +1714,146 @@ export default function Dashboard() {
                     />
                   </div>
                   <p className="text-[11px] text-gray-400 mt-1">
-                    Click Start Recording below to request connection hooks and
-                    start the stream capture pipeline.
+                    Click Start Recording to send the command to the kiosk and
+                    begin the FER pipeline.
                   </p>
                 </div>
 
-                {/* Admin Core Action Triggers */}
+                {/* Error feedback */}
+                {kioskCmdError && (
+                  <p className="text-[12px] text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+                    {kioskCmdError}
+                  </p>
+                )}
+
+                {/* Start / Stop */}
                 <div className="flex gap-3">
                   <button
                     type="button"
+                    disabled={
+                      kioskCmdLoading || !kioskFoodId || !!kioskSessionId
+                    }
                     onClick={async () => {
-                      if (socketRef.current && roomId && role) {
-                        // Re-broadcast join-room parameters to wake the remote kiosk cameras up
-                        socketRef.current.emit("join-room", roomId, role);
-                        setKioskStatus("Requesting remote video capture...");
+                      if (!kioskFoodId) {
+                        setKioskCmdError("Select a food before starting.");
+                        return;
+                      }
+                      const storedUser =
+                        localStorage.getItem("familis.user") ||
+                        localStorage.getItem("user");
+                      const user = storedUser ? JSON.parse(storedUser) : null;
+                      const userId = user?.id;
+                      if (!userId) {
+                        setKioskCmdError(
+                          "Could not read user ID. Try logging out and back in.",
+                        );
+                        return;
+                      }
+                      setKioskCmdLoading(true);
+                      setKioskCmdError(null);
+                      try {
+                        const res = await fetch("/api/sessions/start", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            userId,
+                            foodId: kioskFoodId,
+                            agentKioskId: DEFAULT_KIOSK_AGENT_ID,
+                          }),
+                        });
+                        const json = await res.json();
+                        if (!res.ok || !json?.ok) {
+                          throw new Error(
+                            json?.error || "Failed to start session.",
+                          );
+                        }
+                        setKioskSessionId(json.session.id);
+                        setKioskStatus(`Session #${json.session.id} started.`);
+
+                        // Send WebSocket command to start the stream
+                        if (socketRef.current && roomId) {
+                          socketRef.current.emit("admin-start-stream", {
+                            room: roomId,
+                          });
+                        }
+                      } catch (err: any) {
+                        setKioskCmdError(
+                          err?.message || "Failed to start session.",
+                        );
+                      } finally {
+                        setKioskCmdLoading(false);
                       }
                     }}
-                    className="flex-1 bg-[#e8174a] hover:bg-[#c9143f] text-white py-2.5 rounded-md text-sm font-semibold transition-colors text-center"
+                    className="flex-1 bg-[#e8174a] hover:bg-[#c9143f] disabled:opacity-50 disabled:cursor-not-allowed text-white py-2.5 rounded-md text-sm font-semibold transition-colors text-center"
                   >
-                    ▶ Start Recording
+                    {kioskCmdLoading && !kioskSessionId
+                      ? "Starting…"
+                      : "▶ Start Recording"}
                   </button>
 
                   <button
                     type="button"
-                    onClick={() => {
-                      cleanupPeerConnection();
-                      if (remoteVideoRef.current) {
-                        remoteVideoRef.current.srcObject = null;
+                    disabled={kioskCmdLoading || !kioskSessionId}
+                    onClick={async () => {
+                      if (!kioskSessionId) return;
+                      setKioskCmdLoading(true);
+                      setKioskCmdError(null);
+                      try {
+                        const res = await fetch(
+                          `/api/sessions/${kioskSessionId}/stop`,
+                          {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                              agentKioskId: DEFAULT_KIOSK_AGENT_ID,
+                            }),
+                          },
+                        );
+                        const json = await res.json();
+                        if (!res.ok || !json?.ok) {
+                          throw new Error(
+                            json?.error || "Failed to stop session.",
+                          );
+                        }
+                        setKioskStatus(`Session #${kioskSessionId} stopped.`);
+                        setKioskSessionId(null);
+
+                        // Send WebSocket command to stop the stream
+                        if (socketRef.current && roomId) {
+                          socketRef.current.emit("admin-stop-stream", {
+                            room: roomId,
+                          });
+                        }
+                        cleanupPeerConnection();
+                        if (remoteVideoRef.current)
+                          remoteVideoRef.current.srcObject = null;
+                      } catch (err: any) {
+                        setKioskCmdError(
+                          err?.message || "Failed to stop session.",
+                        );
+                      } finally {
+                        setKioskCmdLoading(false);
                       }
-                      setKioskStatus("Stream session stopped.");
                     }}
-                    className="flex-1 bg-white hover:bg-gray-50 text-gray-700 border border-gray-200 py-2.5 rounded-md text-sm font-semibold transition-colors text-center"
+                    className="flex-1 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed text-gray-700 border border-gray-200 py-2.5 rounded-md text-sm font-semibold transition-colors text-center"
                   >
-                    ⏹ Stop Recording
+                    {kioskCmdLoading && !!kioskSessionId
+                      ? "Stopping…"
+                      : "⏹ Stop Recording"}
                   </button>
                 </div>
 
-                {/* share URL Context Tracer block */}
+                {/* Active session badge */}
+                {kioskSessionId && (
+                  <p className="text-[12px] text-green-700 bg-green-50 border border-green-200 rounded-md px-3 py-2">
+                    Active session:{" "}
+                    <span className="font-semibold">#{kioskSessionId}</span>
+                    {" · "}
+                    {foods.find((f) => f.id === kioskFoodId)?.name ?? ""}
+                  </p>
+                )}
+
+                {/* Share URL */}
                 {shareUrl && (
                   <div className="text-[12px] text-gray-500 bg-gray-50 border border-gray-100 rounded-md px-3 py-2 break-all">
                     <span className="font-semibold text-gray-700">
@@ -1706,8 +1861,7 @@ export default function Dashboard() {
                     </span>
                     <span className="text-gray-600">{shareUrl}</span>
                     <p className="text-[11px] text-gray-400 mt-1">
-                      Open this link on the kiosk device browser — no separate
-                      agent app needed.
+                      Open this link on the kiosk device browser.
                     </p>
                     {(hostIP === "localhost" ||
                       hostIP === "127.0.0.1" ||

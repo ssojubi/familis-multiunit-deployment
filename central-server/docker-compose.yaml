@@ -53,12 +53,6 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
       - ../kiosk-image/FaMiLiS/server_database/schema.sql:/docker-entrypoint-initdb.d/01-familis-schema.sql:ro
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
 
   central-server:
     build: .
@@ -69,7 +63,7 @@ services:
       kafka-init:
         condition: service_completed_successfully
       mysql:
-        condition: service_healthy
+        condition: service_started
     environment:
       KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
       DB_HOST: mysql

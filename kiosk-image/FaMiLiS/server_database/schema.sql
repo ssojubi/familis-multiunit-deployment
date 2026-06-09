@@ -136,6 +136,7 @@ CREATE TABLE IF NOT EXISTS emotion_results (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   session_id VARCHAR(255) NOT NULL,
   frame_id VARCHAR(255) NOT NULL,
+  kiosk_id VARCHAR(255) NULL,
   face_detected BOOLEAN,
   hedonic_score DOUBLE,
   confidence DOUBLE,
@@ -143,6 +144,7 @@ CREATE TABLE IF NOT EXISTS emotion_results (
   sentiment VARCHAR(32),
   processed_at DATETIME NOT NULL,
   INDEX idx_emotion_results_session_id (session_id),
+  INDEX idx_emotion_results_kiosk_id (kiosk_id),
   INDEX idx_emotion_results_processed_at (processed_at)
 );
 

@@ -33,8 +33,8 @@ export default function App() {
           <Route path="/session" element={<Session />} />
           <Route path="/session-detail" element={<SessionDetail />} />
           <Route path="/survey" element={<Survey />} />
+          ok
           <Route path="/kiosk" element={<Kiosk />} />
-
           {/* Tester routes */}
           <Route path="/tester-consent" element={<TesterConsent />} />
           <Route path="/tester-session" element={<TesterSession />} />

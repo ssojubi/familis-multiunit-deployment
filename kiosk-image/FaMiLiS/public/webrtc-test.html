@@ -1,211 +1,475 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>WebRTC Test - Admin Controlled</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WebRTC Kiosk Test</title>
   <style>
-    body { font-family: Arial; padding: 20px; }
-    video { width: 400px; margin: 10px; border: 1px solid #ccc; }
-    button { margin: 5px; padding: 8px 16px; cursor: pointer; }
-    .status { margin-top: 10px; padding: 8px; background: #f0f0f0; font-size: 12px; }
-    .role-badge { font-weight: bold; padding: 4px 8px; border-radius: 4px; display: inline-block; }
-    .host { background: #4CAF50; color: white; }
-    .viewer { background: #2196F3; color: white; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 24px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    header h1 {
+      font-size: 1.2rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      color: #f8fafc;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .badge.host   { background: #16a34a22; color: #4ade80; border: 1px solid #16a34a55; }
+    .badge.viewer { background: #2563eb22; color: #60a5fa; border: 1px solid #2563eb55; }
+    .badge.detecting { background: #64748b22; color: #94a3b8; border: 1px solid #64748b55; }
+
+    .dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .dot.live { animation: pulse 1.2s ease-in-out infinite; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    /* Video grid */
+    .video-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    @media (max-width: 700px) {
+      .video-grid { grid-template-columns: 1fr; }
+    }
+
+    .video-card {
+      background: #1e2330;
+      border: 1px solid #2d3348;
+      border-radius: 12px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .video-label {
+      position: absolute;
+      top: 10px; left: 10px;
+      background: #00000088;
+      backdrop-filter: blur(4px);
+      color: #fff;
+      font-size: 0.7rem;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 4px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      z-index: 2;
+    }
+
+    video {
+      width: 100%;
+      aspect-ratio: 16/9;
+      display: block;
+      background: #0a0c12;
+      object-fit: cover;
+    }
+
+    .video-placeholder {
+      width: 100%;
+      aspect-ratio: 16/9;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      background: #0a0c12;
+      color: #475569;
+      font-size: 0.8rem;
+    }
+    .video-placeholder svg { opacity: 0.3; }
+
+    /* Controls */
+    .controls {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 0.875rem;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .btn-start {
+      background: #16a34a;
+      color: #fff;
+    }
+    .btn-start:hover:not(:disabled) { background: #15803d; }
+
+    .btn-stop {
+      background: #dc2626;
+      color: #fff;
+    }
+    .btn-stop:hover:not(:disabled) { background: #b91c1c; }
+
+    /* Tester waiting state */
+    .tester-waiting {
+      background: #1e2330;
+      border: 1px solid #2d3348;
+      border-radius: 10px;
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+      font-size: 0.875rem;
+      color: #94a3b8;
+    }
+    .tester-waiting.live {
+      border-color: #16a34a55;
+      background: #16a34a11;
+      color: #4ade80;
+    }
+
+    /* Log */
+    .log-panel {
+      background: #0a0c12;
+      border: 1px solid #1e2330;
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-family: 'Courier New', monospace;
+      font-size: 0.75rem;
+      color: #64748b;
+      max-height: 180px;
+      overflow-y: auto;
+      line-height: 1.6;
+    }
+    .log-panel .log-time { color: #334155; margin-right: 6px; }
+    .log-panel .log-ok   { color: #4ade80; }
+    .log-panel .log-err  { color: #f87171; }
+    .log-panel .log-info { color: #60a5fa; }
+
+    .log-header {
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #475569;
+      margin-bottom: 8px;
+    }
+
+    /* Connection indicator */
+    .conn-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.75rem;
+      color: #64748b;
+      margin-bottom: 16px;
+    }
+    .conn-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #ef4444;
+      transition: background 0.3s;
+    }
+    .conn-dot.connected { background: #22c55e; }
+
+    /* URL hint */
+    .url-hint {
+      background: #1e2330;
+      border: 1px solid #2d3348;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 0.75rem;
+      color: #64748b;
+      margin-bottom: 20px;
+    }
+    .url-hint code {
+      color: #93c5fd;
+      background: #172033;
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 0.8rem;
+    }
   </style>
 </head>
 <body>
-  <h2>WebRTC Test - Admin Controlled</h2>
-  <p>Role: <span id="role" class="role-badge">Detecting...</span></p>
-  <video id="local" autoplay muted playsinline></video>
-  <video id="remote" autoplay playsinline></video>
-  <br>
-  <div id="admin-controls" style="display:none">
-    <button id="startRecording">▶ Start Recording (Admin)</button>
-    <button id="stopRecording">⏹ Stop Recording (Admin)</button>
-  </div>
-  <div id="tester-status" style="display:none">
-    <p>Waiting for admin to start recording...</p>
-  </div>
-  <div class="status" id="status">Waiting...</div>
 
+  <header>
+    <h1>WebRTC Kiosk Test</h1>
+    <span id="roleBadge" class="badge detecting"><span class="dot"></span> Detecting...</span>
+  </header>
+
+  <!-- Socket.IO connection status -->
+  <div class="conn-bar">
+    <div class="conn-dot" id="connDot"></div>
+    <span id="connLabel">Connecting to signaling server...</span>
+  </div>
+
+  <!-- URL hint -->
+  <div class="url-hint" id="urlHint">
+    Detecting role from URL... add <code>?role=host</code> for tester device, or no param for admin.
+  </div>
+
+  <!-- Video -->
+  <div class="video-grid">
+    <div class="video-card">
+      <div class="video-label">Local (Tester Camera)</div>
+      <video id="localVideo" autoplay muted playsinline></video>
+    </div>
+    <div class="video-card">
+      <div class="video-label">Remote (Admin View)</div>
+      <video id="remoteVideo" autoplay playsinline></video>
+    </div>
+  </div>
+
+  <!-- Admin controls -->
+  <div class="controls" id="adminControls" style="display:none">
+    <button class="btn btn-start" id="btnStart">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+      Start Recording
+    </button>
+    <button class="btn btn-stop" id="btnStop" disabled>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="18" height="18"/></svg>
+      Stop Recording
+    </button>
+  </div>
+
+  <!-- Tester status -->
+  <div class="tester-waiting" id="testerStatus" style="display:none">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" opacity="0.5"><circle cx="12" cy="12" r="10"/></svg>
+    <span id="testerStatusText">Waiting for admin to start recording...</span>
+  </div>
+
+  <!-- Log -->
+  <div class="log-header">Event Log</div>
+  <div class="log-panel" id="logPanel"></div>
+
+  <!-- Socket.IO loaded from server -->
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    const socket = io();
+    // ─── Config ───────────────────────────────────────────────────────────────
+    const ROOM_ID = 'fer-test-room';
+
+    // ─── State ────────────────────────────────────────────────────────────────
     let localStream = null;
     let pc = null;
-    let roomId = 'test-room';
-    let isHost = false;
     let isStreaming = false;
+    const isHost = new URLSearchParams(window.location.search).get('role') === 'host';
 
-    const statusDiv = document.getElementById('status');
-    const roleSpan = document.getElementById('role');
-    const adminControls = document.getElementById('admin-controls');
-    const testerStatus = document.getElementById('tester-status');
-    const startRecordingBtn = document.getElementById('startRecording');
-    const stopRecordingBtn = document.getElementById('stopRecording');
+    // ─── DOM refs ─────────────────────────────────────────────────────────────
+    const localVideo     = document.getElementById('localVideo');
+    const remoteVideo    = document.getElementById('remoteVideo');
+    const roleBadge      = document.getElementById('roleBadge');
+    const connDot        = document.getElementById('connDot');
+    const connLabel      = document.getElementById('connLabel');
+    const urlHint        = document.getElementById('urlHint');
+    const adminControls  = document.getElementById('adminControls');
+    const btnStart       = document.getElementById('btnStart');
+    const btnStop        = document.getElementById('btnStop');
+    const testerStatus   = document.getElementById('testerStatus');
+    const testerStatusTx = document.getElementById('testerStatusText');
+    const logPanel       = document.getElementById('logPanel');
 
-    function log(msg) {
-      console.log(msg);
-      statusDiv.innerHTML += `<br>${new Date().toLocaleTimeString()} - ${msg}`;
+    // ─── Logger ───────────────────────────────────────────────────────────────
+    function log(msg, type = 'info') {
+      const time = new Date().toLocaleTimeString();
+      const line = document.createElement('div');
+      line.innerHTML = `<span class="log-time">${time}</span><span class="log-${type}">${msg}</span>`;
+      logPanel.appendChild(line);
+      logPanel.scrollTop = logPanel.scrollHeight;
+      console.log(`[${type}] ${msg}`);
     }
 
-    // Determine role from URL or localStorage
-    const urlParams = new URLSearchParams(window.location.search);
-    isHost = urlParams.get('role') === 'host';
-
+    // ─── Role setup ───────────────────────────────────────────────────────────
     if (isHost) {
-      // Tester device (has camera, waits for admin command)
-      roleSpan.innerText = 'Tester (Host) - Camera Owner';
-      roleSpan.className = 'role-badge host';
-      testerStatus.style.display = 'block';
-      log('Running as TESTER - waiting for admin to start recording');
-      
-      // Join room as host (but don't start streaming yet)
-      socket.emit('join-room', roomId, 'host');
-      log('Joined room as host (waiting for command)');
-      
-      // Listen for admin commands
-      socket.on('admin-start-stream', async () => {
-        log('Admin command received: START STREAMING');
-        await startStreaming();
-      });
-      
-      socket.on('admin-stop-stream', () => {
-        log('Admin command received: STOP STREAMING');
-        stopStreaming();
-      });
-      
+      roleBadge.className = 'badge host';
+      roleBadge.innerHTML = '<span class="dot live"></span> Tester (Host)';
+      testerStatus.style.display = 'flex';
+      urlHint.innerHTML = `Role: <strong>Tester</strong> — this device has the camera. Admin opens this URL without <code>?role=host</code>.`;
+      log('Role: TESTER — waiting for admin start command', 'info');
     } else {
-      // Admin device (controls the stream)
-      roleSpan.innerText = 'Admin (Viewer) - Controller';
-      roleSpan.className = 'role-badge viewer';
-      adminControls.style.display = 'block';
-      log('Running as ADMIN - can start/stop tester stream');
-      
-      // Join room as viewer
-      socket.emit('join-room', roomId, 'viewer');
-      log('Joined room as viewer');
+      roleBadge.className = 'badge viewer';
+      roleBadge.innerHTML = '<span class="dot"></span> Admin (Viewer)';
+      adminControls.style.display = 'flex';
+      urlHint.innerHTML = `Role: <strong>Admin</strong> — use Start/Stop to control the tester's camera. Tester opens this URL with <code>?role=host</code>.`;
+      log('Role: ADMIN — use buttons to control tester stream', 'info');
     }
 
-    async function startStreaming() {
-      if (isStreaming) return;
-      
-      try {
-        // Request camera only when admin starts
-        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-        document.getElementById('local').srcObject = localStream;
-        
-        // Create peer connection
-        pc = new RTCPeerConnection({
-          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-        });
-        
-        localStream.getTracks().forEach(track => {
-          pc.addTrack(track, localStream);
-        });
-        
-        pc.ontrack = (event) => {
-          log('Remote track received (viewer)');
-          document.getElementById('remote').srcObject = event.streams[0];
-        };
-        
-        pc.onicecandidate = (event) => {
-          if (event.candidate) {
-            socket.emit('signal', { room: roomId, candidate: event.candidate });
-          }
-        };
-        
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        socket.emit('signal', { room: roomId, sdp: offer });
-        
-        isStreaming = true;
-        log('Streaming started');
-        testerStatus.innerHTML = '<p>🔴 LIVE - Admin is watching your camera</p>';
-      } catch (err) {
-        log('Camera error: ' + err.message);
-      }
-    }
-    
-    function stopStreaming() {
-      if (!isStreaming) return;
-      
-      if (pc) {
-        pc.close();
-        pc = null;
-      }
-      if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
-        localStream = null;
-      }
-      document.getElementById('local').srcObject = null;
-      document.getElementById('remote').srcObject = null;
-      isStreaming = false;
-      log('Streaming stopped');
-      testerStatus.innerHTML = '<p>⏹️ Camera off. Waiting for admin to start...</p>';
-    }
+    // ─── Socket.IO ────────────────────────────────────────────────────────────
+    const socket = io({ transports: ['websocket'] });
 
-    // Admin buttons
-    startRecordingBtn.onclick = () => {
-      log('Admin clicked START RECORDING');
-      socket.emit('admin-start-stream', { room: roomId });
-    };
-    
-    stopRecordingBtn.onclick = () => {
-      log('Admin clicked STOP RECORDING');
-      socket.emit('admin-stop-stream', { room: roomId });
-    };
-
-    // Socket events
     socket.on('connect', () => {
-      log('Socket.IO connected');
+      connDot.classList.add('connected');
+      connLabel.textContent = `Connected (${socket.id})`;
+      log('Socket.IO connected: ' + socket.id, 'ok');
+      socket.emit('join-room', ROOM_ID, isHost ? 'host' : 'viewer');
+    });
+
+    socket.on('disconnect', () => {
+      connDot.classList.remove('connected');
+      connLabel.textContent = 'Disconnected from signaling server';
+      log('Socket.IO disconnected', 'err');
     });
 
     socket.on('connect_error', (err) => {
-      log('Socket.IO error: ' + err.message);
+      log('Socket.IO error: ' + err.message, 'err');
     });
 
-    // Signaling for WebRTC
+    // ─── Admin commands (received by tester) ─────────────────────────────────
+    socket.on('admin-start-stream', async () => {
+      log('Admin command: START', 'ok');
+      await startStreaming();
+    });
+
+    socket.on('admin-stop-stream', () => {
+      log('Admin command: STOP', 'info');
+      stopStreaming();
+    });
+
+    // ─── WebRTC helpers ───────────────────────────────────────────────────────
+    function makePeerConnection() {
+      // Empty iceServers = LAN-only (no Google STUN needed on same subnet)
+      // Add stun:stun.l.google.com:19302 only if you have internet
+      const pc = new RTCPeerConnection({ iceServers: [] });
+
+      pc.onicecandidate = ({ candidate }) => {
+        if (candidate) {
+          socket.emit('signal', { room: ROOM_ID, candidate });
+        }
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        log('ICE state: ' + pc.iceConnectionState,
+          pc.iceConnectionState === 'connected' ? 'ok' : 'info');
+      };
+
+      pc.ontrack = ({ streams }) => {
+        log('Remote track received', 'ok');
+        remoteVideo.srcObject = streams[0];
+      };
+
+      return pc;
+    }
+
+    // ─── Tester: start streaming ──────────────────────────────────────────────
+    async function startStreaming() {
+      if (isStreaming) return;
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        localVideo.srcObject = localStream;
+        log('Camera access granted', 'ok');
+
+        pc = makePeerConnection();
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        socket.emit('signal', { room: ROOM_ID, sdp: offer });
+        log('Offer sent to admin', 'info');
+
+        isStreaming = true;
+        testerStatus.classList.add('live');
+        testerStatusTx.textContent = '🔴 LIVE — admin is watching your camera';
+      } catch (err) {
+        log('Camera error: ' + err.message, 'err');
+      }
+    }
+
+    // ─── Tester: stop streaming ───────────────────────────────────────────────
+    function stopStreaming() {
+      if (!isStreaming) return;
+      if (pc) { pc.close(); pc = null; }
+      if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+      localVideo.srcObject = null;
+      remoteVideo.srcObject = null;
+      isStreaming = false;
+      testerStatus.classList.remove('live');
+      testerStatusTx.textContent = '⏹ Camera off — waiting for admin...';
+      log('Streaming stopped', 'info');
+    }
+
+    // ─── Signaling (shared by both roles) ────────────────────────────────────
     socket.on('signal', async (data) => {
-      if (!pc && data.sdp && data.sdp.type === 'offer') {
-        // Viewer creates peer connection when receiving offer
-        pc = new RTCPeerConnection({
-          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-        });
-        
-        pc.ontrack = (event) => {
-          log('Remote track received');
-          document.getElementById('remote').srcObject = event.streams[0];
-        };
-        
-        pc.onicecandidate = (event) => {
-          if (event.candidate) {
-            socket.emit('signal', { room: roomId, candidate: event.candidate });
-          }
-        };
+      // Admin receives offer → create pc, answer
+      if (data.sdp && data.sdp.type === 'offer' && !isHost) {
+        log('Offer received — creating answer', 'info');
+        pc = makePeerConnection();
+        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit('signal', { room: ROOM_ID, sdp: answer });
+        log('Answer sent to tester', 'info');
+        return;
       }
-      
-      if (data.sdp) {
-        if (pc) {
-          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-          if (data.sdp.type === 'offer') {
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            socket.emit('signal', { room: roomId, sdp: answer });
-            log('Answer sent');
-          }
-        }
-      } else if (data.candidate) {
-        if (pc) {
-          try {
-            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-          } catch (e) {
-            log('ICE candidate error: ' + e.message);
-          }
+
+      // Tester receives answer
+      if (data.sdp && data.sdp.type === 'answer' && isHost) {
+        log('Answer received', 'ok');
+        if (pc) await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        return;
+      }
+
+      // ICE candidates — both sides
+      if (data.candidate && pc) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        } catch (e) {
+          log('ICE candidate error: ' + e.message, 'err');
         }
       }
     });
 
-    // Cleanup
+    // ─── Admin buttons ────────────────────────────────────────────────────────
+    btnStart.onclick = () => {
+      log('Admin → sending START command', 'info');
+      socket.emit('admin-start-stream', { room: ROOM_ID });
+      btnStart.disabled = true;
+      btnStop.disabled = false;
+    };
+
+    btnStop.onclick = () => {
+      log('Admin → sending STOP command', 'info');
+      socket.emit('admin-stop-stream', { room: ROOM_ID });
+      btnStart.disabled = false;
+      btnStop.disabled = true;
+    };
+
+    // ─── Cleanup ──────────────────────────────────────────────────────────────
     window.onbeforeunload = () => {
       if (pc) pc.close();
       if (localStream) localStream.getTracks().forEach(t => t.stop());

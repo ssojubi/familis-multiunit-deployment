@@ -20,9 +20,11 @@ export default function TesterConsent() {
       setError("You must agree to continue.");
       return;
     }
-    // Store that consent was given
     localStorage.setItem("familis.consent", "true");
-    navigate("/tester-session");
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const room = urlParams.get("room");
+    navigate(room ? `/tester-session?room=${room}` : "/tester-session");
   };
 
   const handleDecline = () => {

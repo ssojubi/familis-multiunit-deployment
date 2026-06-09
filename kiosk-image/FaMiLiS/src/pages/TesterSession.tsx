@@ -1,7 +1,7 @@
 /**
  * Tester Session Page
- * Admin controls start/stop via WebSocket
- * Tester just waits for session to start
+ * Admin controls start/stop via central server WebSocket (port 8000)
+ * Frames go to central server → Kafka → FER pipeline
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -9,10 +9,10 @@ import { useNavigate } from "react-router-dom";
 import { performLogout } from "../RequireAuth";
 import logo from "../assets/logo.png";
 
-import { getApiBase, getWsBase } from "../apiConfig";
+import { getCentralApiBase, getCentralWsBase } from "../apiConfig";
 
-const API_BASE = getApiBase();
-const WS_BASE = getWsBase();
+const API_BASE = getCentralApiBase();
+const WS_BASE = getCentralWsBase();
 
 export default function TesterSession() {
   const navigate = useNavigate();
@@ -29,18 +29,20 @@ export default function TesterSession() {
   const wsRef = useRef<WebSocket | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(document.createElement("canvas"));
+  const isRecordingRef = useRef(false); // ref mirror to avoid stale closure in setInterval
+  const sessionIdRef = useRef<number | null>(null); // same reason
 
   const kioskId =
     localStorage.getItem("kiosk_id") ||
     `tester_${Math.random().toString(36).substring(2, 8)}`;
 
   useEffect(() => {
-    // Store kiosk ID
+    // Persist kiosk ID
     if (!localStorage.getItem("kiosk_id")) {
       localStorage.setItem("kiosk_id", kioskId);
     }
 
-    // Start camera immediately (tester just needs to be ready)
+    // Start camera immediately so tester is ready
     const startCamera = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -50,7 +52,6 @@ export default function TesterSession() {
         streamRef.current = stream;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          await videoRef.current.play();
         }
         setMessage("Camera ready. Waiting for admin...");
       } catch (err) {
@@ -60,64 +61,105 @@ export default function TesterSession() {
     };
     startCamera();
 
-    // Connect WebSocket to listen for start/stop commands
     const wsUrl = `${WS_BASE}/ws/kiosk/${kioskId}`;
-    wsRef.current = new WebSocket(wsUrl);
+    console.log("Connecting to central server WS:", wsUrl);
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
 
-    wsRef.current.onopen = () => {
-      console.log("WebSocket connected");
+    ws.onopen = () => {
+      console.log("Central server WebSocket connected");
+      setMessage("Camera ready. Waiting for admin...");
     };
 
-    wsRef.current.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.type === "start_session") {
-        handleStartSession(data.session_id);
-      } else if (data.type === "stop_session") {
-        handleStopSession();
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        console.log("WS message:", data);
+
+        if (data.type === "start_session") {
+          handleStartSession(data.session_id, data.food_name);
+        } else if (data.type === "stop_session") {
+          handleStopSession();
+        }
+      } catch (err) {
+        console.error("WS message parse error:", err);
       }
     };
 
-    wsRef.current.onerror = (err) => {
+    ws.onerror = (err) => {
       console.error("WebSocket error:", err);
+      setMessage("Connection error. Check central server.");
+    };
+
+    ws.onclose = () => {
+      console.log("WebSocket closed");
     };
 
     return () => {
-      if (wsRef.current) wsRef.current.close();
+      ws.close();
       if (intervalRef.current) clearInterval(intervalRef.current);
       if (streamRef.current)
         streamRef.current.getTracks().forEach((t) => t.stop());
     };
   }, []);
 
-  const handleStartSession = async (sid: string) => {
-    setSessionId(Number(sid));
+  const handleStartSession = (sid: string, foodName?: string) => {
+    const numericId = Number(sid);
+    setSessionId(numericId);
+    sessionIdRef.current = numericId;
+
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: "session_started",
+          session_id: sid,
+        }),
+      );
+    }
     setIsRecording(true);
+    isRecordingRef.current = true;
     setStatus("recording");
-    setMessage("Session started! Please taste the product.");
+    setMessage(
+      foodName
+        ? `Session started! Please taste: ${foodName}`
+        : "Session started! Please taste the product.",
+    );
     setFrameCount(0);
 
-    // Start sending frames
-    intervalRef.current = setInterval(sendFrame, 33); // ~30 FPS
+    intervalRef.current = setInterval(sendFrame, 33);
   };
 
   const handleStopSession = () => {
-    setIsRecording(false);
-    setStatus("completed");
-    setMessage("Session completed. Redirecting to survey...");
-
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
 
-    // Redirect to survey after brief delay
+    isRecordingRef.current = false;
+    setIsRecording(false);
+    setStatus("completed");
+    setMessage("Session completed. Redirecting to survey...");
+
+    // Then notify registry
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "session_stopped" }));
+    }
+
     setTimeout(() => {
-      navigate("/tester-survey", { state: { sessionId } });
+      navigate("/tester-survey", {
+        state: { sessionId: sessionIdRef.current },
+      });
     }, 1500);
   };
 
   const sendFrame = async () => {
-    if (!isRecording || !videoRef.current || !videoRef.current.videoWidth)
+    // Use refs to avoid stale closure inside setInterval
+    if (
+      !isRecordingRef.current ||
+      !sessionIdRef.current ||
+      !videoRef.current ||
+      !videoRef.current.videoWidth
+    )
       return;
 
     const video = videoRef.current;
@@ -142,12 +184,13 @@ export default function TesterSession() {
           const base64 = (reader.result as string).split(",")[1];
 
           try {
+            // ✅ Frames go to central server → Kafka → FER
             await fetch(`${API_BASE}/api/ingest/frame`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 kiosk_id: kioskId,
-                session_id: sessionId,
+                session_id: String(sessionIdRef.current),
                 frame: base64,
                 timestamp: new Date().toISOString(),
               }),

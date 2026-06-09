@@ -56,7 +56,10 @@ if (useHttps) {
     serverProtocol = "https";
     console.log("🔒 Running in HTTPS mode (USE_HTTPS=true)");
   } catch (err) {
-    console.warn("USE_HTTPS=true but cert/key missing — falling back to HTTP:", err?.message);
+    console.warn(
+      "USE_HTTPS=true but cert/key missing — falling back to HTTP:",
+      err?.message,
+    );
     http = createHttpServer(app);
   }
 } else {
@@ -168,6 +171,16 @@ io.on("connection", (socket) => {
     // Extract room, then forward the rest of the signal packet (sdp or candidate) to everyone else in the room
     const { room, ...signalData } = data;
     socket.to(room).emit("signal", signalData);
+  });
+  // admin → tester commands (WebRTC test page)
+  socket.on("admin-start-stream", ({ room }) => {
+    console.log(`[admin-start-stream] from ${socket.id} → room ${room}`);
+    socket.to(room).emit("admin-start-stream");
+  });
+
+  socket.on("admin-stop-stream", ({ room }) => {
+    console.log(`[admin-stop-stream] from ${socket.id} → room ${room}`);
+    socket.to(room).emit("admin-stop-stream");
   });
 
   // list of all users in the room
@@ -1490,13 +1503,11 @@ async function start() {
       (pId != null && !Number.isFinite(pId)) ||
       (kId != null && !Number.isFinite(kId))
     ) {
-      return res
-        .status(400)
-        .json({
-          ok: false,
-          error:
-            "userId, foodId, and optional participantId/kioskId are required.",
-        });
+      return res.status(400).json({
+        ok: false,
+        error:
+          "userId, foodId, and optional participantId/kioskId are required.",
+      });
     }
 
     try {
@@ -1687,12 +1698,10 @@ async function start() {
     async (req, res) => {
       const sessionId = req._frameSessionId;
       if (!req.file?.path) {
-        return res
-          .status(400)
-          .json({
-            ok: false,
-            error: "Missing frame (multipart field name: frame).",
-          });
+        return res.status(400).json({
+          ok: false,
+          error: "Missing frame (multipart field name: frame).",
+        });
       }
 
       try {
@@ -1706,12 +1715,10 @@ async function start() {
             .json({ ok: false, error: "Session not found." });
         }
         if (sess.status !== "active") {
-          return res
-            .status(409)
-            .json({
-              ok: false,
-              error: "Session is not active; cannot record frames.",
-            });
+          return res.status(409).json({
+            ok: false,
+            error: "Session is not active; cannot record frames.",
+          });
         }
 
         let faceDetected = null;
