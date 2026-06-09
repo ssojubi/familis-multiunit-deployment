@@ -1,26 +1,46 @@
-/** Shared URL helpers — match the page protocol and prefer Vite proxy on :5173. */
+/** Shared URL helpers: match the page protocol and prefer Vite proxy on :5173. */
+
+function getPageProtocol(): "http:" | "https:" {
+  return window.location.protocol === "https:" ? "https:" : "http:";
+}
+
+function getEnv(name: string): string | undefined {
+  const meta = import.meta as unknown as { env?: Record<string, string | undefined> };
+  return meta.env?.[name];
+}
 
 export function getApiBase(): string {
   if (window.location.port === "5173") {
     return "";
   }
-  return `${window.location.protocol}//${window.location.hostname}:8080`;
+  return `${getPageProtocol()}//${window.location.hostname}:8080`;
 }
 
 export function getSocketUrl(): string {
   if (window.location.port === "5173") {
     return "";
   }
-  return `${window.location.protocol}//${window.location.hostname}:8080`;
+  return `${getPageProtocol()}//${window.location.hostname}:8080`;
 }
 
 export function getWsBase(): string {
   if (window.location.port === "5173") {
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const proto = getPageProtocol() === "https:" ? "wss:" : "ws:";
     return `${proto}//${window.location.host}`;
   }
   const api = getApiBase();
   return api.replace(/^https:/, "wss:").replace(/^http:/, "ws:");
+}
+
+export function getCentralApiBase(): string {
+  return (
+    getEnv("VITE_CENTRAL_API_URL") ||
+    `${getPageProtocol()}//${window.location.hostname}:8000`
+  ).replace(/\/$/, "");
+}
+
+export function getCentralWsBase(): string {
+  return getCentralApiBase().replace(/^https:/, "wss:").replace(/^http:/, "ws:");
 }
 
 export function isKioskPublicPath(pathname: string): boolean {
@@ -53,8 +73,8 @@ export function buildShareLink(
   roomId: string,
   kioskId: string,
 ): string {
-  const protocol = window.location.protocol;
-  return `${protocol}//${hostIP}:5173/kiosk/setup?kiosk_id=${encodeURIComponent(kioskId)}&room=${roomId}`;
+  const protocol = getPageProtocol();
+  return `${protocol}//${hostIP}:5173/tester-consent?kiosk_id=${encodeURIComponent(kioskId)}&room=${roomId}`;
 }
 
 export function toApiUrl(url: string | null, apiBase = getApiBase()): string | null {

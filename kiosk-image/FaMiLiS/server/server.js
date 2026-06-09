@@ -63,9 +63,6 @@ if (useHttps) {
   http = createHttpServer(app);
   console.log("Running in HTTP mode");
 }
-// #region agent log
-try{const _lp=path.resolve(__dirname,"../../../debug-a7fb58.log");fs.appendFileSync(_lp,JSON.stringify({sessionId:"a7fb58",hypothesisId:"H3",location:"server.js:startup",message:"server protocol",data:{serverProtocol,useHttps,port:process.env.PORT||8080},timestamp:Date.now()})+"\n");}catch(_e){}
-// #endregion
 const io = new Server(http, {
   cors: {
     origin: "*",
@@ -121,9 +118,6 @@ const rooms = new Map();
 // Socket.io connection handling
 io.on("connection", (socket) => {
   console.log("A user connected:", socket.id);
-  // #region agent log
-  try{const _lp=path.resolve(__dirname,"../../../debug-a7fb58.log");fs.appendFileSync(_lp,JSON.stringify({sessionId:"a7fb58",hypothesisId:"H3",location:"server.js:connection",message:"socket connected",data:{socketId:socket.id,serverProtocol},timestamp:Date.now()})+"\n");}catch(_e){}
-  // #endregion
 
   socket.on("join-room", (roomId, role) => {
     if (!rooms.has(roomId)) {
@@ -1529,9 +1523,6 @@ async function start() {
           foodName: foodRow?.name == null ? undefined : String(foodRow.name),
           webKiosk,
         });
-        // #region agent log
-        try{const _lp=path.resolve(__dirname,"../../../debug-a7fb58.log");fs.appendFileSync(_lp,JSON.stringify({sessionId:"a7fb58",hypothesisId:"H6",location:"server.js:sessionStart",message:"central command result",data:{webKiosk,WEB_KIOSK_MODE,skipped:centralCommand?.skipped,sent:centralCommand?.sent,sessionId},timestamp:Date.now()})+"\n");}catch(_e){}
-        // #endregion
         if (centralCommand.sent) {
           await pool.query(
             `

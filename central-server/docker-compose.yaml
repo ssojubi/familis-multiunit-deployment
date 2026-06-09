@@ -100,6 +100,7 @@ services:
       CENTRAL_SERVER_URL: http://central-server:8000
       DEFAULT_KIOSK_AGENT_ID: kiosk-01
       WEB_KIOSK_MODE: "true"
+      HOST_LAN_IP: ${HOST_LAN_IP:-}
 
 volumes:
   mysql_data:

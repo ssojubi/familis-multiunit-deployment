@@ -9,8 +9,9 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { performLogout } from "../RequireAuth";
 import logo from "../assets/logo.png";
 import heart from "../assets/heart.png";
+import { getApiBase } from "../apiConfig";
 
-const API_BASE = "http://localhost:8080";
+const API_BASE = getApiBase();
 
 const RATING_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
 

@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebRTC Test - Admin Controlled</title>
+  <style>
+    body { font-family: Arial; padding: 20px; }
+    video { width: 400px; margin: 10px; border: 1px solid #ccc; }
+    button { margin: 5px; padding: 8px 16px; cursor: pointer; }
+    .status { margin-top: 10px; padding: 8px; background: #f0f0f0; font-size: 12px; }
+    .role-badge { font-weight: bold; padding: 4px 8px; border-radius: 4px; display: inline-block; }
+    .host { background: #4CAF50; color: white; }
+    .viewer { background: #2196F3; color: white; }
+  </style>
+</head>
+<body>
+  <h2>WebRTC Test - Admin Controlled</h2>
+  <p>Role: <span id="role" class="role-badge">Detecting...</span></p>
+  <video id="local" autoplay muted playsinline></video>
+  <video id="remote" autoplay playsinline></video>
+  <br>
+  <div id="admin-controls" style="display:none">
+    <button id="startRecording">▶ Start Recording (Admin)</button>
+    <button id="stopRecording">⏹ Stop Recording (Admin)</button>
+  </div>
+  <div id="tester-status" style="display:none">
+    <p>Waiting for admin to start recording...</p>
+  </div>
+  <div class="status" id="status">Waiting...</div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    let localStream = null;
+    let pc = null;
+    let roomId = 'test-room';
+    let isHost = false;
+    let isStreaming = false;
+
+    const statusDiv = document.getElementById('status');
+    const roleSpan = document.getElementById('role');
+    const adminControls = document.getElementById('admin-controls');
+    const testerStatus = document.getElementById('tester-status');
+    const startRecordingBtn = document.getElementById('startRecording');
+    const stopRecordingBtn = document.getElementById('stopRecording');
+
+    function log(msg) {
+      console.log(msg);
+      statusDiv.innerHTML += `<br>${new Date().toLocaleTimeString()} - ${msg}`;
+    }
+
+    // Determine role from URL or localStorage
+    const urlParams = new URLSearchParams(window.location.search);
+    isHost = urlParams.get('role') === 'host';
+
+    if (isHost) {
+      // Tester device (has camera, waits for admin command)
+      roleSpan.innerText = 'Tester (Host) - Camera Owner';
+      roleSpan.className = 'role-badge host';
+      testerStatus.style.display = 'block';
+      log('Running as TESTER - waiting for admin to start recording');
+      
+      // Join room as host (but don't start streaming yet)
+      socket.emit('join-room', roomId, 'host');
+      log('Joined room as host (waiting for command)');
+      
+      // Listen for admin commands
+      socket.on('admin-start-stream', async () => {
+        log('Admin command received: START STREAMING');
+        await startStreaming();
+      });
+      
+      socket.on('admin-stop-stream', () => {
+        log('Admin command received: STOP STREAMING');
+        stopStreaming();
+      });
+      
+    } else {
+      // Admin device (controls the stream)
+      roleSpan.innerText = 'Admin (Viewer) - Controller';
+      roleSpan.className = 'role-badge viewer';
+      adminControls.style.display = 'block';
+      log('Running as ADMIN - can start/stop tester stream');
+      
+      // Join room as viewer
+      socket.emit('join-room', roomId, 'viewer');
+      log('Joined room as viewer');
+    }
+
+    async function startStreaming() {
+      if (isStreaming) return;
+      
+      try {
+        // Request camera only when admin starts
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        document.getElementById('local').srcObject = localStream;
+        
+        // Create peer connection
+        pc = new RTCPeerConnection({
+          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        });
+        
+        localStream.getTracks().forEach(track => {
+          pc.addTrack(track, localStream);
+        });
+        
+        pc.ontrack = (event) => {
+          log('Remote track received (viewer)');
+          document.getElementById('remote').srcObject = event.streams[0];
+        };
+        
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            socket.emit('signal', { room: roomId, candidate: event.candidate });
+          }
+        };
+        
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        socket.emit('signal', { room: roomId, sdp: offer });
+        
+        isStreaming = true;
+        log('Streaming started');
+        testerStatus.innerHTML = '<p>🔴 LIVE - Admin is watching your camera</p>';
+      } catch (err) {
+        log('Camera error: ' + err.message);
+      }
+    }
+    
+    function stopStreaming() {
+      if (!isStreaming) return;
+      
+      if (pc) {
+        pc.close();
+        pc = null;
+      }
+      if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        localStream = null;
+      }
+      document.getElementById('local').srcObject = null;
+      document.getElementById('remote').srcObject = null;
+      isStreaming = false;
+      log('Streaming stopped');
+      testerStatus.innerHTML = '<p>⏹️ Camera off. Waiting for admin to start...</p>';
+    }
+
+    // Admin buttons
+    startRecordingBtn.onclick = () => {
+      log('Admin clicked START RECORDING');
+      socket.emit('admin-start-stream', { room: roomId });
+    };
+    
+    stopRecordingBtn.onclick = () => {
+      log('Admin clicked STOP RECORDING');
+      socket.emit('admin-stop-stream', { room: roomId });
+    };
+
+    // Socket events
+    socket.on('connect', () => {
+      log('Socket.IO connected');
+    });
+
+    socket.on('connect_error', (err) => {
+      log('Socket.IO error: ' + err.message);
+    });
+
+    // Signaling for WebRTC
+    socket.on('signal', async (data) => {
+      if (!pc && data.sdp && data.sdp.type === 'offer') {
+        // Viewer creates peer connection when receiving offer
+        pc = new RTCPeerConnection({
+          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        });
+        
+        pc.ontrack = (event) => {
+          log('Remote track received');
+          document.getElementById('remote').srcObject = event.streams[0];
+        };
+        
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            socket.emit('signal', { room: roomId, candidate: event.candidate });
+          }
+        };
+      }
+      
+      if (data.sdp) {
+        if (pc) {
+          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+          if (data.sdp.type === 'offer') {
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            socket.emit('signal', { room: roomId, sdp: answer });
+            log('Answer sent');
+          }
+        }
+      } else if (data.candidate) {
+        if (pc) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+          } catch (e) {
+            log('ICE candidate error: ' + e.message);
+          }
+        }
+      }
+    });
+
+    // Cleanup
+    window.onbeforeunload = () => {
+      if (pc) pc.close();
+      if (localStream) localStream.getTracks().forEach(t => t.stop());
+    };
+  </script>
+</body>
+</html>

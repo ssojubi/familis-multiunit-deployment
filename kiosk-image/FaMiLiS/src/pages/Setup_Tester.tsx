@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { performLogout } from "../RequireAuth";
 import logo from "../assets/logo.png";
+import { getApiBase } from "../apiConfig";
 
 type Food = {
   id: number;
@@ -20,7 +21,7 @@ type Participant = {
   gender: string | null;
 };
 
-const API_BASE = "http://localhost:8080";
+const API_BASE = getApiBase();
 
 function getStoredUserId(): number {
   try {

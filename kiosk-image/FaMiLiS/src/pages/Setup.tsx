@@ -68,14 +68,6 @@ export default function Setup() {
   }, [location.search, kioskAgentId]);
 
   useEffect(() => {
-    if (kioskMode) {
-      // #region agent log
-      fetch('http://127.0.0.1:7575/ingest/ee988b9a-3295-425f-9a5b-c96caf767e73',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a7fb58'},body:JSON.stringify({sessionId:'a7fb58',hypothesisId:'H5',location:'Setup.tsx:mount',message:'public kiosk setup loaded',data:{kioskMode,roomId,kioskAgentId,pathname:location.pathname},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
-    }
-  }, [kioskMode, roomId, kioskAgentId, location.pathname]);
-
-  useEffect(() => {
     async function loadFoods() {
       setFoodsLoading(true);
       setFoodsError(null);
@@ -83,9 +75,6 @@ export default function Setup() {
         const foodsUrl = `${API_BASE}/api/foods`;
         const res = await fetch(foodsUrl);
         const json = await res.json();
-        // #region agent log
-        fetch('http://127.0.0.1:7575/ingest/ee988b9a-3295-425f-9a5b-c96caf767e73',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a7fb58'},body:JSON.stringify({sessionId:'a7fb58',hypothesisId:'H4',location:'Setup.tsx:loadFoods',message:'foods fetch result',data:{foodsUrl,status:res.status,ok:json?.ok,pageProtocol:window.location.protocol,port:window.location.port},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         if (!res.ok || !json?.ok) throw new Error(json?.error || "Failed to load foods.");
         const list = (json.foods ?? []) as any[];
         setFoods(

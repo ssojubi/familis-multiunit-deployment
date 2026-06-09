@@ -253,9 +253,6 @@ export default function Dashboard() {
       .then((data) => {
         const resolved = resolveShareHostIP(data.serverIP);
         setHostIP(resolved);
-        // #region agent log
-        fetch('http://127.0.0.1:7575/ingest/ee988b9a-3295-425f-9a5b-c96caf767e73',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a7fb58'},body:JSON.stringify({sessionId:'a7fb58',runId:'post-fix',hypothesisId:'H7',location:'Dashboard.tsx:hostIP',message:'share host resolved',data:{serverIP:data.serverIP,resolved,browserHostname:window.location.hostname},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
       })
       .catch(() => setHostIP(resolveShareHostIP(null)));
   }, []);
@@ -373,9 +370,6 @@ export default function Dashboard() {
     if (roomId && hostIP) {
       const shareLink = buildShareLink(hostIP, roomId, DEFAULT_KIOSK_AGENT_ID);
       setShareUrl(shareLink);
-      // #region agent log
-      fetch('http://127.0.0.1:7575/ingest/ee988b9a-3295-425f-9a5b-c96caf767e73',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a7fb58'},body:JSON.stringify({sessionId:'a7fb58',hypothesisId:'H2',location:'Dashboard.tsx:shareLink',message:'share link built',data:{shareLink,pageProtocol:window.location.protocol,hostIP,roomId},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
     }
   }, [roomId, hostIP]);
 
@@ -393,18 +387,12 @@ export default function Dashboard() {
 
     socket.on("connect", () => {
       setKioskStatus(`Connected as ${role}. Room: ${roomId}`);
-      // #region agent log
-      fetch('http://127.0.0.1:7575/ingest/ee988b9a-3295-425f-9a5b-c96caf767e73',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a7fb58'},body:JSON.stringify({sessionId:'a7fb58',hypothesisId:'H3',location:'Dashboard.tsx:socket',message:'socket connected',data:{socketUrl:SOCKET_SERVER_URL||window.location.origin,role,roomId},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       // pass both roomId and role to help the server configure user sets
       socket.emit("join-room", roomId, role);
     });
 
-    socket.on("connect_error", (err) => {
+    socket.on("connect_error", () => {
       setKioskStatus("Connection failed — check that server.js is running.");
-      // #region agent log
-      fetch('http://127.0.0.1:7575/ingest/ee988b9a-3295-425f-9a5b-c96caf767e73',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a7fb58'},body:JSON.stringify({sessionId:'a7fb58',hypothesisId:'H3',location:'Dashboard.tsx:socket',message:'socket connect_error',data:{socketUrl:SOCKET_SERVER_URL||window.location.origin,error:String(err?.message||err),pageProtocol:window.location.protocol},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
     });
 
     // HOST: Changed listener from 'user-connected' to 'viewer-connected'
@@ -1718,7 +1706,8 @@ export default function Dashboard() {
                     </span>
                     <span className="text-gray-600">{shareUrl}</span>
                     <p className="text-[11px] text-gray-400 mt-1">
-                      Open this link on the kiosk device browser — no separate agent app needed.
+                      Open this link on the kiosk device browser — no separate
+                      agent app needed.
                     </p>
                     {(hostIP === "localhost" ||
                       hostIP === "127.0.0.1" ||
@@ -1728,7 +1717,8 @@ export default function Dashboard() {
                         <code className="bg-amber-50 px-1 rounded">
                           http://&lt;your-wifi-ip&gt;:5173
                         </code>{" "}
-                        (e.g. 192.168.1.x) so the share link uses an address the kiosk can reach.
+                        (e.g. 192.168.1.x) so the share link uses an address the
+                        kiosk can reach.
                       </p>
                     )}
                   </div>
