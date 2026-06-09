@@ -20,17 +20,23 @@ class KioskRegistry:
     async def set_recording(self, kiosk_id: str, session_id: str):
         if kiosk_id in self.kiosks:
             self.kiosks[kiosk_id]["status"] = "recording"
-            self.kiosks[kiosk_id]["session_id"] = session_id
+            self.kiosks[kiosk_id]["session_id"] = str(session_id)
+            print(f"Kiosk {kiosk_id} recording session {session_id}")
 
     async def set_idle(self, kiosk_id: str):
         if kiosk_id in self.kiosks:
             self.kiosks[kiosk_id]["status"] = "idle"
             self.kiosks[kiosk_id]["session_id"] = None
 
-    def unregister(self, kiosk_id: str):
-        if kiosk_id in self.kiosks:
-            del self.kiosks[kiosk_id]
-            print(f"Kiosk {kiosk_id} unregistered")
+    def unregister(self, kiosk_id: str, websocket=None):
+        kiosk = self.kiosks.get(kiosk_id)
+        if not kiosk:
+            return
+        if websocket is not None and kiosk.get("websocket") is not websocket:
+            print(f"Ignored stale unregister for kiosk {kiosk_id}")
+            return
+        del self.kiosks[kiosk_id]
+        print(f"Kiosk {kiosk_id} unregistered")
 
     def count(self):
         return len(self.kiosks)

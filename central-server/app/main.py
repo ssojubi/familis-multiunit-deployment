@@ -71,10 +71,10 @@ async def websocket_endpoint(websocket: WebSocket, kiosk_id: str):
             elif data["type"] == "session_stopped":
                 await kiosk_registry.set_idle(kiosk_id)
     except WebSocketDisconnect:
-        kiosk_registry.unregister(kiosk_id)
+        kiosk_registry.unregister(kiosk_id, websocket)
     except Exception as e:
         print(f"WebSocket error for {kiosk_id}: {e}")
-        kiosk_registry.unregister(kiosk_id)
+        kiosk_registry.unregister(kiosk_id, websocket)
 
 
 app.include_router(ingest.router, prefix="/api/ingest", tags=["ingest"])

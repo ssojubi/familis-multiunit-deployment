@@ -23,8 +23,14 @@ export default function TesterConsent() {
     localStorage.setItem("familis.consent", "true");
 
     const urlParams = new URLSearchParams(window.location.search);
+    const nextParams = new URLSearchParams();
     const room = urlParams.get("room");
-    navigate(room ? `/tester-session?room=${room}` : "/tester-session");
+    const kioskId = urlParams.get("kiosk_id");
+    if (room) nextParams.set("room", room);
+    if (kioskId) nextParams.set("kiosk_id", kioskId);
+
+    const query = nextParams.toString();
+    navigate(query ? `/tester-session?${query}` : "/tester-session");
   };
 
   const handleDecline = () => {

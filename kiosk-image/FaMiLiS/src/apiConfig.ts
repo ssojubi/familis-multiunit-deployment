@@ -33,6 +33,10 @@ export function getWsBase(): string {
 }
 
 export function getCentralApiBase(): string {
+  if (window.location.port === "5173") {
+    return "/central-api";
+  }
+
   return (
     getEnv("VITE_CENTRAL_API_URL") ||
     `${getPageProtocol()}//${window.location.hostname}:8000`
@@ -40,6 +44,11 @@ export function getCentralApiBase(): string {
 }
 
 export function getCentralWsBase(): string {
+  if (window.location.port === "5173") {
+    const proto = getPageProtocol() === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}/central-ws`;
+  }
+
   return getCentralApiBase().replace(/^https:/, "wss:").replace(/^http:/, "ws:");
 }
 

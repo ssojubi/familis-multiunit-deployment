@@ -108,6 +108,13 @@ interface ServerToClientEvents {
   "viewer-connected": () => void;
   "user-disconnected": (userId: string) => void;
   "host-disconnected": () => void;
+  "admin-start-stream": (data?: {
+    sessionId?: number | string;
+    session_id?: number | string;
+    foodName?: string;
+    food_name?: string;
+  }) => void;
+  "admin-stop-stream": () => void;
   signal: (data: {
     sdp?: RTCSessionDescriptionInit;
     candidate?: RTCIceCandidateInit;
@@ -116,6 +123,15 @@ interface ServerToClientEvents {
 
 interface ClientToServerEvents {
   "join-room": (roomId: string, role: Role) => void;
+  "admin-start-stream": (data: {
+    room: string;
+    sessionId?: number | string;
+    foodName?: string;
+  }) => void;
+  "admin-stop-stream": (data: {
+    room: string;
+    sessionId?: number | string;
+  }) => void;
   signal: (data: {
     room: string;
     sdp?: RTCSessionDescriptionInit;
@@ -1710,6 +1726,7 @@ export default function Dashboard() {
                       ref={remoteVideoRef}
                       autoPlay
                       playsInline
+                      muted
                       className="w-full h-full object-cover"
                     />
                   </div>
@@ -1774,6 +1791,9 @@ export default function Dashboard() {
                         if (socketRef.current && roomId) {
                           socketRef.current.emit("admin-start-stream", {
                             room: roomId,
+                            sessionId: json.session.id,
+                            foodName: foods.find((f) => f.id === kioskFoodId)
+                              ?.name,
                           });
                         }
                       } catch (err: any) {
@@ -1822,6 +1842,7 @@ export default function Dashboard() {
                         if (socketRef.current && roomId) {
                           socketRef.current.emit("admin-stop-stream", {
                             room: roomId,
+                            sessionId: kioskSessionId,
                           });
                         }
                         cleanupPeerConnection();

@@ -35,6 +35,8 @@ const DEFAULT_KIOSK_AGENT_ID = (
   process.env.DEFAULT_KIOSK_AGENT_ID || "kiosk-01"
 ).trim();
 const WEB_KIOSK_MODE = process.env.WEB_KIOSK_MODE === "true";
+const SSL_KEY_FILE = process.env.SSL_KEY_FILE || "./key.pem";
+const SSL_CERT_FILE = process.env.SSL_CERT_FILE || "./cert.pem";
 
 import { createServer as createHttpServer } from "http";
 import { createServer as createHttpsServer } from "https";
@@ -49,8 +51,8 @@ const useHttps = process.env.USE_HTTPS === "true";
 if (useHttps) {
   try {
     const sslOptions = {
-      key: fs.readFileSync("./key.pem"),
-      cert: fs.readFileSync("./cert.pem"),
+      key: fs.readFileSync(SSL_KEY_FILE),
+      cert: fs.readFileSync(SSL_CERT_FILE),
     };
     http = createHttpsServer(sslOptions, app);
     serverProtocol = "https";
@@ -123,15 +125,24 @@ io.on("connection", (socket) => {
   console.log("A user connected:", socket.id);
 
   socket.on("join-room", (roomId, role) => {
-    if (!rooms.has(roomId)) {
-      rooms.set(roomId, new Map());
+    const normalizedRoomId =
+      typeof roomId === "string" ? roomId.trim() : String(roomId ?? "").trim();
+    if (!normalizedRoomId) {
+      console.warn(`[join-room] ${socket.id} tried to join an empty room`);
+      return;
     }
 
-    const room = rooms.get(roomId);
-    room.set(socket.id, { peerId: socket.id, role, streams: new Set() });
-    socket.join(roomId);
+    if (!rooms.has(normalizedRoomId)) {
+      rooms.set(normalizedRoomId, new Map());
+    }
 
-    console.log(`User ${socket.id} joined room ${roomId} as ${role}`);
+    const room = rooms.get(normalizedRoomId);
+    room.set(socket.id, { peerId: socket.id, role, streams: new Set() });
+    socket.join(normalizedRoomId);
+
+    console.log(
+      `[join-room] ${socket.id} joined room "${normalizedRoomId}" as ${role}. Members: ${room.size}`,
+    );
 
     if (role === "viewer") {
       room.forEach((userData, userId) => {
@@ -173,14 +184,28 @@ io.on("connection", (socket) => {
     socket.to(room).emit("signal", signalData);
   });
   // admin → tester commands (WebRTC test page)
-  socket.on("admin-start-stream", ({ room }) => {
+  socket.on("admin-start-stream", ({ room, ...payload }) => {
     console.log(`[admin-start-stream] from ${socket.id} → room ${room}`);
-    socket.to(room).emit("admin-start-stream");
+    const normalizedRoomId =
+      typeof room === "string" ? room.trim() : String(room ?? "").trim();
+    const memberCount = rooms.get(normalizedRoomId)?.size ?? 0;
+    console.log(
+      `[admin-start-stream] forwarding to room "${normalizedRoomId}" (${memberCount} member(s))`,
+      payload,
+    );
+    socket.to(normalizedRoomId).emit("admin-start-stream", payload);
   });
 
-  socket.on("admin-stop-stream", ({ room }) => {
+  socket.on("admin-stop-stream", ({ room, ...payload }) => {
     console.log(`[admin-stop-stream] from ${socket.id} → room ${room}`);
-    socket.to(room).emit("admin-stop-stream");
+    const normalizedRoomId =
+      typeof room === "string" ? room.trim() : String(room ?? "").trim();
+    const memberCount = rooms.get(normalizedRoomId)?.size ?? 0;
+    console.log(
+      `[admin-stop-stream] forwarding to room "${normalizedRoomId}" (${memberCount} member(s))`,
+      payload,
+    );
+    socket.to(normalizedRoomId).emit("admin-stop-stream", payload);
   });
 
   // list of all users in the room

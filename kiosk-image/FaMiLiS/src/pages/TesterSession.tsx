@@ -1,18 +1,54 @@
 /**
  * Tester Session Page
- * Admin controls start/stop via central server WebSocket (port 8000)
+ * Admin controls start/stop via central server WebSocket and Socket.IO room commands
  * Frames go to central server → Kafka → FER pipeline
  */
 
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { io, Socket } from "socket.io-client";
 import { performLogout } from "../RequireAuth";
 import logo from "../assets/logo.png";
 
-import { getCentralApiBase, getCentralWsBase } from "../apiConfig";
+import {
+  getCentralApiBase,
+  getCentralWsBase,
+  getSocketUrl,
+} from "../apiConfig";
 
 const API_BASE = getCentralApiBase();
 const WS_BASE = getCentralWsBase();
+const SOCKET_SERVER_URL = getSocketUrl();
+
+type ServerToClientEvents = {
+  "admin-start-stream": (data?: {
+    sessionId?: number | string;
+    session_id?: number | string;
+    foodName?: string;
+    food_name?: string;
+  }) => void;
+  "admin-stop-stream": () => void;
+  signal: (data: {
+    sdp?: RTCSessionDescriptionInit;
+    candidate?: RTCIceCandidateInit;
+  }) => void;
+};
+
+type ClientToServerEvents = {
+  "join-room": (roomId: string, role: "host") => void;
+  signal: (data: {
+    room: string;
+    sdp?: RTCSessionDescriptionInit;
+    candidate?: RTCIceCandidateInit;
+  }) => void;
+};
+
+const WEBRTC_CONFIG: RTCConfiguration = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+  ],
+};
 
 export default function TesterSession() {
   const navigate = useNavigate();
@@ -27,39 +63,43 @@ export default function TesterSession() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const socketRef = useRef<Socket<
+    ServerToClientEvents,
+    ClientToServerEvents
+  > | null>(null);
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(document.createElement("canvas"));
   const isRecordingRef = useRef(false); // ref mirror to avoid stale closure in setInterval
   const sessionIdRef = useRef<number | null>(null); // same reason
+  const lastRegistryNotifyRef = useRef(0);
 
+  const urlParams = new URLSearchParams(window.location.search);
+  const roomId = (urlParams.get("room") || "default-tester-room").trim();
   const kioskId =
-    localStorage.getItem("kiosk_id") ||
-    `tester_${Math.random().toString(36).substring(2, 8)}`;
+    (
+      urlParams.get("kiosk_id") ||
+      localStorage.getItem("kiosk_id") ||
+      "kiosk-01"
+    ).trim();
 
   useEffect(() => {
+    let disposed = false;
+
     // Persist kiosk ID
-    if (!localStorage.getItem("kiosk_id")) {
-      localStorage.setItem("kiosk_id", kioskId);
-    }
+    localStorage.setItem("kiosk_id", kioskId);
 
     // Start camera immediately so tester is ready
-    const startCamera = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: false,
-        });
-        streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-        }
+    ensureCameraStream()
+      .then(() => {
+        if (disposed) return;
         setMessage("Camera ready. Waiting for admin...");
-      } catch (err) {
+      })
+      .catch((err) => {
+        if (disposed) return;
         console.error("Camera error:", err);
         setMessage("Camera access denied. Please allow camera access.");
-      }
-    };
-    startCamera();
+      });
 
     const wsUrl = `${WS_BASE}/ws/kiosk/${kioskId}`;
     console.log("Connecting to central server WS:", wsUrl);
@@ -67,11 +107,16 @@ export default function TesterSession() {
     wsRef.current = ws;
 
     ws.onopen = () => {
+      if (disposed) return;
       console.log("Central server WebSocket connected");
+      if (isRecordingRef.current && sessionIdRef.current != null) {
+        notifyCentralSessionStarted(sessionIdRef.current);
+      }
       setMessage("Camera ready. Waiting for admin...");
     };
 
     ws.onmessage = (event) => {
+      if (disposed) return;
       try {
         const data = JSON.parse(event.data);
         console.log("WS message:", data);
@@ -87,35 +132,185 @@ export default function TesterSession() {
     };
 
     ws.onerror = (err) => {
+      if (disposed) return;
       console.error("WebSocket error:", err);
       setMessage("Connection error. Check central server.");
     };
 
     ws.onclose = () => {
+      if (disposed) return;
       console.log("WebSocket closed");
     };
 
+    const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io(
+      SOCKET_SERVER_URL,
+      {
+        reconnection: true,
+        transports: ["websocket", "polling"],
+      },
+    );
+    socketRef.current = socket;
+
+    socket.on("connect", () => {
+      if (disposed) return;
+      console.log(
+        `[TesterSession] Socket.IO connected. Joining room "${roomId}" as host`,
+      );
+      socket.emit("join-room", roomId, "host");
+    });
+
+    socket.on("admin-start-stream", (data = {}) => {
+      if (disposed) return;
+      console.log("[TesterSession] Received admin-start-stream", {
+        roomId,
+        kioskId,
+        data,
+      });
+      const incomingSessionId = data.sessionId ?? data.session_id;
+      if (!incomingSessionId) {
+        setMessage("Start command received without a session ID.");
+        return;
+      }
+      handleStartSession(incomingSessionId, data.foodName ?? data.food_name);
+      void publishCameraStream();
+    });
+
+    socket.on("admin-stop-stream", () => {
+      if (disposed) return;
+      console.log("[TesterSession] Received admin-stop-stream", {
+        roomId,
+        kioskId,
+      });
+      handleStopSession();
+    });
+
+    socket.on("signal", async (data) => {
+      if (disposed) return;
+      const pc = peerConnectionRef.current;
+      if (!pc) return;
+
+      if (data.sdp?.type === "answer" && pc.signalingState === "have-local-offer") {
+        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+      } else if (data.candidate) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        } catch (err) {
+          console.error("ICE candidate error:", err);
+        }
+      }
+    });
+
     return () => {
+      disposed = true;
       ws.close();
+      socket.disconnect();
+      cleanupPeerConnection();
       if (intervalRef.current) clearInterval(intervalRef.current);
       if (streamRef.current)
         streamRef.current.getTracks().forEach((t) => t.stop());
     };
   }, []);
 
-  const handleStartSession = (sid: string, foodName?: string) => {
+  const ensureCameraStream = async (): Promise<MediaStream> => {
+    if (streamRef.current?.active) {
+      return streamRef.current;
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: false,
+    });
+    streamRef.current = stream;
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream;
+      await videoRef.current.play().catch(() => {});
+    }
+
+    return stream;
+  };
+
+  const createPeerConnection = (): RTCPeerConnection => {
+    if (peerConnectionRef.current) return peerConnectionRef.current;
+
+    const pc = new RTCPeerConnection(WEBRTC_CONFIG);
+    peerConnectionRef.current = pc;
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate && socketRef.current && roomId) {
+        socketRef.current.emit("signal", {
+          room: roomId,
+          candidate: event.candidate,
+        });
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      console.log("[TesterSession] WebRTC connection:", pc.connectionState);
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      console.log("[TesterSession] ICE state:", pc.iceConnectionState);
+    };
+
+    return pc;
+  };
+
+  const publishCameraStream = async () => {
+    const socket = socketRef.current;
+    if (!socket) return;
+
+    const stream = await ensureCameraStream();
+    cleanupPeerConnection();
+    const pc = createPeerConnection();
+    stream.getTracks().forEach((track) => {
+      pc.addTrack(track, stream);
+    });
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    socket.emit("signal", { room: roomId, sdp: offer });
+    console.log("[TesterSession] Sent WebRTC offer", { roomId });
+  };
+
+  const cleanupPeerConnection = () => {
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
+    }
+  };
+
+  const notifyCentralSessionStarted = (sid: string | number) => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return false;
+
+    wsRef.current.send(
+      JSON.stringify({
+        type: "session_started",
+        session_id: String(sid),
+      }),
+    );
+    lastRegistryNotifyRef.current = Date.now();
+    console.log("[TesterSession] Notified central registry session_started", {
+      kioskId,
+      sessionId: String(sid),
+    });
+    return true;
+  };
+
+  const handleStartSession = (sid: string | number, foodName?: string) => {
     const numericId = Number(sid);
+    if (!Number.isFinite(numericId)) {
+      setMessage(`Invalid session ID received: ${sid}`);
+      return;
+    }
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
     setSessionId(numericId);
     sessionIdRef.current = numericId;
 
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          type: "session_started",
-          session_id: sid,
-        }),
-      );
-    }
+    notifyCentralSessionStarted(sid);
     setIsRecording(true);
     isRecordingRef.current = true;
     setStatus("recording");
@@ -130,13 +325,19 @@ export default function TesterSession() {
   };
 
   const handleStopSession = () => {
+    const completedSessionId = sessionIdRef.current;
+    if (!isRecordingRef.current && completedSessionId == null) return;
+
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
 
     isRecordingRef.current = false;
+    sessionIdRef.current = null;
+    cleanupPeerConnection();
     setIsRecording(false);
+    setSessionId(null);
     setStatus("completed");
     setMessage("Session completed. Redirecting to survey...");
 
@@ -147,7 +348,7 @@ export default function TesterSession() {
 
     setTimeout(() => {
       navigate("/tester-survey", {
-        state: { sessionId: sessionIdRef.current },
+        state: { sessionId: completedSessionId },
       });
     }, 1500);
   };
@@ -185,7 +386,7 @@ export default function TesterSession() {
 
           try {
             // ✅ Frames go to central server → Kafka → FER
-            await fetch(`${API_BASE}/api/ingest/frame`, {
+            const res = await fetch(`${API_BASE}/api/ingest/frame`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -195,6 +396,16 @@ export default function TesterSession() {
                 timestamp: new Date().toISOString(),
               }),
             });
+            if (res.status === 409) {
+              const now = Date.now();
+              if (now - lastRegistryNotifyRef.current > 1000) {
+                notifyCentralSessionStarted(String(sessionIdRef.current));
+              }
+              return;
+            }
+            if (!res.ok) {
+              throw new Error(`Frame upload HTTP ${res.status}`);
+            }
             setFrameCount((prev) => prev + 1);
           } catch (err) {
             console.error("Frame upload failed:", err);
@@ -241,9 +452,15 @@ export default function TesterSession() {
                 Product Testing Session
               </h1>
               <p className="text-gray-500 text-sm">Kiosk ID: {kioskId}</p>
+              <p className="text-gray-500 text-sm">Room ID: {roomId}</p>
 
               <div className="mt-4 p-4 bg-gray-50 rounded-lg">
                 <p className="text-gray-700">{message}</p>
+                {sessionId && (
+                  <p className="text-sm text-gray-500 mt-2">
+                    Active session: #{sessionId}
+                  </p>
+                )}
                 {status === "recording" && (
                   <p className="text-sm text-green-600 mt-2">
                     Frames captured: {frameCount}

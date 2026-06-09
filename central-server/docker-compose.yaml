@@ -33,7 +33,7 @@ services:
         echo "Waiting for Kafka broker..."
         for i in {1..60}; do
           kafka-topics --bootstrap-server kafka:9092 --list >/dev/null 2>&1 && break
-          echo "  Not ready ($i)..."
+          echo "  Not ready..."
           sleep 2
         done
         echo "Creating Kafka topics..."
@@ -95,6 +95,11 @@ services:
       DEFAULT_KIOSK_AGENT_ID: kiosk-01
       WEB_KIOSK_MODE: "true"
       HOST_LAN_IP: ${HOST_LAN_IP:-}
+      USE_HTTPS: "true"
+      SSL_KEY_FILE: /app/certs/key.pem
+      SSL_CERT_FILE: /app/certs/cert.pem
+    volumes:
+      - ../certs:/app/certs:ro
 
 volumes:
   mysql_data:
