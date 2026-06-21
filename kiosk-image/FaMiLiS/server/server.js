@@ -564,6 +564,73 @@ async function start() {
     }
   });
 
+  app.post("/api/signup", async (req, res) => {
+    const username = String(req.body?.username ?? "").trim();
+    const email = String(req.body?.email ?? "").trim().toLowerCase();
+    const password = String(req.body?.password ?? "");
+
+    if (!username || !email || !password) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "Username, email, and password are required." });
+    }
+
+    if (username.length < 2) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "Username must be at least 2 characters." });
+    }
+
+    if (password.length < 8) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "Password must be at least 8 characters." });
+    }
+
+    if (!email.includes("@")) {
+      return res.status(400).json({ ok: false, error: "Enter a valid email address." });
+    }
+
+    try {
+      const [existingRows] = await pool.query(
+        `
+        SELECT user_id
+        FROM users
+        WHERE email = ?
+        LIMIT 1
+      `,
+        [email],
+      );
+
+      if (existingRows.length > 0) {
+        return res.status(409).json({ ok: false, error: "An account with that email already exists." });
+      }
+
+      const passwordHash = await bcrypt.hash(password, 10);
+      const [result] = await pool.query(
+        `
+        INSERT INTO users (username, email, password_hash, role, last_login)
+        VALUES (?, ?, ?, 'tester', NOW())
+      `,
+        [username, email, passwordHash],
+      );
+
+      const userId = Number(result.insertId);
+      return res.status(201).json({
+        ok: true,
+        user: {
+          id: userId,
+          username,
+          email,
+          role: "tester",
+        },
+      });
+    } catch (err) {
+      console.error("Signup error:", err);
+      return res.status(500).json({ ok: false, error: "Server error." });
+    }
+  });
+
   app.post("/api/login", async (req, res) => {
     const { email, password } = req.body ?? {};
 
@@ -616,6 +683,14 @@ async function start() {
         return res
           .status(401)
           .json({ ok: false, error: "Invalid email or password." });
+      }
+
+      try {
+        await pool.query("UPDATE users SET last_login = NOW() WHERE user_id = ?", [
+          user.user_id,
+        ]);
+      } catch (lastLoginErr) {
+        console.error("Failed to update last_login:", lastLoginErr);
       }
 
       return res.json({

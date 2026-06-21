@@ -2,7 +2,7 @@
 -- MySQL schema for Familis Project (centralized)
 -- =====================================================
 
--- USERS (tester/admin operators)
+-- USERS (tester/admin operators, including self-registered tester accounts)
 CREATE TABLE IF NOT EXISTS users (
   user_id INT AUTO_INCREMENT PRIMARY KEY,
   username VARCHAR(50) NOT NULL,
