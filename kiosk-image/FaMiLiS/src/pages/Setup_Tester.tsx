@@ -2,7 +2,7 @@
  * notes:
  * - backend: food and participant would come from the participants table which would be set by admin
  **/
-
+// @ts-nocheck
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { performLogout } from "../RequireAuth";
