@@ -12,8 +12,15 @@ import logo from "../assets/logo.png";
 
 export default function TesterConsent() {
   const navigate = useNavigate();
-  const [consent, setConsent] = useState(false);
+  const [consent, setConsent] = useState({
+    recording: false,
+    dataUsage: false,
+    participant: false,
+  });
+
   const [error, setError] = useState<string | null>(null);
+
+  const allChecked = consent.recording && consent.dataUsage && consent.participant;
 
   const handleAccept = () => {
     if (!consent) {
@@ -104,7 +111,7 @@ export default function TesterConsent() {
                   </p>
                 </div>
 
-                <div className="flex items-start gap-3 mt-4">
+                {/* <div className="flex items-start gap-3 mt-4">
                   <input
                     type="checkbox"
                     id="consent"
@@ -117,6 +124,27 @@ export default function TesterConsent() {
                     voluntarily agree to participate in this study and consent
                     to the collection and use of my data for research purposes.
                   </label>
+                </div> */}
+
+                <div className="flex flex-col gap-2 mt-4">
+                  <h3 className="text-sm text-gray-700 font-semibold">Consent Checklist *</h3>
+                  <div className="space-y-3">
+                    <ConsentRow
+                      checked={consent.recording}
+                      onChange={(checked) => setConsent((p) => ({ ...p, recording: checked }))}
+                      label="I consent to being recorded during this session"
+                    />
+                    <ConsentRow
+                      checked={consent.dataUsage}
+                      onChange={(checked) => setConsent((p) => ({ ...p, dataUsage: checked }))}
+                      label="I agree to the use of my data for research purposes"
+                    />
+                    <ConsentRow
+                      checked={consent.participant}
+                      onChange={(checked) => setConsent((p) => ({ ...p, participant: checked }))}
+                      label="I confirm I am a willing participant in this study"
+                    />
+                  </div>
                 </div>
 
                 {error && <p className="text-red-600 text-sm mt-2">{error}</p>}
@@ -124,12 +152,19 @@ export default function TesterConsent() {
 
               <div className="flex gap-4 pt-4">
                 <button
+                  type="button"
                   onClick={handleAccept}
-                  className="flex-1 bg-red-600 hover:bg-red-700 text-white py-3 rounded-lg font-semibold transition-colors"
+                  disabled={!allChecked}
+                  className={`flex-1 py-3 rounded-lg text-sm font-semibold transition-colors ${
+                    allChecked
+                      ? "bg-[#e8174a] hover:bg-[#c9143f] text-white"
+                      : "bg-gray-200 text-gray-400 cursor-not-allowed"
+                  }`}
                 >
-                  I Agree, Start Testing
+                  Start the Session
                 </button>
                 <button
+                  type="button"
                   onClick={handleDecline}
                   className="flex-1 border border-gray-300 hover:bg-gray-50 text-gray-700 py-3 rounded-lg font-semibold transition-colors"
                 >
@@ -141,5 +176,27 @@ export default function TesterConsent() {
         </div>
       </main>
     </div>
+  );
+}
+
+function ConsentRow({
+  checked,
+  onChange,
+  label,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  label: string;
+}) {
+  return (
+    <label className="flex items-start gap-3 cursor-pointer">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-0.5 w-4 h-4 accent-[#e8174a]"
+      />
+      <span className="text-sm text-gray-600">{label}</span>
+    </label>
   );
 }

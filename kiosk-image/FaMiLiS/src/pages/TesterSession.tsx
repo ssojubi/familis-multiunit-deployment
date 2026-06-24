@@ -159,6 +159,10 @@ export default function TesterSession() {
       socket.emit("join-room", roomId, "host");
     });
 
+    socket.on("viewer-connected", () => {
+      void publishCameraStream();
+    });
+
     socket.on("admin-start-stream", (data = {}) => {
       if (disposed) return;
       console.log("[TesterSession] Received admin-start-stream", {
@@ -354,14 +358,12 @@ export default function TesterSession() {
   };
 
   const sendFrame = async () => {
-    // Use refs to avoid stale closure inside setInterval
     if (
       !isRecordingRef.current ||
       !sessionIdRef.current ||
       !videoRef.current ||
       !videoRef.current.videoWidth
-    )
-      return;
+    ) return;
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -379,39 +381,29 @@ export default function TesterSession() {
     canvas.toBlob(
       async (blob) => {
         if (!blob) return;
+        const sid = sessionIdRef.current;
+        if (!sid) return;
 
-        const reader = new FileReader();
-        reader.onloadend = async () => {
-          const base64 = (reader.result as string).split(",")[1];
+        const fd = new FormData();
+        fd.append("frame", blob, "frame.jpg");
 
-          try {
-            // ✅ Frames go to central server → Kafka → FER
-            const res = await fetch(`${API_BASE}/api/ingest/frame`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                kiosk_id: kioskId,
-                session_id: String(sessionIdRef.current),
-                frame: base64,
-                timestamp: new Date().toISOString(),
-              }),
-            });
-            if (res.status === 409) {
-              const now = Date.now();
-              if (now - lastRegistryNotifyRef.current > 1000) {
-                notifyCentralSessionStarted(String(sessionIdRef.current));
-              }
-              return;
+        try {
+          const res = await fetch(`/api/sessions/${sid}/frames`, {
+            method: "POST",
+            body: fd,
+          });
+          if (res.status === 409) {
+            const now = Date.now();
+            if (now - lastRegistryNotifyRef.current > 1000) {
+              notifyCentralSessionStarted(String(sid));
             }
-            if (!res.ok) {
-              throw new Error(`Frame upload HTTP ${res.status}`);
-            }
-            setFrameCount((prev) => prev + 1);
-          } catch (err) {
-            console.error("Frame upload failed:", err);
+            return;
           }
-        };
-        reader.readAsDataURL(blob);
+          if (!res.ok) throw new Error(`Frame upload HTTP ${res.status}`);
+          setFrameCount((prev) => prev + 1);
+        } catch (err) {
+          console.error("Frame upload failed:", err);
+        }
       },
       "image/jpeg",
       0.7,

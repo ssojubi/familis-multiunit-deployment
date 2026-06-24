@@ -1,16 +1,3 @@
-/**
- * notes:
- * - backend: change table columns
- * - Manage Kiosks is not yet finalized. There should be multiple videos.
- *
- * references:
- * - table: https://stackoverflow.com/questions/60518353/how-to-display-mysql-table-in-react-js-table
- * - table: https://github.com/machadop1407/react-table-tutorial.git
- * - table: https://youtu.be/Q3ixb1w-QaY?si=AhrthqljoNJg1D6u
- * - remote device connection: https://github.com/mehmetkahya0/local-web-camera
- * - remote device connection: https://github.com/versatica/mediasoup-demo
- **/
-
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { performLogout } from "../RequireAuth";
@@ -28,8 +15,7 @@ import {
 } from "chart.js";
 import { Line, Radar } from "react-chartjs-2";
 import React from "react";
-import { io, Socket } from "socket.io-client";
-import { buildShareLink, getSocketUrl, resolveShareHostIP } from "../apiConfig";
+import { io, Socket } from 'socket.io-client';
 
 ChartJS.register(
   RadialLinearScale,
@@ -39,7 +25,7 @@ ChartJS.register(
   LineElement,
   Filler,
   Tooltip,
-  Legend,
+  Legend
 );
 
 type TabKey = "food" | "stats" | "kiosks" | "participants";
@@ -91,7 +77,7 @@ type Participant = {
   gender: Gender;
   photoUrl?: string | null;
   createdAt: string | null;
-};
+}
 
 type KioskStatus = "recording" | "paused" | "not_connected";
 
@@ -102,41 +88,18 @@ type Kiosk = {
   slotName: string | null;
 };
 
-type Role = "host" | "viewer" | null;
+type Role = 'host' | 'viewer' | null;
 
 interface ServerToClientEvents {
-  "viewer-connected": () => void;
-  "user-disconnected": (userId: string) => void;
-  "host-disconnected": () => void;
-  "admin-start-stream": (data?: {
-    sessionId?: number | string;
-    session_id?: number | string;
-    foodName?: string;
-    food_name?: string;
-  }) => void;
-  "admin-stop-stream": () => void;
-  signal: (data: {
-    sdp?: RTCSessionDescriptionInit;
-    candidate?: RTCIceCandidateInit;
-  }) => void;
+  'viewer-connected': () => void;
+  'user-disconnected': (userId: string) => void;
+  'host-disconnected': () => void;
+  'signal': (data: { from: string; sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) => void;
 }
 
 interface ClientToServerEvents {
-  "join-room": (roomId: string, role: Role) => void;
-  "admin-start-stream": (data: {
-    room: string;
-    sessionId?: number | string;
-    foodName?: string;
-  }) => void;
-  "admin-stop-stream": (data: {
-    room: string;
-    sessionId?: number | string;
-  }) => void;
-  signal: (data: {
-    room: string;
-    sdp?: RTCSessionDescriptionInit;
-    candidate?: RTCIceCandidateInit;
-  }) => void;
+  'join-room': (roomId: string, role: Role) => void;
+  'signal': (data: { room: string; sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) => void;
 }
 
 function clampPct(n: number) {
@@ -162,21 +125,24 @@ function statusClasses(status: SessionStatus) {
   }
 }
 
-const DEFAULT_KIOSK_AGENT_ID = "kiosk-01";
+// dynamic API base
+const API_BASE = window.location.hostname === 'localhost'
+  ? 'https://localhost:8080'
+  : `https://${window.location.hostname}:8080`;
 
 const toApiUrl = (url: string | null) => {
   if (!url) return null;
   if (url.startsWith("http://") || url.startsWith("https://")) return url;
-  return url; // Return relative path as-is
+  return `${API_BASE}${url}`;
 };
 
-const SOCKET_SERVER_URL = getSocketUrl();
+const SOCKET_SERVER_URL = API_BASE; 
 
 const WEBRTC_CONFIG: RTCConfiguration = {
   iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun1.l.google.com:19302" },
-  ],
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' }
+  ]
 };
 
 function formatDateTime(iso: string | null) {
@@ -202,30 +168,21 @@ export default function Dashboard() {
   const [showAddFood, setShowAddFood] = useState(false);
   const [newFood, setNewFood] = useState({
     name: "",
-    category: "",
+    category: ""
   });
   const [newFoodImageFile, setNewFoodImageFile] = useState<File | null>(null);
-  const [sessionsByFoodId, setSessionsByFoodId] = useState<
-    Record<number, Session[]>
-  >({});
-  const [analyticsByFoodId, setAnalyticsByFoodId] = useState<
-    Record<number, Analytics>
-  >({});
+  const [sessionsByFoodId, setSessionsByFoodId] = useState<Record<number, Session[]>>({});
+  const [analyticsByFoodId, setAnalyticsByFoodId] = useState<Record<number, Analytics>>({});
   const [foodsLoading, setFoodsLoading] = useState(true);
   const [foodsError, setFoodsError] = useState<string | null>(null);
-  const [sessionsLoading, setSessionsLoading] = useState<
-    Record<number, boolean>
-  >({});
-  const [analyticsLoading, setAnalyticsLoading] = useState<
-    Record<number, boolean>
-  >({});
+  const [sessionsLoading, setSessionsLoading] = useState<Record<number, boolean>>({});
+  const [analyticsLoading, setAnalyticsLoading] = useState<Record<number, boolean>>({});
   const [statsError, setStatsError] = useState<string | null>(null);
   const [foodToDelete, setFoodToDelete] = useState<Food | null>(null);
   const [deletingFoodId, setDeletingFoodId] = useState<number | null>(null);
   const [deleteFoodError, setDeleteFoodError] = useState<string | null>(null);
   const foodsAbortRef = useRef<AbortController | null>(null);
 
-  // Participant consts
   const parAbortRef = useRef<AbortController | null>(null);
   const [parLoading, setParLoading] = useState(true);
   const [parError, setParError] = useState<string | null>(null);
@@ -237,47 +194,29 @@ export default function Dashboard() {
   const [newParticipant, setNewParticipant] = useState({
     name: "",
     age: "",
-    gender: "",
+    gender: ""
   });
   const [showAddParticipant, setShowAddParticipant] = useState(false);
   const [editingParId, setEditingParId] = useState<number | null>(null);
   const [editParError, setEditParError] = useState<string | null>(null);
   const [parToEdit, setParToEdit] = useState<Participant | null>(null);
 
-  // Manage Kiosk consts
-  const [role, setRole] = useState<Role>(null);
-  const [roomId, setRoomId] = useState<string>("");
-  const [kioskStatus, setKioskStatus] = useState<string>(
-    "Select a role to begin.",
-  );
-  const [shareUrl, setShareUrl] = useState<string>("");
-  const [hostIP, setHostIP] = useState<string>("");
+  const [role, setRole] = useState<Role>(null);        
+  const [roomId, setRoomId] = useState<string>('');
+  const [kioskStatus, setKioskStatus] = useState<string>('Select a role to begin.');
+  const [shareUrl, setShareUrl] = useState<string>('');
 
-  // Kiosk session control
+  const socketRef = useRef<Socket<ServerToClientEvents, ClientToServerEvents> | null>(null);
+  const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const localVideoRef = useRef<HTMLVideoElement | null>(null); 
+  const [remoteStreams, setRemoteStreams] = useState<{ peerId: string; stream: MediaStream; label: string }[]>([]);
+  const [activeKioskIds, setActiveKioskIds] = useState<Set<string>>(new Set());
+
   const [kioskFoodId, setKioskFoodId] = useState<number | null>(null);
   const [kioskSessionId, setKioskSessionId] = useState<number | null>(null);
   const [kioskCmdLoading, setKioskCmdLoading] = useState(false);
   const [kioskCmdError, setKioskCmdError] = useState<string | null>(null);
-
-  const socketRef = useRef<Socket<
-    ServerToClientEvents,
-    ClientToServerEvents
-  > | null>(null);
-  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
-  const localStreamRef = useRef<MediaStream | null>(null);
-  const localVideoRef = useRef<HTMLVideoElement | null>(null);
-  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
-
-  // Share link must use a LAN-reachable IP — not Docker-internal (172.x.x.x)
-  useEffect(() => {
-    fetch("/config")
-      .then((res) => res.json())
-      .then((data) => {
-        const resolved = resolveShareHostIP(data.serverIP);
-        setHostIP(resolved);
-      })
-      .catch(() => setHostIP(resolveShareHostIP(null)));
-  }, []);
 
   useEffect(() => {
     foodsAbortRef.current?.abort();
@@ -288,14 +227,13 @@ export default function Dashboard() {
       setFoodsLoading(true);
       setFoodsError(null);
       try {
-        const res = await fetch(`/api/foods`, { signal: ac.signal });
+        const res = await fetch(`${API_BASE}/api/foods`, { signal: ac.signal });
         const json = await res.json();
         if (!res.ok || !json?.ok) {
           throw new Error(json?.error || "Failed to load foods.");
         }
         const list: Food[] = json.foods ?? [];
         setFoods(list);
-        setKioskFoodId((prev) => prev ?? list[0]?.id ?? null);
         setExpandedFoodId((prev) => {
           if (prev && list.some((f) => f.id === prev)) return prev;
           return null;
@@ -321,7 +259,7 @@ export default function Dashboard() {
       setParLoading(true);
       setParError(null);
       try {
-        const res = await fetch(`/api/participants`, { signal: ac.signal });
+        const res = await fetch(`${API_BASE}/api/participants`, { signal: ac.signal });
         const json = await res.json();
         if (!res.ok || !json?.ok) {
           throw new Error(json?.error || "Failed to load participants.");
@@ -356,107 +294,100 @@ export default function Dashboard() {
 
   useEffect(() => {
     // retrieve the logged-in user
-    const storedUser =
-      localStorage.getItem("familis.user") || localStorage.getItem("user");
+    const storedUser = localStorage.getItem("user"); 
     const user = storedUser ? JSON.parse(storedUser) : null;
     const userRole = user?.role;
 
     const urlParams = new URLSearchParams(window.location.search);
-    const urlRoom = urlParams.get("room");
+    const urlRoom = urlParams.get('room');
 
-    if (userRole === "admin") {
-      setRole("viewer"); // admin is automatically the remote viewer
+    if (userRole === 'admin') {
+      setRole('viewer'); // admin is automatically the remote viewer
       if (urlRoom) {
         setRoomId(urlRoom);
       } else {
         const newRoomId = Math.random().toString(36).substring(2, 9);
         setRoomId(newRoomId);
       }
-    } else if (userRole === "tester") {
-      setRole("host"); // tester is automatically the camera host
+    } else if (userRole === 'staff') {  // TODO : might wanna change that
+      setRole('host'); // staff is automatically the camera host
       if (urlRoom) {
         setRoomId(urlRoom);
       } else {
-        setRoomId("default-tester-room");
+        setRoomId('default-staff-room'); 
       }
     } else {
       // fallback if no user is found
       if (urlRoom) {
         setRoomId(urlRoom);
-        setRole("viewer");
+        setRole('viewer');
       }
     }
   }, []);
 
-  // automatically update the shareable link when roomId and hostIP are available
+  // automatically update the shareable link when roomId changes
   useEffect(() => {
-    if (roomId && hostIP) {
-      const shareLink = buildShareLink(hostIP, roomId, DEFAULT_KIOSK_AGENT_ID);
-      setShareUrl(shareLink);
+    if (roomId) {
+      const generatedLink = `${window.location.origin}${window.location.pathname}?room=${roomId}`;
+      setShareUrl(generatedLink);
     }
-  }, [roomId, hostIP]);
+  }, [roomId]);
 
   useEffect(() => {
     if (!roomId || !role) return;
 
-    const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io(
-      SOCKET_SERVER_URL,
-      {
-        reconnection: true,
-        transports: ["websocket", "polling"],
-      },
-    );
+    const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io(SOCKET_SERVER_URL, {
+      reconnection: true,
+      transports: ['websocket', 'polling'],
+    });
     socketRef.current = socket;
 
-    socket.on("connect", () => {
+    socket.on('connect', () => {
       setKioskStatus(`Connected as ${role}. Room: ${roomId}`);
-      socket.emit("join-room", roomId, role);
+      // pass both roomId and role to help the server configure user sets
+      socket.emit('join-room', roomId, role);
     });
 
-    socket.on("connect_error", () => {
-      setKioskStatus("Connection failed — check that server.js is running.");
+    socket.on('connect_error', () => {
+      setKioskStatus('Connection failed — check that server.js is running.');
     });
 
-    socket.on("viewer-connected", async () => {
-      if (role !== "host") return;
-      setKioskStatus("Viewer connected! Starting stream...");
+    socket.on('viewer-connected', async () => {
+      if (role !== 'host') return;
+      setKioskStatus('Viewer connected! Starting stream...');
 
-      if (!localStreamRef.current) {
-        await startCamera();
-      }
+      if (!localStreamRef.current) await startCamera();
 
-      const pc = await createPeerConnection();
+      // for host, use socket.id as the peerId key
+      const pc = await createPeerConnection(socket.id ?? 'host');
 
       if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((track) => {
+        localStreamRef.current.getTracks().forEach(track => {
           pc.addTrack(track, localStreamRef.current!);
         });
       }
 
-      const offer = await pc.createOffer({
-        offerToReceiveAudio: true,
-        offerToReceiveVideo: true,
-      });
+      const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      socket.emit("signal", { room: roomId, sdp: offer });
+      socket.emit('signal', { room: roomId, sdp: offer });
     });
 
-    socket.on("signal", async (data) => {
-      if (!peerConnectionRef.current && role === "viewer") {
-        await createPeerConnection();
-      }
-      const pc = peerConnectionRef.current;
-      if (!pc) return;
+    // signaling listener for offers, answers, and candidates
+    socket.on('signal', async (data) => {
+      const peerId = data.from;  
+      if (!peerId) return;
+
+      const pc = await createPeerConnection(peerId);
 
       if (data.sdp) {
-        if (data.sdp.type === "offer" && role === "viewer") {
-          setKioskStatus("Received stream offer...");
+        if (data.sdp.type === 'offer' && role === 'viewer') {
+          setKioskStatus('Receiving stream...');
           await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
-          socket.emit("signal", { room: roomId, sdp: answer });
-        } else if (data.sdp.type === "answer" && role === "host") {
-          if (pc.signalingState === "have-local-offer") {
+          socket.emit('signal', { room: roomId, sdp: answer });
+        } else if (data.sdp.type === 'answer' && role === 'host') {
+          if (pc.signalingState === 'have-local-offer') {
             await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
           }
         }
@@ -464,47 +395,17 @@ export default function Dashboard() {
         try {
           await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
         } catch (e) {
-          console.error("ICE candidate error:", e);
+          console.error('ICE candidate error:', e);
         }
       }
     });
 
-    socket.on("user-disconnected", () => {
-      setKioskStatus("Remote peer disconnected.");
-      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
-      cleanupPeerConnection();
-    });
-
-    socket.on("host-disconnected", () => {
-      setKioskStatus("Host disconnected.");
-      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
-      cleanupPeerConnection();
-    });
-
-    // Admin → tester commands
-    socket.on("admin-start-stream", async () => {
-      if (role !== "host") return;
-      if (peerConnectionRef.current) {
-        console.warn("PC already exists, skipping duplicate offer");
-        return;
-      }
-      if (!localStreamRef.current) await startCamera();
-      const pc = await createPeerConnection();
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((track) => {
-          pc.addTrack(track, localStreamRef.current!);
-        });
-      }
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socket.emit("signal", { room: roomId, sdp: offer });
-      setKioskStatus("Streaming started.");
-    });
-
-    socket.on("admin-stop-stream", () => {
-      if (role !== "host") return;
-      stopCamera();
-      cleanupPeerConnection();
+    socket.on('user-disconnected', (socketId) => {
+      const pc = peerConnectionsRef.current.get(socketId);
+      pc?.close();
+      peerConnectionsRef.current.delete(socketId);
+      setRemoteStreams(prev => prev.filter(s => s.peerId !== socketId));
+      setKioskStatus('A kiosk disconnected.');
     });
 
     return () => {
@@ -513,57 +414,40 @@ export default function Dashboard() {
     };
   }, [roomId, role]);
 
-  const createPeerConnection = async (): Promise<RTCPeerConnection> => {
-    if (peerConnectionRef.current) return peerConnectionRef.current;
+  const createPeerConnection = async (peerId: string): Promise<RTCPeerConnection> => {
+    const existing = peerConnectionsRef.current.get(peerId);
+    if (existing) return existing;
 
     const pc = new RTCPeerConnection(WEBRTC_CONFIG);
-    peerConnectionRef.current = pc;
+    peerConnectionsRef.current.set(peerId, pc);
 
     pc.onicecandidate = (event) => {
       if (event.candidate && socketRef.current && roomId) {
-        // send ICE candidates wrapped inside the 'signal' packet structure
-        socketRef.current.emit("signal", {
-          room: roomId,
-          candidate: event.candidate,
-        });
+        socketRef.current.emit('signal', { room: roomId, candidate: event.candidate });
       }
     };
 
     pc.onconnectionstatechange = () => {
-      setKioskStatus(`Connection: ${pc.connectionState}`);
+      setKioskStatus(`Kiosk ${peerId.slice(0, 6)}: ${pc.connectionState}`);
     };
 
-    pc.oniceconnectionstatechange = () => {
-      console.log("ICE state:", pc.iceConnectionState);
-    };
-
-    // remote track appears on the remote video element for both roles
     pc.ontrack = (event) => {
-      console.log("Remote track received:", event.track.kind);
-      if (remoteVideoRef.current && event.streams[0]) {
-        remoteVideoRef.current.srcObject = event.streams[0];
-        remoteVideoRef.current.play().catch(() => {
-          // autoplay policy — mute and retry
-          if (remoteVideoRef.current) {
-            remoteVideoRef.current.muted = true;
-            remoteVideoRef.current.play();
-          }
-        });
-      }
+      if (!event.streams[0]) return;
+      const stream = event.streams[0];
+      setRemoteStreams(prev => {
+        if (prev.find(s => s.peerId === peerId)) return prev;
+        const label = `Kiosk ${prev.length + 1}`;
+        return [...prev, { peerId, stream, label }];
+      });
     };
-
     return pc;
   };
-
+  
   // start local camera (host only)
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { ideal: 30 },
-        },
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
         audio: { echoCancellation: true, noiseSuppression: true },
       });
       localStreamRef.current = stream;
@@ -571,10 +455,10 @@ export default function Dashboard() {
         localVideoRef.current.srcObject = stream;
         localVideoRef.current.play().catch(() => {});
       }
-      setKioskStatus("Camera active.");
+      setKioskStatus('Camera active.');
     } catch (err) {
-      console.error("Camera error:", err);
-      setKioskStatus("Camera permission denied or unavailable.");
+      console.error('Camera error:', err);
+      setKioskStatus('Camera permission denied or unavailable.');
     }
   };
 
@@ -582,30 +466,51 @@ export default function Dashboard() {
   const stopCamera = () => {
     cleanupWebRTC();
     if (localVideoRef.current) localVideoRef.current.srcObject = null;
-    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
-    setKioskStatus("Stopped.");
+    setKioskStatus('Stopped.');
+  };
+
+  const stopKiosk = (peerId: string) => {
+    peerConnectionsRef.current.get(peerId)?.close();
+    peerConnectionsRef.current.delete(peerId);
+    setRemoteStreams(prev => prev.filter(s => s.peerId !== peerId));
+    setActiveKioskIds(prev => {
+      const next = new Set(prev);
+      next.delete(peerId);
+      return next;
+    });
   };
 
   const copyLinkToClipboard = () => {
     if (!shareUrl) return;
-    navigator.clipboard.writeText(shareUrl);
-    alert("Share link copied! Open it on the kiosk/remote device.");
+    navigator.clipboard.writeText(`${window.location.origin}/tester-consent?room=${roomId}`);
+    alert('Share link copied! Open it on the kiosk/remote device.');
   };
 
-  const cleanupPeerConnection = () => {
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
+  const copyRoomIdToClipboard = () => {
+    if (!shareUrl) return;
+    navigator.clipboard.writeText(roomId);
+    alert('Room ID copied!');
+  };
+
+  const cleanupPeerConnection = (peerId?: string) => {
+    if (peerId) {
+      peerConnectionsRef.current.get(peerId)?.close();
+      peerConnectionsRef.current.delete(peerId);
+    } else {
+      peerConnectionsRef.current.forEach(pc => pc.close());
+      peerConnectionsRef.current.clear();
     }
   };
 
   const cleanupWebRTC = () => {
     cleanupPeerConnection();
+    setRemoteStreams([]);
     if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((t) => t.stop());
+      localStreamRef.current.getTracks().forEach(t => t.stop());
       localStreamRef.current = null;
     }
   };
+
 
   const totalFoods = foods.length;
   const activeFoods = foods.filter((f) => f.sessionsActive > 0).length;
@@ -627,15 +532,12 @@ export default function Dashboard() {
       setStatsError(null);
       setAnalyticsLoading((p) => ({ ...p, [foodId]: true }));
       try {
-        const res = await fetch(`/api/foods/${foodId}/analytics`);
+        const res = await fetch(`${API_BASE}/api/foods/${foodId}/analytics`);
         const json = await res.json();
         if (!res.ok || !json?.ok) {
           throw new Error(json?.error || "Failed to load analytics.");
         }
-        setAnalyticsByFoodId((p) => ({
-          ...p,
-          [foodId]: json.analytics as Analytics,
-        }));
+        setAnalyticsByFoodId((p) => ({ ...p, [foodId]: json.analytics as Analytics }));
       } catch (err: any) {
         setStatsError(err?.message || "Failed to load analytics.");
       } finally {
@@ -723,17 +625,10 @@ export default function Dashboard() {
       issues.push("No frame logs found. FER charts may be empty.");
     }
     if (surveyCount <= 0) {
-      issues.push(
-        "No survey submissions yet. Survey-based charts may be empty.",
-      );
+      issues.push("No survey submissions yet. Survey-based charts may be empty.");
     }
     return issues;
-  }, [
-    selectedFood,
-    stats.frameLogCount,
-    stats.sessionCount,
-    stats.surveyCount,
-  ]);
+  }, [selectedFood, stats.frameLogCount, stats.sessionCount, stats.surveyCount]);
 
   const hideAnalyticsGraphs = useMemo(() => {
     if (!selectedFood) return true;
@@ -741,18 +636,11 @@ export default function Dashboard() {
     const frameLogCount = Number(stats.frameLogCount ?? 0);
     const surveyCount = Number(stats.surveyCount ?? 0);
     return sessionCount <= 0 || frameLogCount <= 0 || surveyCount <= 0;
-  }, [
-    selectedFood,
-    stats.sessionCount,
-    stats.frameLogCount,
-    stats.surveyCount,
-  ]);
+  }, [selectedFood, stats.sessionCount, stats.frameLogCount, stats.surveyCount]);
 
   const radarChartData = useMemo(() => {
     const labels = stats.radar.map((r) => r.label);
-    const values = stats.radar.map((r) =>
-      Number.isFinite(r.score) ? r.score : 0,
-    );
+    const values = stats.radar.map((r) => Number.isFinite(r.score) ? r.score : 0);
     return {
       labels,
       datasets: [
@@ -780,8 +668,7 @@ export default function Dashboard() {
         legend: { display: false },
         tooltip: {
           callbacks: {
-            label: (ctx: any) =>
-              `${ctx.label}: ${Number(ctx.raw ?? 0).toFixed(1)} / 9`,
+            label: (ctx: any) => `${ctx.label}: ${Number(ctx.raw ?? 0).toFixed(1)} / 9`,
           },
         },
       },
@@ -820,9 +707,7 @@ export default function Dashboard() {
       datasets: [
         {
           label: "FER hedonic (avg)",
-          data: stats.timeline.map((t) =>
-            Number.isFinite(t.score) ? t.score : 0,
-          ),
+          data: stats.timeline.map((t) => (Number.isFinite(t.score) ? t.score : 0)),
           borderColor: "rgb(232, 23, 74)",
           backgroundColor: "rgb(232, 23, 74)",
           pointBackgroundColor: "rgb(232, 23, 74)",
@@ -871,15 +756,12 @@ export default function Dashboard() {
     if (sessionsLoading[foodId]) return;
     setSessionsLoading((p) => ({ ...p, [foodId]: true }));
     try {
-      const res = await fetch(`/api/foods/${foodId}/sessions`);
+      const res = await fetch(`${API_BASE}/api/foods/${foodId}/sessions`);
       const json = await res.json();
       if (!res.ok || !json?.ok) {
         throw new Error(json?.error || "Failed to load sessions.");
       }
-      setSessionsByFoodId((p) => ({
-        ...p,
-        [foodId]: (json.sessions ?? []) as Session[],
-      }));
+      setSessionsByFoodId((p) => ({ ...p, [foodId]: (json.sessions ?? []) as Session[] }));
     } finally {
       setSessionsLoading((p) => ({ ...p, [foodId]: false }));
     }
@@ -889,7 +771,7 @@ export default function Dashboard() {
     try {
       setDeletingFoodId(foodId);
       setDeleteFoodError(null);
-      const res = await fetch(`/api/foods/${foodId}`, { method: "DELETE" });
+      const res = await fetch(`${API_BASE}/api/foods/${foodId}`, { method: "DELETE" });
       const json = await res.json().catch(() => ({}));
       if (!res.ok || !json?.ok) {
         throw new Error(json?.error || "Failed to delete food.");
@@ -914,7 +796,7 @@ export default function Dashboard() {
     if (!name || !category) return;
 
     try {
-      const res = await fetch(`/api/foods`, {
+      const res = await fetch(`${API_BASE}/api/foods`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, category }),
@@ -923,17 +805,12 @@ export default function Dashboard() {
       if (!res.ok || !json?.ok) {
         throw new Error(json?.error || "Failed to add food.");
       }
-      const created = json.food as {
-        id: number;
-        name: string;
-        category: string;
-        createdAt: string;
-      };
+      const created = json.food as { id: number; name: string; category: string; createdAt: string };
       let uploadedImageUrl: string | null = null;
       if (newFoodImageFile) {
         const fd = new FormData();
         fd.append("image", newFoodImageFile);
-        const imgRes = await fetch(`/api/foods/${created.id}/image`, {
+        const imgRes = await fetch(`${API_BASE}/api/foods/${created.id}/image`, {
           method: "POST",
           body: fd,
         });
@@ -969,9 +846,7 @@ export default function Dashboard() {
     try {
       setDeletingParId(participantId);
       setDeleteParError(null);
-      const res = await fetch(`/api/participants/${participantId}`, {
-        method: "DELETE",
-      });
+      const res = await fetch(`${API_BASE}/api/participants/${participantId}`, { method: "DELETE" });
       const json = await res.json().catch(() => ({}));
       if (!res.ok || !json?.ok) {
         throw new Error(json?.error || "Failed to delete participant.");
@@ -983,9 +858,7 @@ export default function Dashboard() {
         return remaining[0]?.id ?? null;
       });
     } catch (err) {
-      setDeleteParError(
-        (err as any)?.message || "Failed to delete participant.",
-      );
+      setDeleteParError((err as any)?.message || "Failed to delete participant.");
     } finally {
       setDeletingParId(null);
       setParToDelete(null);
@@ -999,7 +872,7 @@ export default function Dashboard() {
     if (!name || !age || !gender) return;
 
     try {
-      const res = await fetch(`/api/participants`, {
+      const res = await fetch(`${API_BASE}/api/participants`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: name, age: Number(age), gender }),
@@ -1008,13 +881,7 @@ export default function Dashboard() {
       if (!res.ok || !json?.ok) {
         throw new Error(json?.error || "Failed to add participant.");
       }
-      const created = json.participant as {
-        id: number;
-        name: string | null;
-        age: number | null;
-        gender: Gender | null;
-        createdAt: string;
-      };
+      const created = json.participant as { id: number; name: string | null; age: number | null; gender: Gender | null; createdAt: string };
       const newRow: Participant = {
         id: created.id,
         name: created.name,
@@ -1022,12 +889,12 @@ export default function Dashboard() {
         gender: created.gender ?? "other",
         createdAt: created.createdAt,
       };
-
+    
       setParticipants((prev) => [newRow, ...prev]);
       setExpandedParId(created.id);
       setShowAddParticipant(false);
       setTab("participants");
-      setNewParticipant({ name: "", age: "", gender: "" });
+      setNewParticipant({ name: "", age: "", gender: ""});
     } catch (err) {
       console.error(err);
     }
@@ -1037,19 +904,15 @@ export default function Dashboard() {
     if (!parToEdit) return;
     const name = parToEdit.name?.trim() ?? "";
     if (!name) return;
-    if (!parToEdit.id) return;
+    if (!parToEdit.id) return;  
 
     try {
       setEditingParId(parToEdit.id);
       setEditParError(null);
-      const res = await fetch(`/api/participants/${parToEdit.id}`, {
+      const res = await fetch(`${API_BASE}/api/participants/${parToEdit.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: name,
-          age: parToEdit.age,
-          gender: parToEdit.gender,
-        }),
+        body: JSON.stringify({ name: name, age: parToEdit.age, gender: parToEdit.gender }),
       });
       const json = await res.json();
       if (!res.ok || !json?.ok) {
@@ -1059,8 +922,8 @@ export default function Dashboard() {
         prev.map((p) =>
           p.id === parToEdit.id
             ? { ...p, name: name, age: parToEdit.age, gender: parToEdit.gender }
-            : p,
-        ),
+            : p
+        )
       );
       setParToEdit(null);
     } catch (err) {
@@ -1084,14 +947,8 @@ export default function Dashboard() {
             className="flex items-center gap-3"
             aria-label="Go to dashboard"
           >
-            <img
-              src={logo}
-              alt="FaMiLis logo"
-              className="w-[44px] h-[44px] object-contain"
-            />
-            <span className="text-white text-[22px] font-bold tracking-wide">
-              FaMiLis
-            </span>
+            <img src={logo} alt="FaMiLis logo" className="w-[44px] h-[44px] object-contain" />
+            <span className="text-white text-[22px] font-bold tracking-wide">FaMiLis</span>
           </button>
 
           <button
@@ -1108,12 +965,8 @@ export default function Dashboard() {
         <div className="max-w-3xl mx-auto">
           {/* Title */}
           <div className="text-center mb-6">
-            <h1 className="text-[26px] font-bold text-gray-900">
-              Food Testing Hub
-            </h1>
-            <p className="text-[12px] text-gray-500 mt-1">
-              Add and Manage Food for Testing
-            </p>
+            <h1 className="text-[26px] font-bold text-gray-900">Food Testing Hub</h1>
+            <p className="text-[12px] text-gray-500 mt-1">Add and Manage Food for Testing</p>
           </div>
 
           {/* Actions */}
@@ -1148,16 +1001,10 @@ export default function Dashboard() {
             <TabButton active={tab === "food"} onClick={() => setTab("food")}>
               Food Management
             </TabButton>
-            <TabButton
-              active={tab === "kiosks"}
-              onClick={() => setTab("kiosks")}
-            >
+            <TabButton active={tab === "kiosks"} onClick={() => setTab("kiosks")}>
               Manage Kiosks
             </TabButton>
-            <TabButton
-              active={tab === "participants"}
-              onClick={() => setTab("participants")}
-            >
+            <TabButton active={tab === "participants"} onClick={() => setTab("participants")}>
               Manage Participants
             </TabButton>
             <TabButton active={tab === "stats"} onClick={() => setTab("stats")}>
@@ -1215,35 +1062,24 @@ export default function Dashboard() {
                                     : "bg-gray-100 text-gray-600"
                                 }
                               >
-                                {food.sessionsActive > 0
-                                  ? "Active session"
-                                  : "No active sessions"}
+                                {food.sessionsActive > 0 ? "Active session" : "No active sessions"}
                               </Badge>
                               <Badge className="bg-blue-50 text-blue-700">
-                                {food.sessionsTotal} session
-                                {food.sessionsTotal === 1 ? "" : "s"}
+                                {food.sessionsTotal} session{food.sessionsTotal === 1 ? "" : "s"}
                               </Badge>
                             </div>
 
                             <div className="mt-2 space-y-0.5 text-[12px] text-gray-500">
                               <p>
-                                <span className="text-gray-700 font-semibold">
-                                  Category:
-                                </span>{" "}
+                                <span className="text-gray-700 font-semibold">Category:</span>{" "}
                                 {food.category}
                               </p>
                               <p>
-                                <span className="text-gray-700 font-semibold">
-                                  Duration:
-                                </span>{" "}
-                                {food.avgDurationMin == null
-                                  ? "-"
-                                  : `${Math.round(food.avgDurationMin)} minutes (avg)`}
+                                <span className="text-gray-700 font-semibold">Duration:</span>{" "}
+                                {food.avgDurationMin == null ? "-" : `${Math.round(food.avgDurationMin)} minutes (avg)`}
                               </p>
                               <p>
-                                <span className="text-gray-700 font-semibold">
-                                  Created:
-                                </span>{" "}
+                                <span className="text-gray-700 font-semibold">Created:</span>{" "}
                                 {formatDate(food.createdAt)}
                               </p>
                             </div>
@@ -1262,14 +1098,11 @@ export default function Dashboard() {
                                 onClick={async () => {
                                   const next = isExpanded ? null : food.id;
                                   setExpandedFoodId(next);
-                                  if (next != null)
-                                    await ensureSessionsLoaded(next);
+                                  if (next != null) await ensureSessionsLoaded(next);
                                 }}
                                 className="text-[12px] font-semibold text-gray-600 hover:text-gray-900 transition-colors inline-flex items-center gap-1"
                               >
-                                <span aria-hidden="true">
-                                  {isExpanded ? "🔼" : "🔽"}
-                                </span>
+                                <span aria-hidden="true">{isExpanded ? "🔼" : "🔽"}</span>
                                 {isExpanded ? "Hide Sessions" : "View Sessions"}
                               </button>
                             </div>
@@ -1283,13 +1116,9 @@ export default function Dashboard() {
                             </h3>
 
                             {sessionsLoading[food.id] ? (
-                              <div className="text-[12px] text-gray-500">
-                                Loading sessions…
-                              </div>
+                              <div className="text-[12px] text-gray-500">Loading sessions…</div>
                             ) : sessions.length === 0 ? (
-                              <div className="text-[12px] text-gray-500">
-                                No sessions yet.
-                              </div>
+                              <div className="text-[12px] text-gray-500">No sessions yet.</div>
                             ) : (
                               <div className="space-y-2">
                                 {sessions.map((s) => (
@@ -1302,19 +1131,11 @@ export default function Dashboard() {
                                         <p className="text-[12px] font-semibold text-gray-900">
                                           S-{s.id}
                                         </p>
-                                        <Badge
-                                          className={statusClasses(s.status)}
-                                        >
-                                          {formatStatus(s.status)}
-                                        </Badge>
+                                        <Badge className={statusClasses(s.status)}>{formatStatus(s.status)}</Badge>
                                       </div>
                                       <button
                                         type="button"
-                                        onClick={() =>
-                                          navigate(
-                                            `/session-detail?sessionId=${s.id}`,
-                                          )
-                                        }
+                                        onClick={() => navigate(`/session-detail?sessionId=${s.id}`)}
                                         className="text-[12px] font-semibold text-[#e8174a] hover:text-[#c9143f] transition-colors"
                                       >
                                         View Details
@@ -1323,37 +1144,21 @@ export default function Dashboard() {
 
                                     <div className="grid grid-cols-2 gap-2 text-[12px] text-gray-600">
                                       <div>
-                                        <span className="text-gray-500">
-                                          Start:
-                                        </span>{" "}
-                                        <span className="text-gray-700">
-                                          {formatDateTime(s.startTime)}
-                                        </span>
+                                        <span className="text-gray-500">Start:</span>{" "}
+                                        <span className="text-gray-700">{formatDateTime(s.startTime)}</span>
                                       </div>
                                       <div>
-                                        <span className="text-gray-500">
-                                          End:
-                                        </span>{" "}
-                                        <span className="text-gray-700">
-                                          {formatDateTime(s.endTime)}
-                                        </span>
+                                        <span className="text-gray-500">End:</span>{" "}
+                                        <span className="text-gray-700">{formatDateTime(s.endTime)}</span>
                                       </div>
                                       <div>
-                                        <span className="text-gray-500">
-                                          Frames:
-                                        </span>{" "}
-                                        <span className="text-gray-700">
-                                          {s.frames}
-                                        </span>
+                                        <span className="text-gray-500">Frames:</span>{" "}
+                                        <span className="text-gray-700">{s.frames}</span>
                                       </div>
                                       <div>
-                                        <span className="text-gray-500">
-                                          Confidence:
-                                        </span>{" "}
+                                        <span className="text-gray-500">Confidence:</span>{" "}
                                         <span className="text-gray-700">
-                                          {s.meanConfidence == null
-                                            ? "-"
-                                            : `${Math.round(s.meanConfidence * 100)}%`}
+                                          {s.meanConfidence == null ? "-" : `${Math.round(s.meanConfidence * 100)}%`}
                                         </span>
                                       </div>
                                     </div>
@@ -1375,9 +1180,7 @@ export default function Dashboard() {
                 <div className="flex items-center justify-between gap-4">
                   <div>
                     <h2 className="text-gray-900 font-bold">
-                      {selectedFood
-                        ? selectedFood.name
-                        : "Statistics & Analytics"}
+                      {selectedFood ? selectedFood.name : "Statistics & Analytics"}
                     </h2>
                     <p className="text-[12px] text-gray-500 mt-1">
                       {selectedFood
@@ -1389,9 +1192,7 @@ export default function Dashboard() {
                   {foods.length > 1 && (
                     <select
                       value={selectedFood?.id ?? ""}
-                      onChange={(e) =>
-                        setExpandedFoodId(Number(e.target.value))
-                      }
+                      onChange={(e) => setExpandedFoodId(Number(e.target.value))}
                       className="text-[12px] border border-gray-200 rounded-md px-3 py-2 bg-white"
                       aria-label="Select food"
                     >
@@ -1407,14 +1208,11 @@ export default function Dashboard() {
 
               <div className="p-5 space-y-6">
                 {selectedFood && analyticsLoading[selectedFood.id] ? (
-                  <div className="text-[12px] text-gray-500">
-                    Loading analytics…
-                  </div>
+                  <div className="text-[12px] text-gray-500">Loading analytics…</div>
                 ) : null}
                 {statsError ? (
                   <div className="text-[12px] text-gray-500">
-                    Failed to load analytics.{" "}
-                    <span className="text-gray-400">{statsError}</span>
+                    Failed to load analytics. <span className="text-gray-400">{statsError}</span>
                   </div>
                 ) : null}
                 {analyticsIssues.length > 0 ? (
@@ -1425,8 +1223,7 @@ export default function Dashboard() {
 
                 {hideAnalyticsGraphs ? (
                   <div className="text-[12px] text-gray-600 bg-gray-50 border border-gray-200 rounded-md px-3 py-2">
-                    Graphs are hidden until required analytics data is
-                    available.
+                    Graphs are hidden until required analytics data is available.
                   </div>
                 ) : (
                   <>
@@ -1441,26 +1238,18 @@ export default function Dashboard() {
 
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div className="space-y-3">
-                          <MetricCard
-                            title="Mean Hedonic Scale"
-                            subtitle="Out of 9"
-                          >
+                          <MetricCard title="Mean Hedonic Scale" subtitle="Out of 9">
                             <p className="text-[44px] leading-none font-bold text-[#e8174a]">
                               {stats.meanHedonic.toFixed(1)}
                             </p>
                           </MetricCard>
 
-                          <MetricCard
-                            title="Mean FER Confidence Level"
-                            subtitle=""
-                          >
+                          <MetricCard title="Mean FER Confidence Level" subtitle="">
                             <div className="flex items-end justify-between gap-3">
                               <p className="text-[40px] leading-none font-bold text-gray-900">
                                 {Math.round(stats.meanConfidence * 100)}%
                               </p>
-                              <p className="text-[12px] text-gray-500">
-                                (from frame logs)
-                              </p>
+                              <p className="text-[12px] text-gray-500">(from frame logs)</p>
                             </div>
                             <div className="mt-2 h-2 bg-gray-200 rounded-full overflow-hidden">
                               <div
@@ -1491,10 +1280,7 @@ export default function Dashboard() {
                                               ? 0
                                               : stats.distribution
                                                   .slice(0, i)
-                                                  .reduce(
-                                                    (a, b) => a + b.value,
-                                                    0,
-                                                  );
+                                                  .reduce((a, b) => a + b.value, 0);
                                           const end = start + d.value;
                                           return `${d.color} ${start}% ${end}%`;
                                         })
@@ -1506,10 +1292,7 @@ export default function Dashboard() {
 
                           <div className="mt-3 space-y-1">
                             {stats.distribution.map((d) => (
-                              <div
-                                key={d.label}
-                                className="flex items-center gap-2 text-[12px]"
-                              >
+                              <div key={d.label} className="flex items-center gap-2 text-[12px]">
                                 <span
                                   className="w-3 h-3 rounded-full"
                                   style={{ backgroundColor: d.color }}
@@ -1531,20 +1314,14 @@ export default function Dashboard() {
                         B. Survey-Based Attribute Radar Report
                       </h3>
                       <p className="text-[12px] text-gray-500 mb-4">
-                        What consumers like about the product (based on session
-                        survey logs)
+                        What consumers like about the product (based on session survey logs)
                       </p>
 
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div className="bg-gray-50 rounded-lg p-4 border border-gray-100">
-                          <p className="text-[12px] text-gray-700 font-semibold mb-2">
-                            Spider chart
-                          </p>
+                          <p className="text-[12px] text-gray-700 font-semibold mb-2">Spider chart</p>
                           <div className="h-[240px]">
-                            <Radar
-                              data={radarChartData as any}
-                              options={radarChartOptions as any}
-                            />
+                            <Radar data={radarChartData as any} options={radarChartOptions as any} />
                           </div>
                         </div>
 
@@ -1552,9 +1329,7 @@ export default function Dashboard() {
                           {stats.radar.map((r) => (
                             <div key={r.label}>
                               <div className="flex items-center justify-between mb-1">
-                                <span className="text-[12px] text-gray-600">
-                                  {r.label}
-                                </span>
+                                <span className="text-[12px] text-gray-600">{r.label}</span>
                                 <span className="text-[12px] text-gray-900 font-semibold">
                                   {r.score.toFixed(1)} / 9
                                 </span>
@@ -1562,9 +1337,7 @@ export default function Dashboard() {
                               <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
                                 <div
                                   className="h-full bg-[#e8174a]"
-                                  style={{
-                                    width: `${clampPct((r.score / 9) * 100)}%`,
-                                  }}
+                                  style={{ width: `${clampPct((r.score / 9) * 100)}%` }}
                                 />
                               </div>
                             </div>
@@ -1584,10 +1357,7 @@ export default function Dashboard() {
 
                       <div className="bg-gray-50 rounded-lg p-4 border border-gray-100">
                         <div className="h-[190px]">
-                          <Line
-                            data={lineChartData as any}
-                            options={lineChartOptions as any}
-                          />
+                          <Line data={lineChartData as any} options={lineChartOptions as any} />
                         </div>
                       </div>
                     </div>
@@ -1610,9 +1380,7 @@ export default function Dashboard() {
                             {stats.byAge.map((a) => (
                               <div key={a.label}>
                                 <div className="flex items-center justify-between text-[12px] mb-1">
-                                  <span className="text-gray-600">
-                                    {a.label}
-                                  </span>
+                                  <span className="text-gray-600">{a.label}</span>
                                   <span className="text-gray-900 font-semibold">
                                     {a.score.toFixed(1)}
                                   </span>
@@ -1620,9 +1388,7 @@ export default function Dashboard() {
                                 <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
                                   <div
                                     className="h-full bg-[#e8174a]"
-                                    style={{
-                                      width: `${clampPct((a.score / 9) * 100)}%`,
-                                    }}
+                                    style={{ width: `${clampPct((a.score / 9) * 100)}%` }}
                                   />
                                 </div>
                               </div>
@@ -1638,9 +1404,7 @@ export default function Dashboard() {
                             {stats.byGender.map((g) => (
                               <div key={g.label}>
                                 <div className="flex items-center justify-between text-[12px] mb-1">
-                                  <span className="text-gray-600">
-                                    {g.label}
-                                  </span>
+                                  <span className="text-gray-600">{g.label}</span>
                                   <span className="text-gray-900 font-semibold">
                                     {g.score.toFixed(1)}
                                   </span>
@@ -1648,9 +1412,7 @@ export default function Dashboard() {
                                 <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
                                   <div
                                     className="h-full bg-[#e8174a]"
-                                    style={{
-                                      width: `${clampPct((g.score / 9) * 100)}%`,
-                                    }}
+                                    style={{ width: `${clampPct((g.score / 9) * 100)}%` }}
                                   />
                                 </div>
                               </div>
@@ -1665,44 +1427,28 @@ export default function Dashboard() {
             </section>
           ) : tab === "kiosks" ? (
             <section className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-              <div className="flex justify-between items-center mb-4">
-                <div>
-                  <h2 className="text-gray-900 font-bold mb-1">
-                    Manage Kiosks
-                  </h2>
-                  <p className="text-[12px] text-gray-500">
-                    Status:{" "}
-                    <span className="font-semibold text-gray-700">
-                      {kioskStatus}
-                    </span>
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={copyLinkToClipboard}
-                  disabled={!shareUrl}
-                  className="inline-flex items-center gap-2 bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200 px-3 py-2 rounded-md text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  🔗 Copy Kiosk Share Link
-                </button>
+              <div className="mb-5">
+                <h2 className="text-gray-900 font-bold">Monitor Kiosks</h2>
+                <p className="text-[12px] text-gray-500 mt-1">Pause or stop recordings.</p>
               </div>
 
-              <div className="space-y-4">
-                {/* Food selector */}
-                <div>
-                  <label className="block text-[12px] font-semibold text-gray-700 mb-1">
-                    Food being tested
-                  </label>
-                  {foods.length === 0 ? (
-                    <p className="text-[12px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-                      No foods added yet. Add a food in Food Management first.
-                    </p>
-                  ) : (
+
+              {/* select food */}
+              <div className="mb-5">
+                <label className="block text-[13px] font-semibold text-gray-700 mb-2">
+                  Food being tested
+                </label>
+                {foods.length === 0 ? (
+                  <p className="text-[12px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                    No foods added yet. Add a food in Food Management first.
+                  </p>
+                ) : (
+                  <div className="relative">
                     <select
                       value={kioskFoodId ?? ""}
                       onChange={(e) => setKioskFoodId(Number(e.target.value))}
                       disabled={!!kioskSessionId}
-                      className="w-full text-[12px] border border-gray-200 rounded-md px-3 py-2 bg-white disabled:opacity-50"
+                      className="w-full appearance-none text-[14px] text-gray-900 border border-gray-200 rounded-lg pl-4 pr-10 py-3 bg-white disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-[#e8174a]/20 focus:border-[#e8174a]/40"
                     >
                       <option value="" disabled>
                         Select a food…
@@ -1713,193 +1459,45 @@ export default function Dashboard() {
                         </option>
                       ))}
                     </select>
-                  )}
-                </div>
-
-                {/* Live stream */}
-                <div>
-                  <p className="text-[12px] text-gray-600 font-semibold mb-1">
-                    Live Kiosk Stream
-                  </p>
-                  <div className="relative bg-black aspect-video w-full rounded-lg overflow-hidden border border-gray-200">
-                    <video
-                      ref={remoteVideoRef}
-                      autoPlay
-                      playsInline
-                      muted
-                      className="w-full h-full object-cover"
-                    />
-                  </div>
-                  <p className="text-[11px] text-gray-400 mt-1">
-                    Click Start Recording to send the command to the kiosk and
-                    begin the FER pipeline.
-                  </p>
-                </div>
-
-                {/* Error feedback */}
-                {kioskCmdError && (
-                  <p className="text-[12px] text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">
-                    {kioskCmdError}
-                  </p>
-                )}
-
-                {/* Start / Stop */}
-                <div className="flex gap-3">
-                  <button
-                    type="button"
-                    disabled={
-                      kioskCmdLoading || !kioskFoodId || !!kioskSessionId
-                    }
-                    onClick={async () => {
-                      if (!kioskFoodId) {
-                        setKioskCmdError("Select a food before starting.");
-                        return;
-                      }
-                      const storedUser =
-                        localStorage.getItem("familis.user") ||
-                        localStorage.getItem("user");
-                      const user = storedUser ? JSON.parse(storedUser) : null;
-                      const userId = user?.id;
-                      if (!userId) {
-                        setKioskCmdError(
-                          "Could not read user ID. Try logging out and back in.",
-                        );
-                        return;
-                      }
-                      setKioskCmdLoading(true);
-                      setKioskCmdError(null);
-                      try {
-                        const res = await fetch("/api/sessions/start", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({
-                            userId,
-                            foodId: kioskFoodId,
-                            agentKioskId: DEFAULT_KIOSK_AGENT_ID,
-                          }),
-                        });
-                        const json = await res.json();
-                        if (!res.ok || !json?.ok) {
-                          throw new Error(
-                            json?.error || "Failed to start session.",
-                          );
-                        }
-                        setKioskSessionId(json.session.id);
-                        setKioskStatus(`Session #${json.session.id} started.`);
-
-                        // Send WebSocket command to start the stream
-                        if (socketRef.current && roomId) {
-                          socketRef.current.emit("admin-start-stream", {
-                            room: roomId,
-                            sessionId: json.session.id,
-                            foodName: foods.find((f) => f.id === kioskFoodId)
-                              ?.name,
-                          });
-                        }
-                      } catch (err: any) {
-                        setKioskCmdError(
-                          err?.message || "Failed to start session.",
-                        );
-                      } finally {
-                        setKioskCmdLoading(false);
-                      }
-                    }}
-                    className="flex-1 bg-[#e8174a] hover:bg-[#c9143f] disabled:opacity-50 disabled:cursor-not-allowed text-white py-2.5 rounded-md text-sm font-semibold transition-colors text-center"
-                  >
-                    {kioskCmdLoading && !kioskSessionId
-                      ? "Starting…"
-                      : "▶ Start Recording"}
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={kioskCmdLoading || !kioskSessionId}
-                    onClick={async () => {
-                      if (!kioskSessionId) return;
-                      setKioskCmdLoading(true);
-                      setKioskCmdError(null);
-                      try {
-                        const res = await fetch(
-                          `/api/sessions/${kioskSessionId}/stop`,
-                          {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                              agentKioskId: DEFAULT_KIOSK_AGENT_ID,
-                            }),
-                          },
-                        );
-                        const json = await res.json();
-                        if (!res.ok || !json?.ok) {
-                          throw new Error(
-                            json?.error || "Failed to stop session.",
-                          );
-                        }
-                        setKioskStatus(`Session #${kioskSessionId} stopped.`);
-                        setKioskSessionId(null);
-
-                        // Send WebSocket command to stop the stream
-                        if (socketRef.current && roomId) {
-                          socketRef.current.emit("admin-stop-stream", {
-                            room: roomId,
-                            sessionId: kioskSessionId,
-                          });
-                        }
-                        cleanupPeerConnection();
-                        if (remoteVideoRef.current)
-                          remoteVideoRef.current.srcObject = null;
-                      } catch (err: any) {
-                        setKioskCmdError(
-                          err?.message || "Failed to stop session.",
-                        );
-                      } finally {
-                        setKioskCmdLoading(false);
-                      }
-                    }}
-                    className="flex-1 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed text-gray-700 border border-gray-200 py-2.5 rounded-md text-sm font-semibold transition-colors text-center"
-                  >
-                    {kioskCmdLoading && !!kioskSessionId
-                      ? "Stopping…"
-                      : "⏹ Stop Recording"}
-                  </button>
-                </div>
-
-                {/* Active session badge */}
-                {kioskSessionId && (
-                  <p className="text-[12px] text-green-700 bg-green-50 border border-green-200 rounded-md px-3 py-2">
-                    Active session:{" "}
-                    <span className="font-semibold">#{kioskSessionId}</span>
-                    {" · "}
-                    {foods.find((f) => f.id === kioskFoodId)?.name ?? ""}
-                  </p>
-                )}
-
-                {/* Share URL */}
-                {shareUrl && (
-                  <div className="text-[12px] text-gray-500 bg-gray-50 border border-gray-100 rounded-md px-3 py-2 break-all">
-                    <span className="font-semibold text-gray-700">
-                      Active Channel Node Link:{" "}
-                    </span>
-                    <span className="text-gray-600">{shareUrl}</span>
-                    <p className="text-[11px] text-gray-400 mt-1">
-                      Open this link on the kiosk device browser.
-                    </p>
-                    {(hostIP === "localhost" ||
-                      hostIP === "127.0.0.1" ||
-                      hostIP.startsWith("172.")) && (
-                      <p className="text-[11px] text-amber-700 mt-2">
-                        Open the dashboard at{" "}
-                        <code className="bg-amber-50 px-1 rounded">
-                          http://&lt;your-wifi-ip&gt;:5173
-                        </code>{" "}
-                        (e.g. 192.168.1.x) so the share link uses an address the
-                        kiosk can reach.
-                      </p>
-                    )}
+                    <svg
+                      className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+                      viewBox="0 0 20 20"
+                      fill="none"
+                      xmlns="http://www.w3.org/2000/svg"
+                    >
+                      <path
+                        d="M5 7.5L10 12.5L15 7.5"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
                   </div>
                 )}
               </div>
+
+              {/* admin control */}
+              <div className="space-y-4">
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    disabled={!kioskFoodId}
+                    onClick={() => {
+                      if (!kioskFoodId) return;
+                      const params = new URLSearchParams();
+                      params.set("foodId", String(kioskFoodId));
+                      if (roomId) params.set("room", roomId);
+                      navigate(`/video-monitoring?${params.toString()}`);
+                    }}
+                    className="flex-1 bg-[#e8174a] hover:bg-[#c9143f] disabled:opacity-50 disabled:cursor-not-allowed text-white py-2.5 rounded-md text-sm font-semibold transition-colors"
+                  >
+                    ▶ Start Food Tasting
+                  </button>
+                </div>
+              </div>
             </section>
+
           ) : tab === "participants" ? (
             <section className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 overflow-x-auto">
               {parLoading ? (
@@ -1918,9 +1516,7 @@ export default function Dashboard() {
               ) : (
                 <div>
                   <div className="flex w-225 h-15 items-center justify-between">
-                    <h2 className="text-gray-900 font-bold mb-4">
-                      Food Management
-                    </h2>
+                    <h2 className="text-gray-900 font-bold mb-4">Food Management</h2>
                     <button
                       type="button"
                       onClick={() => setShowAddParticipant(true)}
@@ -1945,39 +1541,37 @@ export default function Dashboard() {
                       </tr>
                     </thead>
                     <tbody>
-                      {participants
-                        .sort((a, b) => a.id - b.id)
-                        .map((p) => {
-                          return (
-                            <tr key={p.id}>
-                              <td>{p.id}</td>
-                              <td>-</td>
-                              <td>-</td>
-                              <td>{p.name}</td>
-                              <td>-</td>
-                              <td>-</td>
-                              <td>{formatDateTime(p.createdAt)}</td>
-                              <td>
-                                <button
-                                  type="button"
-                                  onClick={() => setParToEdit(p)}
-                                  className="text-[12px] font-semibold text-black hover:text-green transition-colors inline-flex items-center gap-1"
-                                >
-                                  <span aria-hidden="true">✍️</span>
-                                  Edit
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setParToDelete(p)}
-                                  className="text-[12px] font-semibold text-[#e8174a] hover:text-[#c9143f] transition-colors inline-flex items-center gap-1"
-                                >
-                                  <span aria-hidden="true">🗑️</span>
-                                  Delete
-                                </button>
-                              </td>
-                            </tr>
-                          );
-                        })}
+                      {participants.sort((a, b) => a.id - b.id).map(p => {
+                        return (
+                          <tr key={p.id}>
+                            <td>{p.id}</td>
+                            <td>-</td>
+                            <td>-</td>
+                            <td>{p.name}</td> {/*name*/}
+                            <td>-</td>
+                            <td>-</td>
+                            <td>{formatDateTime(p.createdAt)}</td>
+                            <td>
+                              <button
+                                type="button"
+                                onClick={() => setParToEdit(p)}
+                                className="text-[12px] font-semibold text-black hover:text-green transition-colors inline-flex items-center gap-1"
+                              >
+                                <span aria-hidden="true">✍️</span>
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setParToDelete(p)}
+                                className="text-[12px] font-semibold text-[#e8174a] hover:text-[#c9143f] transition-colors inline-flex items-center gap-1"
+                              >
+                                <span aria-hidden="true">🗑️</span>
+                                Delete
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -1998,9 +1592,7 @@ export default function Dashboard() {
                 <input
                   type="text"
                   value={newFood.name}
-                  onChange={(e) =>
-                    setNewFood((p) => ({ ...p, name: e.target.value }))
-                  }
+                  onChange={(e) => setNewFood((p) => ({ ...p, name: e.target.value }))}
                   placeholder="e.g. Ice Cream"
                   className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
                 />
@@ -2010,9 +1602,7 @@ export default function Dashboard() {
                 <input
                   type="text"
                   value={newFood.category}
-                  onChange={(e) =>
-                    setNewFood((p) => ({ ...p, category: e.target.value }))
-                  }
+                  onChange={(e) => setNewFood((p) => ({ ...p, category: e.target.value }))}
                   placeholder="e.g. dessert"
                   className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
                 />
@@ -2022,9 +1612,7 @@ export default function Dashboard() {
                 <input
                   type="file"
                   accept="image/*"
-                  onChange={(e) =>
-                    setNewFoodImageFile(e.target.files?.[0] ?? null)
-                  }
+                  onChange={(e) => setNewFoodImageFile(e.target.files?.[0] ?? null)}
                   className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
                 />
               </Field>
@@ -2054,13 +1642,10 @@ export default function Dashboard() {
           <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
             <h2 className="text-gray-900 font-bold mb-2">Delete food?</h2>
             <p className="text-sm text-gray-600">
-              This will permanently remove{" "}
-              <span className="font-semibold">{foodToDelete.name}</span> and its
-              related sessions.
+              This will permanently remove <span className="font-semibold">{foodToDelete.name}</span> and
+              its related sessions.
             </p>
-            {deleteFoodError ? (
-              <p className="text-xs text-red-600 mt-2">{deleteFoodError}</p>
-            ) : null}
+            {deleteFoodError ? <p className="text-xs text-red-600 mt-2">{deleteFoodError}</p> : null}
             <div className="flex gap-3 mt-5">
               <button
                 type="button"
@@ -2087,18 +1672,14 @@ export default function Dashboard() {
       {showAddParticipant && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
-            <h2 className="text-gray-900 font-bold mb-4">
-              Add New Participant
-            </h2>
+            <h2 className="text-gray-900 font-bold mb-4">Add New Participant</h2>
 
             <div className="space-y-3">
               <Field label="Participant Name *">
                 <input
                   type="text"
                   value={newParticipant.name}
-                  onChange={(e) =>
-                    setNewParticipant((p) => ({ ...p, name: e.target.value }))
-                  }
+                  onChange={(e) => setNewParticipant((p) => ({ ...p, name: e.target.value }))}
                   placeholder="e.g. John Doe"
                   className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
                 />
@@ -2108,9 +1689,7 @@ export default function Dashboard() {
                 <input
                   type="number"
                   value={newParticipant.age}
-                  onChange={(e) =>
-                    setNewParticipant((p) => ({ ...p, age: e.target.value }))
-                  }
+                  onChange={(e) => setNewParticipant((p) => ({ ...p, age: e.target.value }))}
                   placeholder="e.g. 21"
                   className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
                 />
@@ -2119,9 +1698,7 @@ export default function Dashboard() {
               <Field label="Gender *">
                 <select
                   value={newParticipant.gender}
-                  onChange={(e) =>
-                    setNewParticipant((p) => ({ ...p, gender: e.target.value }))
-                  }
+                  onChange={(e) => setNewParticipant((p) => ({ ...p, gender: e.target.value }))}
                   className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
                 >
                   <option value="">Select gender…</option>
@@ -2154,17 +1731,12 @@ export default function Dashboard() {
       {parToDelete ? (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
-            <h2 className="text-gray-900 font-bold mb-2">
-              Delete participant?
-            </h2>
+            <h2 className="text-gray-900 font-bold mb-2">Delete participant?</h2>
             <p className="text-sm text-gray-600">
-              This will permanently remove{" "}
-              <span className="font-semibold">{parToDelete.name}</span> and its
-              related sessions.
+              This will permanently remove <span className="font-semibold">{parToDelete.name}</span> and
+              its related sessions.
             </p>
-            {deleteParError ? (
-              <p className="text-xs text-red-600 mt-2">{deleteParError}</p>
-            ) : null}
+            {deleteParError ? <p className="text-xs text-red-600 mt-2">{deleteParError}</p> : null}
             <div className="flex gap-3 mt-5">
               <button
                 type="button"
@@ -2197,9 +1769,7 @@ export default function Dashboard() {
                   type="text"
                   value={parToEdit.name ?? ""}
                   onChange={(e) =>
-                    setParToEdit((p) =>
-                      p ? { ...p, name: e.target.value } : p,
-                    )
+                    setParToEdit((p) => p ? { ...p, name: e.target.value } : p)
                   }
                   placeholder="e.g. John Doe"
                   className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
@@ -2210,11 +1780,7 @@ export default function Dashboard() {
                 <input
                   type="number"
                   value={parToEdit.age ?? ""}
-                  onChange={(e) =>
-                    setParToEdit((p) =>
-                      p ? { ...p, age: Number(e.target.value) } : p,
-                    )
-                  }
+                  onChange={(e) => setParToEdit((p) => p ? { ...p, age: Number(e.target.value) } : p)}
                   placeholder="e.g. 21"
                   className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
                 />
@@ -2223,11 +1789,7 @@ export default function Dashboard() {
               <Field label="Gender *">
                 <select
                   value={parToEdit.gender ?? ""}
-                  onChange={(e) =>
-                    setParToEdit((p) =>
-                      p ? { ...p, gender: e.target.value as Gender } : p,
-                    )
-                  }
+                  onChange={(e) => setParToEdit((p) => p ? { ...p, gender: e.target.value as Gender } : p)}
                   className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
                 >
                   <option value="">Select gender…</option>
@@ -2245,10 +1807,7 @@ export default function Dashboard() {
             <div className="flex gap-3 mt-5">
               <button
                 type="button"
-                onClick={() => {
-                  setParToEdit(null);
-                  setEditParError(null);
-                }}
+                onClick={() => { setParToEdit(null); setEditParError(null); }}
                 disabled={editingParId === parToEdit.id}
                 className="flex-1 border border-gray-200 text-gray-700 hover:bg-gray-50 py-2 rounded-md text-sm font-semibold transition-colors"
               >
@@ -2266,19 +1825,11 @@ export default function Dashboard() {
           </div>
         </div>
       )}
-    </div>
+    </div> 
   );
 }
 
-function StatCard({
-  icon,
-  label,
-  value,
-}: {
-  icon: string;
-  label: string;
-  value: number;
-}) {
+function StatCard({ icon, label, value }: { icon: string; label: string; value: number }) {
   return (
     <div className="bg-white rounded-xl border border-gray-100 p-4 flex items-center gap-3 shadow-sm">
       <span className="text-2xl w-10 h-10 flex items-center justify-center rounded-lg bg-red-50">
@@ -2286,9 +1837,7 @@ function StatCard({
       </span>
       <div>
         <p className="text-[12px] text-gray-500 font-semibold">{label}</p>
-        <p className="text-[26px] leading-none text-gray-900 font-bold mt-1">
-          {value}
-        </p>
+        <p className="text-[26px] leading-none text-gray-900 font-bold mt-1">{value}</p>
       </div>
     </div>
   );
@@ -2308,9 +1857,7 @@ function TabButton({
       type="button"
       onClick={onClick}
       className={`flex-1 py-2.5 text-[13px] font-semibold transition-colors ${
-        active
-          ? "bg-[#e8174a] text-white"
-          : "bg-white text-gray-600 hover:bg-gray-50"
+        active ? "bg-[#e8174a] text-white" : "bg-white text-gray-600 hover:bg-gray-50"
       }`}
     >
       {children}
@@ -2318,17 +1865,9 @@ function TabButton({
   );
 }
 
-function Badge({
-  className,
-  children,
-}: {
-  className: string;
-  children: React.ReactNode;
-}) {
+function Badge({ className, children }: { className: string; children: React.ReactNode }) {
   return (
-    <span
-      className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold ${className}`}
-    >
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold ${className}`}>
       {children}
     </span>
   );
@@ -2346,27 +1885,90 @@ function MetricCard({
   return (
     <div className="bg-gray-50 rounded-lg p-4 border border-gray-100">
       <p className="text-[12px] text-gray-500 font-semibold">{title}</p>
-      {subtitle ? (
-        <p className="text-[11px] text-gray-400 mt-0.5">{subtitle}</p>
-      ) : null}
+      {subtitle ? <p className="text-[11px] text-gray-400 mt-0.5">{subtitle}</p> : null}
       <div className="mt-2">{children}</div>
     </div>
   );
 }
 
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="block text-sm text-gray-600 mb-1 font-semibold">
-        {label}
-      </label>
+      <label className="block text-sm text-gray-600 mb-1 font-semibold">{label}</label>
       {children}
+    </div>
+  );
+}
+
+function KioskVideoTile({
+  peerId,
+  stream,
+  label,
+  onStop,
+}: {
+  peerId: string;
+  stream: MediaStream;
+  label: string;
+  onStop: () => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [paused, setPaused] = useState(false);
+
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream;
+      videoRef.current.play().catch(() => {
+        if (videoRef.current) {
+          videoRef.current.muted = true;
+          videoRef.current.play();
+        }
+      });
+    }
+  }, [stream]);
+
+  const togglePause = () => {
+    if (!videoRef.current) return;
+    if (paused) {
+      videoRef.current.play();
+    } else {
+      videoRef.current.pause();
+    }
+    setPaused(p => !p);
+  };
+
+  return (
+    <div className="relative bg-black aspect-video rounded-lg overflow-hidden border border-gray-200 group">
+      <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
+
+      {/* Label */}
+      <span className="absolute top-2 left-2 text-[11px] text-white bg-black/50 px-2 py-0.5 rounded font-semibold">
+        {label}
+      </span>
+
+      {/* Paused overlay */}
+      {paused && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+          <span className="text-white text-sm font-semibold">Paused</span>
+        </div>
+      )}
+
+      {/* Controls — visible on hover */}
+      <div className="absolute bottom-0 left-0 right-0 flex gap-2 p-2 bg-gradient-to-t from-black/70 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
+        <button
+          type="button"
+          onClick={togglePause}
+          className="flex-1 bg-white/20 hover:bg-white/30 text-white text-[11px] font-semibold py-1 rounded transition-colors"
+        >
+          {paused ? '▶ Resume' : '⏸ Pause'}
+        </button>
+        <button
+          type="button"
+          onClick={onStop}
+          className="flex-1 bg-red-500/80 hover:bg-red-600 text-white text-[11px] font-semibold py-1 rounded transition-colors"
+        >
+          ⏹ Stop
+        </button>
+      </div>
     </div>
   );
 }
