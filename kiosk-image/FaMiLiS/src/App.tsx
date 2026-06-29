@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 
 import RequireAuth from "./RequireAuth";
 import Login from "./pages/Login";
+import Signup from "./pages/Signup";
 import Dashboard from "./pages/Dashboard";
 import Setup from "./pages/Setup";
 import Session from "./pages/Session";
@@ -21,6 +22,7 @@ export default function App() {
       <Routes>
         {/* Public route - login page */}
         <Route path="/" element={<Login />} />
+        <Route path="/signup" element={<Signup />} />
 
         {/* Public kiosk routes — no login required; browser handles camera */}
         <Route path="/kiosk/setup" element={<Setup />} />
@@ -35,7 +37,6 @@ export default function App() {
           <Route path="/session" element={<Session />} />
           <Route path="/session-detail" element={<SessionDetail />} />
           <Route path="/survey" element={<Survey />} />
-          ok
           <Route path="/kiosk" element={<Kiosk />} />
           <Route path="/video-monitoring" element={<VideoMonitoring />} />
           

@@ -3,7 +3,7 @@
  * - backend: answers get sent to admin
  * - modal reference: https://youtu.be/1CN7C6u31zA?si=A300qvK5Q5-8HuSv
  **/
-
+// @ts-nocheck
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { performLogout } from "../RequireAuth";

@@ -427,6 +427,111 @@ async function start() {
     }
   });
 
+  app.post("/api/signup", async (req, res) => {
+    const rawUsername =
+      req.body?.username ?? req.body?.name ?? req.body?.displayName;
+    const rawEmail = req.body?.email;
+    const rawPassword = req.body?.password;
+
+    const username =
+      typeof rawUsername === "string" ? rawUsername.trim() : "";
+    const email = typeof rawEmail === "string" ? rawEmail.trim() : "";
+    const password =
+      typeof rawPassword === "string" ? rawPassword : "";
+
+    if (!username || !email || !password) {
+      return res.status(400).json({
+        ok: false,
+        error: "Name, email, and password are required.",
+      });
+    }
+
+    if (username.length > 50) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "Name must be 50 characters or less." });
+    }
+
+    if (email.length > 255) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "Email must be 255 characters or less." });
+    }
+
+    if (password.length < 8) {
+      return res.status(400).json({
+        ok: false,
+        error: "Password must be at least 8 characters long.",
+      });
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({
+        ok: false,
+        error: "Please enter a valid email address.",
+      });
+    }
+
+    try {
+      const [existingRows] = await pool.query(
+        `
+        SELECT user_id
+        FROM users
+        WHERE email = ? OR username = ?
+        LIMIT 1
+      `,
+        [email, username],
+      );
+
+      if (existingRows.length > 0) {
+        return res.status(409).json({
+          ok: false,
+          error: "An account with that email or name already exists.",
+        });
+      }
+
+      const passwordHash = await bcrypt.hash(password, 10);
+      const [result] = await pool.query(
+        `
+        INSERT INTO users (username, email, password_hash, role)
+        VALUES (?, ?, ?, 'tester')
+      `,
+        [username, email, passwordHash],
+      );
+
+      const [rows] = await pool.query(
+        `
+        SELECT user_id, username, email, role
+        FROM users
+        WHERE user_id = ?
+      `,
+        [result.insertId],
+      );
+
+      const createdUser = rows[0];
+
+      return res.status(201).json({
+        ok: true,
+        user: {
+          id: createdUser.user_id,
+          username: createdUser.username,
+          email: createdUser.email,
+          role: createdUser.role,
+        },
+      });
+    } catch (err) {
+      if (err?.code === "ER_DUP_ENTRY") {
+        return res.status(409).json({
+          ok: false,
+          error: "An account with that email already exists.",
+        });
+      }
+
+      console.error("Signup error:", err);
+      return res.status(500).json({ ok: false, error: "Server error." });
+    }
+  });
+
   app.get("/api/participants", async (_req, res) => {
     try {
       const [rows] = await pool.query(
