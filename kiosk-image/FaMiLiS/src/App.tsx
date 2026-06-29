@@ -8,6 +8,8 @@ import Session from "./pages/Session";
 import SessionDetail from "./pages/SessionDetail";
 import Survey from "./pages/Survey";
 import Kiosk from "./pages/Kiosk";
+import VideoMonitoring from "./pages/VideoMonitoring";
+
 // New tester routes
 import TesterConsent from "./pages/TesterConsent";
 import TesterSession from "./pages/TesterSession";
@@ -35,6 +37,8 @@ export default function App() {
           <Route path="/survey" element={<Survey />} />
           ok
           <Route path="/kiosk" element={<Kiosk />} />
+          <Route path="/video-monitoring" element={<VideoMonitoring />} />
+          
           {/* Tester routes */}
           <Route path="/tester-consent" element={<TesterConsent />} />
           <Route path="/tester-session" element={<TesterSession />} />
