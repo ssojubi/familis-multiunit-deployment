@@ -472,13 +472,7 @@ export default function Signup() {
                   Back
                 </button>
               ) : (
-                <button
-                  type="button"
-                  onClick={() => navigate("/")}
-                  className="h-[54px] flex-1 rounded-full border border-[#d7d7d7] text-[18px] font-semibold text-[#444] hover:bg-[#fafafa] transition-colors"
-                >
-                  Login
-                </button>
+                <div className="flex-1" />
               )}
 
               {step < STEPS.length - 1 ? (
@@ -486,6 +480,7 @@ export default function Signup() {
                   type="button"
                   onClick={handleNext}
                   className="h-[54px] flex-1 bg-red-600 text-white rounded-full text-[18px] font-semibold hover:bg-red-700 transition-colors inline-flex items-center justify-center gap-3"
+                  style={step === 0 ? { maxWidth: "280px", marginInline: "auto" } : undefined}
                 >
                   Next
                 </button>
