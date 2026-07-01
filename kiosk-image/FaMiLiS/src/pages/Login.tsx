@@ -233,7 +233,7 @@ export default function Login() {
                   autoComplete="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="admin@familis.com"
+                  placeholder="Enter your email"
                   className="w-full h-[50px] px-7 border border-[#bfbfbf] rounded-[10px] text-[16px] text-black placeholder:text-[#bdb4b4] focus:outline-none focus:border-red-400"
                   style={{ fontFamily: "'Albert Sans', sans-serif" }}
                 />

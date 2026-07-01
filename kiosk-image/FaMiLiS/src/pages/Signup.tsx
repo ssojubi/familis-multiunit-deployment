@@ -163,10 +163,42 @@ export default function Signup() {
     return true;
   };
 
-  const handleNext = () => {
+  const checkAccountUniqueness = async () => {
+    try {
+      setLoading(true);
+      const res = await fetch("/api/signup/check", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          username: displayName.trim(),
+          email: email.trim(),
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) {
+        setError(data?.error || "An account with that email or name already exists.");
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.error(err);
+      setError("Unable to reach the server. Please try again.");
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleNext = async () => {
     setError("");
     if (!validateCurrentStep()) {
       return;
+    }
+    if (step === 0) {
+      const isUnique = await checkAccountUniqueness();
+      if (!isUnique) return;
     }
     setStep((current) => Math.min(current + 1, STEPS.length - 1));
   };
@@ -182,6 +214,10 @@ export default function Signup() {
 
     if (step !== STEPS.length - 1) {
       if (validateCurrentStep()) {
+        if (step === 0) {
+          const isUnique = await checkAccountUniqueness();
+          if (!isUnique) return;
+        }
         setStep((current) => Math.min(current + 1, STEPS.length - 1));
       }
       return;
@@ -286,10 +322,10 @@ export default function Signup() {
         >
           <div className="bg-red-600 px-10 pt-10 pb-8 text-center">
             <h2 className="text-white text-[34px] font-bold mt-2">
-              Create Tester Account
+              Sign Up
             </h2>
-            <p className="text-white/95 text-[16px] font-semibold mt-2">
-              Sign up as a participant.
+            <p className="text-white/95 text-[16px] font-semibold mt-2 text-center">
+              Create account as a participant.
             </p>
 
             <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
@@ -299,13 +335,12 @@ export default function Signup() {
                 return (
                   <div
                     key={label}
-                    className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-[13px] font-semibold transition-colors ${
-                      active
-                        ? "border-white bg-white text-red-700"
-                        : done
-                          ? "border-white/70 bg-white/15 text-white"
-                          : "border-white/30 bg-white/10 text-white/80"
-                    }`}
+                    className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-[13px] font-semibold transition-colors ${active
+                      ? "border-white bg-white text-red-700"
+                      : done
+                        ? "border-white/70 bg-white/15 text-white"
+                        : "border-white/30 bg-white/10 text-white/80"
+                      }`}
                     aria-current={active ? "step" : undefined}
                   >
                     <span className="flex h-5 w-5 items-center justify-center rounded-full bg-current/10 text-[11px]">
@@ -462,8 +497,8 @@ export default function Signup() {
               </p>
             )}
 
-            <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-              {step > 0 ? (
+            <div className={`mt-8 flex flex-col gap-3 ${step === 0 ? "items-center" : "sm:flex-row"}`}>
+              {step > 0 && (
                 <button
                   type="button"
                   onClick={handleBack}
@@ -471,21 +506,14 @@ export default function Signup() {
                 >
                   Back
                 </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => navigate("/")}
-                  className="h-[54px] flex-1 rounded-full border border-[#d7d7d7] text-[18px] font-semibold text-[#444] hover:bg-[#fafafa] transition-colors"
-                >
-                  Login
-                </button>
               )}
 
               {step < STEPS.length - 1 ? (
                 <button
                   type="button"
                   onClick={handleNext}
-                  className="h-[54px] flex-1 bg-red-600 text-white rounded-full text-[18px] font-semibold hover:bg-red-700 transition-colors inline-flex items-center justify-center gap-3"
+                  className={`h-[54px] bg-red-600 text-white rounded-full text-[18px] font-semibold hover:bg-red-700 transition-colors inline-flex items-center justify-center gap-3 ${step === 0 ? "w-full max-w-[280px]" : "flex-1"
+                    }`}
                 >
                   Next
                 </button>

@@ -1,3 +1,17 @@
+// @ts-nocheck
+/**
+ * notes:
+ * - backend: change table columns
+ * - Manage Kiosks is not yet finalized. There should be multiple videos.
+ *
+ * references:
+ * - table: https://stackoverflow.com/questions/60518353/how-to-display-mysql-table-in-react-js-table
+ * - table: https://github.com/machadop1407/react-table-tutorial.git
+ * - table: https://youtu.be/Q3ixb1w-QaY?si=AhrthqljoNJg1D6u
+ * - remote device connection: https://github.com/mehmetkahya0/local-web-camera
+ * - remote device connection: https://github.com/versatica/mediasoup-demo
+ **/
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { performLogout } from "../RequireAuth";
@@ -453,7 +467,7 @@ export default function Dashboard() {
       localStreamRef.current = stream;
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
-        localVideoRef.current.play().catch(() => {});
+        localVideoRef.current.play().catch(() => { });
       }
       setKioskStatus('Camera active.');
     } catch (err) {
@@ -1274,17 +1288,20 @@ export default function Dashboard() {
                                   Number(stats.frameLogCount ?? 0) <= 0
                                     ? "conic-gradient(#e5e7eb 0% 100%)"
                                     : `conic-gradient(${stats.distribution
-                                        .map((d, i) => {
-                                          const start =
-                                            i === 0
-                                              ? 0
-                                              : stats.distribution
-                                                  .slice(0, i)
-                                                  .reduce((a, b) => a + b.value, 0);
-                                          const end = start + d.value;
-                                          return `${d.color} ${start}% ${end}%`;
-                                        })
-                                        .join(", ")})`,
+                                      .map((d, i) => {
+                                        const start =
+                                          i === 0
+                                            ? 0
+                                            : stats.distribution
+                                              .slice(0, i)
+                                              .reduce(
+                                                (a, b) => a + b.value,
+                                                0,
+                                              );
+                                        const end = start + d.value;
+                                        return `${d.color} ${start}% ${end}%`;
+                                      })
+                                      .join(", ")})`,
                               }}
                               aria-label="Pie chart"
                             />
@@ -1495,11 +1512,61 @@ export default function Dashboard() {
                     ▶ Start Food Tasting
                   </button>
                 </div>
+
+                {/* Active session badge */}
+                {kioskSessionId && (
+                  <p className="text-[12px] text-green-700 bg-green-50 border border-green-200 rounded-md px-3 py-2">
+                    Active session:{" "}
+                    <span className="font-semibold">#{kioskSessionId}</span>
+                    {" · "}
+                    {foods.find((f) => f.id === kioskFoodId)?.name ?? ""}
+                  </p>
+                )}
+
+                {/* Share URL */}
+                {shareUrl && (
+                  <div className="text-[12px] text-gray-500 bg-gray-50 border border-gray-100 rounded-md px-3 py-2 break-all">
+                    <span className="font-semibold text-gray-700">
+                      Active Channel Node Link:{" "}
+                    </span>
+                    <span className="text-gray-600">{shareUrl}</span>
+                    <p className="text-[11px] text-gray-400 mt-1">
+                      Open this link on the kiosk device browser.
+                    </p>
+                    {(hostIP === "localhost" ||
+                      hostIP === "127.0.0.1" ||
+                      hostIP.startsWith("172.")) && (
+                        <p className="text-[11px] text-amber-700 mt-2">
+                          Open the dashboard at{" "}
+                          <code className="bg-amber-50 px-1 rounded">
+                            http://&lt;your-wifi-ip&gt;:5173
+                          </code>{" "}
+                          (e.g. 192.168.1.x) so the share link uses an address the
+                          kiosk can reach.
+                        </p>
+                      )}
+                  </div>
+                )}
               </div>
             </section>
 
           ) : tab === "participants" ? (
             <section className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 overflow-x-auto">
+              {/* Always-visible header with Add button */}
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-gray-900 font-bold">
+                  Participant Management
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => setShowAddParticipant(true)}
+                  className="inline-flex items-center gap-2 bg-[#e8174a] hover:bg-[#c9143f] text-white px-4 py-2.5 rounded-md text-sm font-semibold transition-colors"
+                >
+                  <span aria-hidden="true">➕</span>
+                  Add New Participant
+                </button>
+              </div>
+
               {parLoading ? (
                 <div className="text-center py-14 text-gray-500">
                   <p className="text-sm">Loading participants…</p>
@@ -1511,45 +1578,34 @@ export default function Dashboard() {
                 </div>
               ) : participants.length === 0 ? (
                 <div className="text-center py-14 text-gray-500">
-                  <p className="text-sm">No participants added yet.</p>
+                  <p className="text-sm">No participants added yet. Use the button above to add one.</p>
                 </div>
               ) : (
-                <div>
-                  <div className="flex w-225 h-15 items-center justify-between">
-                    <h2 className="text-gray-900 font-bold mb-4">Food Management</h2>
-                    <button
-                      type="button"
-                      onClick={() => setShowAddParticipant(true)}
-                      className="inline-flex items-center gap-2 bg-[#e8174a] hover:bg-[#c9143f] text-white px-4 py-2.5 rounded-md text-sm font-semibold transition-colors"
-                    >
-                      <span aria-hidden="true">➕</span>
-                      Add New Participant
-                    </button>
-                  </div>
-
-                  <table className="min-w-max w-full text-center text-[12px] border-separate border-spacing-x-4 gap-10">
-                    <thead>
-                      <tr>
-                        <th scope="col">Participant ID</th>
-                        <th scope="col">Session Number</th>
-                        <th scope="col">Kiosk Number</th>
-                        <th scope="col">Name</th>
-                        <th scope="col">Contact Number</th>
-                        <th scope="col">GCash Number</th>
-                        <th scope="col">Date &amp; Time</th>
-                        <th scope="col">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {participants.sort((a, b) => a.id - b.id).map(p => {
+                <table className="min-w-max w-full text-center text-[12px] border-separate border-spacing-x-4 gap-10">
+                  <thead>
+                    <tr>
+                      <th scope="col">Participant ID</th>
+                      <th scope="col">Session Number</th>
+                      <th scope="col">Kiosk Number</th>
+                      <th scope="col">Name</th>
+                      <th scope="col">Contact Number</th>
+                      <th scope="col">GCash Number</th>
+                      <th scope="col">Date &amp; Time</th>
+                      <th scope="col">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {participants
+                      .sort((a, b) => a.id - b.id)
+                      .map((p) => {
                         return (
                           <tr key={p.id}>
                             <td>{p.id}</td>
                             <td>-</td>
                             <td>-</td>
-                            <td>{p.name}</td> {/*name*/}
-                            <td>-</td>
-                            <td>-</td>
+                            <td>{p.name}</td>
+                            <td>{p.contactNumber ?? "-"}</td>
+                            <td>{p.gcashNumber ?? "-"}</td>
                             <td>{formatDateTime(p.createdAt)}</td>
                             <td>
                               <button
@@ -1572,9 +1628,8 @@ export default function Dashboard() {
                           </tr>
                         );
                       })}
-                    </tbody>
-                  </table>
-                </div>
+                  </tbody>
+                </table>
               )}
             </section>
           ) : null}
@@ -1856,9 +1911,10 @@ function TabButton({
     <button
       type="button"
       onClick={onClick}
-      className={`flex-1 py-2.5 text-[13px] font-semibold transition-colors ${
-        active ? "bg-[#e8174a] text-white" : "bg-white text-gray-600 hover:bg-gray-50"
-      }`}
+      className={`flex-1 py-2.5 text-[13px] font-semibold transition-colors ${active
+        ? "bg-[#e8174a] text-white"
+        : "bg-white text-gray-600 hover:bg-gray-50"
+        }`}
     >
       {children}
     </button>

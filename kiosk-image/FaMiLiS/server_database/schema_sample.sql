@@ -278,3 +278,31 @@ VALUES
 (18,8,7,6,9,7,NULL),
 (19,4,3,2,4,2,'bad'),
 (20,7,5,4,4,5,'It has an intense taste when i first tried the dipping sauce which i can say is overpowering in a slightly bad way');
+
+-- =====================================================
+-- NEW TEST DATA (complementing Signup + CRUD features)
+-- =====================================================
+
+-- =====================================================
+-- NEW USERS (registered via the Signup page)
+-- =====================================================
+-- Passwords (bcrypt cost 10):
+--   testuser1@familis.com  →  tester123
+--   testuser2@familis.com  →  tester456
+
+INSERT INTO users (user_id, username, email, password_hash, role) VALUES
+(3, 'Juan Dela Cruz',  'testuser1@familis.com', '$2b$10$Bk3QJfJ.5HxVoEG6Np5JGeSA7lJNJ2UyPJCB5Ow6mwt/C.DIQKBC', 'tester'),
+(4, 'Maria Santos',    'testuser2@familis.com', '$2b$10$WFTNRYuDe6aXZlk8GVWbZeGAtCgFxOQpBN4h7CdkHJBKlJMGpN8XC', 'tester');
+
+-- =====================================================
+-- ENRICHED PARTICIPANTS
+-- (new records with name, contact_number, gcash_number
+--  to exercise the full Manage Participants CRUD table)
+-- =====================================================
+
+INSERT INTO participants (participant_id, name, tester_label, kiosk_id, contact_number, gcash_number, age, gender) VALUES
+(22, 'Juan Dela Cruz',  'P22', 1, '09171234567', '09171234567', 22, 'male'),
+(23, 'Maria Santos',    'P23', 1, '09281234567', '09281234567', 20, 'female'),
+(24, 'Jose Reyes',      'P24', 1, '09391234567', NULL,          25, 'male'),
+(25, 'Ana Gomez',       'P25', 1, NULL,          '09451234567', 19, 'female'),
+(26, 'Carlos Bautista', 'P26', 1, '09561234567', '09561234567', 23, 'male');
