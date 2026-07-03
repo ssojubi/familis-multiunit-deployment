@@ -427,79 +427,6 @@ async function start() {
     }
   });
 
-  app.post("/api/signup/check", async (req, res) => {
-    const rawUsername =
-      req.body?.username ?? req.body?.name ?? req.body?.displayName;
-    const rawEmail = req.body?.email;
-
-    const username =
-      typeof rawUsername === "string" ? rawUsername.trim() : "";
-    const email = typeof rawEmail === "string" ? rawEmail.trim() : "";
-
-    if (!username || !email) {
-      return res.status(400).json({
-        ok: false,
-        error: "Name and email are required.",
-      });
-    }
-
-    if (username.length > 50) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Name must be 50 characters or less." });
-    }
-
-    if (email.length > 255) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Email must be 255 characters or less." });
-    }
-
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return res.status(400).json({
-        ok: false,
-        error: "Please enter a valid email address.",
-      });
-    }
-
-    try {
-      const [existingRows] = await pool.query(
-        `
-        SELECT user_id, email, username
-        FROM users
-        WHERE email = ? OR username = ?
-        LIMIT 1
-      `,
-        [email, username],
-      );
-
-      if (existingRows.length > 0) {
-        const matched = existingRows[0];
-        if (matched.email === email && matched.username === username) {
-          return res.status(409).json({
-            ok: false,
-            error: "An account with that email and username already exists.",
-          });
-        } else if (matched.email === email) {
-          return res.status(409).json({
-            ok: false,
-            error: "An account with that email already exists.",
-          });
-        } else {
-          return res.status(409).json({
-            ok: false,
-            error: "An account with that name already exists.",
-          });
-        }
-      }
-
-      return res.json({ ok: true });
-    } catch (err) {
-      console.error("Signup check error:", err);
-      return res.status(500).json({ ok: false, error: "Server error during validation." });
-    }
-  });
-
   app.post("/api/signup", async (req, res) => {
     const rawUsername =
       req.body?.username ?? req.body?.name ?? req.body?.displayName;
@@ -753,65 +680,6 @@ async function start() {
     }
   });
 
-  app.put("/api/participants/:id", async (req, res) => {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id)) {
-      return res.status(400).json({ ok: false, error: "Invalid id." });
-    }
-    const rawLabel = req.body?.testerLabel;
-    const testerLabel = typeof rawLabel === "string" ? rawLabel.trim() : "";
-    const ageRaw = req.body?.age;
-    const genderRaw = req.body?.gender;
-    if (!testerLabel) {
-      return res.status(400).json({ ok: false, error: "testerLabel is required." });
-    }
-    const age =
-      ageRaw == null || ageRaw === ""
-        ? null
-        : Number.isFinite(Number(ageRaw))
-          ? Math.round(Number(ageRaw))
-          : null;
-    const allowedGenders = new Set(["male", "female", "other"]);
-    const gender = genderRaw == null || genderRaw === "" ? null : String(genderRaw);
-    if (gender != null && !allowedGenders.has(gender)) {
-      return res.status(400).json({ ok: false, error: "gender must be male, female, or other." });
-    }
-    try {
-      const [result] = await pool.query(
-        `UPDATE participants
-        SET tester_label = ?, age = ?, gender = ?
-        WHERE participant_id = ?`,
-        [testerLabel, age, gender, id]
-      );
-      if (result.affectedRows === 0) {
-        return res.status(404).json({ ok: false, error: "Participant not found." });
-      }
-      return res.json({ ok: true, participant: { id, testerLabel, age, gender } });
-    } catch (err) {
-      console.error("PUT /api/participants error:", err);
-      return res.status(500).json({ ok: false, error: "Server error." });
-    }
-  });
-
-  app.delete("/api/participants/:id", async (req, res) => {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id)) {
-      return res.status(400).json({ ok: false, error: "Invalid id." });
-    }
-    try {
-      const [result] = await pool.query(
-        `DELETE FROM participants WHERE participant_id = ?`,
-        [id]
-      );
-      if (result.affectedRows === 0) {
-        return res.status(404).json({ ok: false, error: "Participant not found." });
-      }
-      return res.json({ ok: true });
-    } catch (err) {
-      console.error("DELETE /api/participants error:", err);
-      return res.status(500).json({ ok: false, error: "Server error." });
-    }
-  });
 
   // Upload participant photo
   app.post("/api/participants/:id/photo", uploadParticipantPhoto, async (req, res) => {
@@ -836,7 +704,6 @@ async function start() {
     }
     const rawName = req.body?.name ?? req.body?.testerLabel;
     const name = typeof rawName === "string" ? rawName.trim() : "";
-    const testerLabel = typeof req.body?.testerLabel === "string" ? req.body.testerLabel.trim() : name;
     const kioskIdRaw = req.body?.kioskId ?? req.body?.kiosk_id;
     const ageRaw = req.body?.age;
     const genderRaw = req.body?.gender;

@@ -1,17 +1,3 @@
-// @ts-nocheck
-/**
- * notes:
- * - backend: change table columns
- * - Manage Kiosks is not yet finalized. There should be multiple videos.
- *
- * references:
- * - table: https://stackoverflow.com/questions/60518353/how-to-display-mysql-table-in-react-js-table
- * - table: https://github.com/machadop1407/react-table-tutorial.git
- * - table: https://youtu.be/Q3ixb1w-QaY?si=AhrthqljoNJg1D6u
- * - remote device connection: https://github.com/mehmetkahya0/local-web-camera
- * - remote device connection: https://github.com/versatica/mediasoup-demo
- **/
-
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { performLogout } from "../RequireAuth";
@@ -467,7 +453,7 @@ export default function Dashboard() {
       localStreamRef.current = stream;
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
-        localVideoRef.current.play().catch(() => { });
+        localVideoRef.current.play().catch(() => {});
       }
       setKioskStatus('Camera active.');
     } catch (err) {
@@ -926,7 +912,14 @@ export default function Dashboard() {
       const res = await fetch(`${API_BASE}/api/participants/${parToEdit.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name, age: parToEdit.age, gender: parToEdit.gender }),
+        body: JSON.stringify({
+          name: name,
+          age: parToEdit.age,
+          gender: parToEdit.gender,
+          kioskId: parToEdit.kioskId ?? null,
+          contactNumber: parToEdit.contactNumber ?? null,
+          gcashNumber: parToEdit.gcashNumber ?? null,
+        }),
       });
       const json = await res.json();
       if (!res.ok || !json?.ok) {
@@ -1288,20 +1281,17 @@ export default function Dashboard() {
                                   Number(stats.frameLogCount ?? 0) <= 0
                                     ? "conic-gradient(#e5e7eb 0% 100%)"
                                     : `conic-gradient(${stats.distribution
-                                      .map((d, i) => {
-                                        const start =
-                                          i === 0
-                                            ? 0
-                                            : stats.distribution
-                                              .slice(0, i)
-                                              .reduce(
-                                                (a, b) => a + b.value,
-                                                0,
-                                              );
-                                        const end = start + d.value;
-                                        return `${d.color} ${start}% ${end}%`;
-                                      })
-                                      .join(", ")})`,
+                                        .map((d, i) => {
+                                          const start =
+                                            i === 0
+                                              ? 0
+                                              : stats.distribution
+                                                  .slice(0, i)
+                                                  .reduce((a, b) => a + b.value, 0);
+                                          const end = start + d.value;
+                                          return `${d.color} ${start}% ${end}%`;
+                                        })
+                                        .join(", ")})`,
                               }}
                               aria-label="Pie chart"
                             />
@@ -1512,51 +1502,13 @@ export default function Dashboard() {
                     ▶ Start Food Tasting
                   </button>
                 </div>
-
-                {/* Active session badge */}
-                {kioskSessionId && (
-                  <p className="text-[12px] text-green-700 bg-green-50 border border-green-200 rounded-md px-3 py-2">
-                    Active session:{" "}
-                    <span className="font-semibold">#{kioskSessionId}</span>
-                    {" · "}
-                    {foods.find((f) => f.id === kioskFoodId)?.name ?? ""}
-                  </p>
-                )}
-
-                {/* Share URL */}
-                {shareUrl && (
-                  <div className="text-[12px] text-gray-500 bg-gray-50 border border-gray-100 rounded-md px-3 py-2 break-all">
-                    <span className="font-semibold text-gray-700">
-                      Active Channel Node Link:{" "}
-                    </span>
-                    <span className="text-gray-600">{shareUrl}</span>
-                    <p className="text-[11px] text-gray-400 mt-1">
-                      Open this link on the kiosk device browser.
-                    </p>
-                    {(hostIP === "localhost" ||
-                      hostIP === "127.0.0.1" ||
-                      hostIP.startsWith("172.")) && (
-                        <p className="text-[11px] text-amber-700 mt-2">
-                          Open the dashboard at{" "}
-                          <code className="bg-amber-50 px-1 rounded">
-                            http://&lt;your-wifi-ip&gt;:5173
-                          </code>{" "}
-                          (e.g. 192.168.1.x) so the share link uses an address the
-                          kiosk can reach.
-                        </p>
-                      )}
-                  </div>
-                )}
               </div>
             </section>
 
           ) : tab === "participants" ? (
             <section className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 overflow-x-auto">
-              {/* Always-visible header with Add button */}
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-gray-900 font-bold">
-                  Participant Management
-                </h2>
+                <h2 className="text-gray-900 font-bold">Participant Management</h2>
                 <button
                   type="button"
                   onClick={() => setShowAddParticipant(true)}
@@ -1578,7 +1530,7 @@ export default function Dashboard() {
                 </div>
               ) : participants.length === 0 ? (
                 <div className="text-center py-14 text-gray-500">
-                  <p className="text-sm">No participants added yet. Use the button above to add one.</p>
+                  <p className="text-sm">No participants added yet.</p>
                 </div>
               ) : (
                 <table className="min-w-max w-full text-center text-[12px] border-separate border-spacing-x-4 gap-10">
@@ -1595,39 +1547,37 @@ export default function Dashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    {participants
-                      .sort((a, b) => a.id - b.id)
-                      .map((p) => {
-                        return (
-                          <tr key={p.id}>
-                            <td>{p.id}</td>
-                            <td>-</td>
-                            <td>-</td>
-                            <td>{p.name}</td>
-                            <td>{p.contactNumber ?? "-"}</td>
-                            <td>{p.gcashNumber ?? "-"}</td>
-                            <td>{formatDateTime(p.createdAt)}</td>
-                            <td>
-                              <button
-                                type="button"
-                                onClick={() => setParToEdit(p)}
-                                className="text-[12px] font-semibold text-black hover:text-green transition-colors inline-flex items-center gap-1"
-                              >
-                                <span aria-hidden="true">✍️</span>
-                                Edit
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setParToDelete(p)}
-                                className="text-[12px] font-semibold text-[#e8174a] hover:text-[#c9143f] transition-colors inline-flex items-center gap-1"
-                              >
-                                <span aria-hidden="true">🗑️</span>
-                                Delete
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
+                    {participants.sort((a, b) => a.id - b.id).map(p => {
+                      return (
+                        <tr key={p.id}>
+                          <td>{p.id}</td>
+                          <td>-</td>
+                          <td>{p.kioskId ?? "-"}</td>
+                          <td>{p.name}</td> {/*name*/}
+                          <td>{p.contactNumber ?? "-"}</td>
+                          <td>{p.gcashNumber ?? "-"}</td>
+                          <td>{formatDateTime(p.createdAt)}</td>
+                          <td>
+                            <button
+                              type="button"
+                              onClick={() => setParToEdit(p)}
+                              className="text-[12px] font-semibold text-black hover:text-green transition-colors inline-flex items-center gap-1"
+                            >
+                              <span aria-hidden="true">✍️</span>
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setParToDelete(p)}
+                              className="text-[12px] font-semibold text-[#e8174a] hover:text-[#c9143f] transition-colors inline-flex items-center gap-1"
+                            >
+                              <span aria-hidden="true">🗑️</span>
+                              Delete
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               )}
@@ -1911,10 +1861,9 @@ function TabButton({
     <button
       type="button"
       onClick={onClick}
-      className={`flex-1 py-2.5 text-[13px] font-semibold transition-colors ${active
-        ? "bg-[#e8174a] text-white"
-        : "bg-white text-gray-600 hover:bg-gray-50"
-        }`}
+      className={`flex-1 py-2.5 text-[13px] font-semibold transition-colors ${
+        active ? "bg-[#e8174a] text-white" : "bg-white text-gray-600 hover:bg-gray-50"
+      }`}
     >
       {children}
     </button>
