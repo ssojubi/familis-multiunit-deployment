@@ -1,125 +1,56 @@
 # FaMiLiS Multi-Unit Deployment
 
-Distributed Facial Emotion Recognition (FER) deployment for multiple FaMiLiS kiosks.
+FaMiLiS Multi-Unit Deployment runs the browser-based kiosk UI, central dashboard, emotion service, MySQL database, and Kafka pipeline through Docker Compose.
 
-The current primary flow is the browser-based FaMiLiS kiosk UI. Kafka is still part of the system and is used by the central FastAPI service for the central FER/event pipeline. The old native Python `client-agent` flow remains available only as a legacy/manual test path.
+The active kiosk flow is handled by the FaMiLiS web app. The `client-agent` folder is kept as a legacy native camera implementation.
 
-## Architecture
-
-```text
-Browser kiosk UI
-  -> Vite React app on 5173
-  -> Express API + Socket.IO on 8080
-  -> Python emotion service on 8765
-  -> MySQL familis_central database
-  -> dashboard analytics, sessions, surveys, frame logs
-
-Central service
-  -> FastAPI on 8000
-  -> Kafka producer/consumer
-  -> Kafka topic: video-frames
-  -> MySQL emotion_results
-
-Legacy native client-agent, optional
-  -> WebSocket commands from FastAPI
-  -> frame ingest through Kafka
-  -> central FER processing
-```
-
-## Repository Layout
+## File Structure
 
 ```text
 familis-multiunit-deployment/
   central-server/
-    app/
-    models/
+    app/                     FastAPI service, Kafka producer/consumer, dashboard APIs
+    models/                  FER model files for central processing
     Dockerfile
-    docker-compose.yaml
+    docker-compose.yaml      Main Docker Compose stack
     requirements.txt
     .dockerignore
+
   certs/
-    cert.pem
-    key.pem
+    cert.pem                 HTTPS certificate used by the FaMiLiS container
+    key.pem                  HTTPS key used by the FaMiLiS container
+
   kiosk-image/
-    Dockerfile
-    start.sh
+    Dockerfile               FaMiLiS app container image
+    start.sh                 Starts frontend, Express API, and emotion service
     .dockerignore
     FaMiLiS/
-      backend/
-      server/
-      server_database/schema.sql
-      src/
+      backend/               Python emotion service and model files
+      server/                Express API and Socket.IO server
+      server_database/       MySQL schema
+      src/                   React frontend
       package.json
       package-lock.json
-  client-agent/        # legacy/manual native camera path
-  send_start.py        # legacy command helper
-  send_stop.py         # legacy command helper
+
+  client-agent/              Legacy native kiosk camera agent
+  send_start.py              Legacy start command helper
+  send_stop.py               Legacy stop command helper
   README.md
 ```
 
-## Requirements
-
-- Docker Desktop
-- Docker Compose
-- Browser with camera permissions
-- Access to the Docker host on ports `5173`, `8080`, `8765`, and `8000`
-
-For local non-Docker frontend/backend development, also install:
-
-- Node.js
-- Python 3.11+
-
-## HTTPS Certificates
-
-HTTPS is handled by the certs in the root `certs/` folder:
+## Services
 
 ```text
-certs/cert.pem
-certs/key.pem
+5173  FaMiLiS React app
+8080  Express API + Socket.IO
+8765  Python emotion service
+8000  FastAPI central service
+3308  MySQL exposed on host
+9092  Kafka
+2181  Zookeeper
 ```
 
-`central-server/docker-compose.yaml` mounts that folder into the FaMiLiS container at `/app/certs` and sets:
-
-```text
-USE_HTTPS=true
-SSL_KEY_FILE=/app/certs/key.pem
-SSL_CERT_FILE=/app/certs/cert.pem
-```
-
-The Vite dev server reads those values in `kiosk-image/FaMiLiS/vite.config.ts`.
-
-## Docker Build Notes
-
-The Docker build contexts intentionally ignore generated folders and local dependencies:
-
-```text
-kiosk-image/FaMiLiS/node_modules/
-client-agent/venv/
-**/__pycache__/
-**/*.pyc
-```
-
-This makes Docker initialization and rebuilds faster. Do not commit or copy local `node_modules`, Python virtual environments, cache folders, logs, or generated frames into the image context.
-
-Keep these files because they recreate dependencies:
-
-```text
-kiosk-image/FaMiLiS/package.json
-kiosk-image/FaMiLiS/package-lock.json
-central-server/requirements.txt
-kiosk-image/FaMiLiS/backend/requirements.txt
-```
-
-## Start The Full Stack
-
-From the repository root:
-
-```powershell
-cd central-server
-docker compose up -d --build
-```
-
-This starts:
+Docker Compose starts these containers:
 
 ```text
 zookeeper
@@ -130,164 +61,81 @@ central-server
 familis
 ```
 
-`kafka-init` creates the `video-frames` topic. MySQL initializes the database from:
+## Install And Run
 
-```text
-kiosk-image/FaMiLiS/server_database/schema.sql
+Install Docker Desktop, then start the full stack from the repository root:
+
+```powershell
+cd central-server
+docker compose up -d --build
 ```
 
-If you need to recreate the database from a clean schema:
+Open the app:
+
+```text
+https://localhost:5173
+```
+
+Check running containers:
+
+```powershell
+docker compose ps
+```
+
+Check the central service:
+
+```powershell
+Invoke-WebRequest -UseBasicParsing http://localhost:8000/api/health
+```
+
+Check Kafka topics:
+
+```powershell
+docker exec kafka kafka-topics --bootstrap-server kafka:9092 --list
+```
+
+Check MySQL:
+
+```powershell
+docker exec central-mysql mysql -uroot -proot -e "USE familis_central; SHOW TABLES;"
+```
+
+Stop the stack:
+
+```powershell
+docker compose down
+```
+
+Reset the database volume and start fresh:
 
 ```powershell
 docker compose down -v
 docker compose up -d --build
 ```
 
-## Check Services
-
-From `central-server/`:
-
-```powershell
-docker compose ps
-```
-
-Central FastAPI health:
-
-```powershell
-Invoke-WebRequest -UseBasicParsing http://localhost:8000/api/health
-```
-
-Expected shape:
-
-```json
-{"status":"ok","kiosks_connected":0,"kafka_ready":true}
-```
-
-FaMiLiS Express API health:
-
-```powershell
-Invoke-WebRequest -UseBasicParsing https://localhost:5173/api/health
-```
-
-If the local certificate is self-signed, the browser may ask you to accept it before camera features work.
-
-## Open The App
-
-Open:
+## App Routes
 
 ```text
-https://localhost:5173
-```
-
-Main routes:
-
-```text
-/                 login
-/signup           signup
-/dashboard        admin dashboard
-/kiosk            protected kiosk host
-/kiosk/setup      public kiosk setup
-/kiosk/session    public kiosk session
-/kiosk/survey     public kiosk survey
-/video-monitoring admin video monitoring
-```
-
-The FaMiLiS container runs:
-
-```text
-5173  Vite React app
-8080  Express API + Socket.IO
-8765  Python emotion service
-8000  FastAPI central service, exposed by central-server container
-```
-
-## Check Kafka
-
-From `central-server/`:
-
-```powershell
-docker exec kafka kafka-topics --bootstrap-server kafka:9092 --list
-```
-
-Expected:
-
-```text
-__consumer_offsets
-video-frames
-```
-
-List consumer groups:
-
-```powershell
-docker exec kafka kafka-consumer-groups --bootstrap-server kafka:9092 --list
-```
-
-Expected:
-
-```text
-fer-processor-group
-```
-
-## Check MySQL
-
-From `central-server/`:
-
-```powershell
-docker exec -it central-mysql mysql -uroot -proot
-```
-
-Inside MySQL:
-
-```sql
-USE familis_central;
-SHOW TABLES;
-SELECT COUNT(*) FROM sessions;
-SELECT COUNT(*) FROM frame_logs;
-SELECT COUNT(*) FROM emotion_results;
-```
-
-One-shot check:
-
-```powershell
-docker exec central-mysql mysql -uroot -proot -e "USE familis_central; SHOW TABLES; SELECT COUNT(*) AS session_count FROM sessions; SELECT COUNT(*) AS frame_log_count FROM frame_logs; SELECT COUNT(*) AS emotion_result_count FROM emotion_results;"
-```
-
-## Logs
-
-From `central-server/`:
-
-```powershell
-docker logs central-server
-docker logs familis
-docker logs kafka
-docker logs kafka-init
-docker logs central-mysql
-```
-
-## Stop The Stack
-
-From `central-server/`:
-
-```powershell
-docker compose down
-```
-
-To stop and remove the database volume:
-
-```powershell
-docker compose down -v
+/                 Login
+/signup           Signup
+/dashboard        Dashboard
+/kiosk            Kiosk host
+/kiosk/setup      Kiosk setup
+/kiosk/session    Kiosk session
+/kiosk/survey     Kiosk survey
+/video-monitoring Video monitoring
 ```
 
 ## Local Development
 
-Install frontend/server dependencies:
+Install FaMiLiS dependencies:
 
 ```powershell
 cd kiosk-image\FaMiLiS
 npm install
 ```
 
-Run the Vite app:
+Run the frontend:
 
 ```powershell
 npm run dev
@@ -299,7 +147,7 @@ Run the Express API:
 npm run server
 ```
 
-Run the Python emotion service:
+Run the emotion service:
 
 ```powershell
 cd backend
@@ -307,11 +155,11 @@ pip install -r requirements.txt
 python emotion_service.py
 ```
 
-## Legacy Native Client-Agent
+## Legacy Client Agent
 
-Only use this if you still need the old native Python kiosk camera path.
+The native Python `client-agent` is the previous kiosk camera implementation.
 
-From the repo root:
+Run it from the repository root:
 
 ```powershell
 cd client-agent
@@ -319,81 +167,17 @@ pip install -r requirements.txt
 python agent.py
 ```
 
-Default values:
-
-```text
-KIOSK_ID=kiosk-01
-CENTRAL_SERVER_HTTP=http://localhost:8000
-CENTRAL_SERVER_WS=derived from CENTRAL_SERVER_HTTP
-WEBCAM_ID=auto
-CAMERA_SCAN_MAX_INDEX=5
-SHOW_PREVIEW=1
-WARM_CAMERA_ON_CONNECT=0
-CAMERA_BACKEND=auto
-```
-
-Run a different kiosk:
-
-```powershell
-$env:KIOSK_ID="kiosk-02"
-python agent.py
-```
-
-Send legacy start/stop commands:
+Legacy command helpers:
 
 ```powershell
 python send_start.py
 python send_stop.py
 ```
 
-Override command defaults:
-
-```powershell
-$env:KIOSK_ID="kiosk-02"
-$env:SESSION_ID="session-001"
-$env:CENTRAL_SERVER_HTTP="http://localhost:8000"
-python send_start.py
-```
-
-## Troubleshooting
-
-If Docker rebuilds are slow:
+Default legacy values:
 
 ```text
-1. Make sure node_modules is not copied into the Docker context.
-2. Make sure Python venv folders are not copied into the Docker context.
-3. Check kiosk-image/.dockerignore and central-server/.dockerignore.
-4. Rebuild with docker compose up -d --build from central-server/.
-```
-
-If Kafka is not ready:
-
-```powershell
-docker logs kafka
-docker logs kafka-init
-docker exec kafka kafka-topics --bootstrap-server kafka:9092 --list
-```
-
-If the app cannot reach MySQL:
-
-```powershell
-docker logs central-mysql
-docker exec central-mysql mysql -uroot -proot -e "SHOW DATABASES;"
-```
-
-If the browser blocks camera access:
-
-```text
-1. Use HTTPS.
-2. Accept the local certificate warning in the browser.
-3. Confirm camera permissions are allowed for https://localhost:5173.
-```
-
-If the legacy client-agent says the kiosk is not connected:
-
-```text
-1. Make sure python agent.py is running.
-2. Make sure the agent log says it registered the expected kiosk id.
-3. Make sure send_start.py targets the same KIOSK_ID.
-4. Check http://localhost:8000/api/commands/kiosks.
+KIOSK_ID=kiosk-01
+SESSION_ID=testv5
+CENTRAL_SERVER_HTTP=http://localhost:8000
 ```
