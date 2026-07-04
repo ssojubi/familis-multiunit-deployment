@@ -1,0 +1,17 @@
+**/__pycache__/
+**/*.pyc
+
+frames/
+*.log
+.env
+.venv/
+venv/
+
+cert.pem
+key.pem
+
+.git/
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
