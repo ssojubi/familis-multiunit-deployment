@@ -1,6 +1,5 @@
 /**
  * Tester Session Page
- * Admin controls start/stop via central server WebSocket and Socket.IO room commands
  * Frames go to central server → Kafka → FER pipeline
  */
 
@@ -11,23 +10,16 @@ import { performLogout } from "../RequireAuth";
 import logo from "../assets/logo.png";
 
 import {
-  getCentralApiBase,
+  getApiBase,
   getCentralWsBase,
   getSocketUrl,
 } from "../apiConfig";
 
-const API_BASE = getCentralApiBase();
+const SESSIONS_API_BASE = getApiBase();
 const WS_BASE = getCentralWsBase();
 const SOCKET_SERVER_URL = getSocketUrl();
 
 type ServerToClientEvents = {
-  "admin-start-stream": (data?: {
-    sessionId?: number | string;
-    session_id?: number | string;
-    foodName?: string;
-    food_name?: string;
-  }) => void;
-  "admin-stop-stream": () => void;
   signal: (data: {
     sdp?: RTCSessionDescriptionInit;
     candidate?: RTCIceCandidateInit;
@@ -41,6 +33,12 @@ type ClientToServerEvents = {
     sdp?: RTCSessionDescriptionInit;
     candidate?: RTCIceCandidateInit;
   }) => void;
+  "tester-session-status": (data: {
+    room: string;
+    status: "recording" | "completed";
+    sessionId?: number;
+    foodName?: string;
+  }) => void;
 };
 
 const WEBRTC_CONFIG: RTCConfiguration = {
@@ -50,15 +48,29 @@ const WEBRTC_CONFIG: RTCConfiguration = {
   ],
 };
 
+function getStoredUserId(): number | null {
+  try {
+    const raw = localStorage.getItem("familis.user");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const candidate = parsed?.id ?? parsed?.userId ?? parsed?.user_id;
+    const numeric = Number(candidate);
+    return Number.isFinite(numeric) ? numeric : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function TesterSession() {
   const navigate = useNavigate();
-  const [status, setStatus] = useState<string>("waiting");
+  const [status, setStatus] = useState<string>("ready");
   const [sessionId, setSessionId] = useState<number | null>(null);
-  const [message, setMessage] = useState<string>(
-    "Waiting for admin to start the session...",
-  );
+  const [message, setMessage] = useState<string>("Camera starting...");
   const [isRecording, setIsRecording] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
   const [frameCount, setFrameCount] = useState(0);
+  const [foodName, setFoodName] = useState<string | undefined>(undefined);
+  const [startError, setStartError] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -76,6 +88,7 @@ export default function TesterSession() {
 
   const urlParams = new URLSearchParams(window.location.search);
   const roomId = (urlParams.get("room") || "default-tester-room").trim();
+  const foodId = urlParams.get("foodId");
   const kioskId =
     (
       urlParams.get("kiosk_id") ||
@@ -89,11 +102,11 @@ export default function TesterSession() {
     // Persist kiosk ID
     localStorage.setItem("kiosk_id", kioskId);
 
-    // Start camera immediately so tester is ready
+    // Start camera immediately so tester is ready to hit "Start"
     ensureCameraStream()
       .then(() => {
         if (disposed) return;
-        setMessage("Camera ready. Waiting for admin...");
+        setMessage("Camera ready. Start whenever you're ready to taste.");
       })
       .catch((err) => {
         if (disposed) return;
@@ -112,29 +125,11 @@ export default function TesterSession() {
       if (isRecordingRef.current && sessionIdRef.current != null) {
         notifyCentralSessionStarted(sessionIdRef.current);
       }
-      setMessage("Camera ready. Waiting for admin...");
-    };
-
-    ws.onmessage = (event) => {
-      if (disposed) return;
-      try {
-        const data = JSON.parse(event.data);
-        console.log("WS message:", data);
-
-        if (data.type === "start_session") {
-          handleStartSession(data.session_id, data.food_name);
-        } else if (data.type === "stop_session") {
-          handleStopSession();
-        }
-      } catch (err) {
-        console.error("WS message parse error:", err);
-      }
     };
 
     ws.onerror = (err) => {
       if (disposed) return;
       console.error("WebSocket error:", err);
-      setMessage("Connection error. Check central server.");
     };
 
     ws.onclose = () => {
@@ -159,33 +154,9 @@ export default function TesterSession() {
       socket.emit("join-room", roomId, "host");
     });
 
+    // An admin/viewer opened the monitoring page
     socket.on("viewer-connected", () => {
       void publishCameraStream();
-    });
-
-    socket.on("admin-start-stream", (data = {}) => {
-      if (disposed) return;
-      console.log("[TesterSession] Received admin-start-stream", {
-        roomId,
-        kioskId,
-        data,
-      });
-      const incomingSessionId = data.sessionId ?? data.session_id;
-      if (!incomingSessionId) {
-        setMessage("Start command received without a session ID.");
-        return;
-      }
-      handleStartSession(incomingSessionId, data.foodName ?? data.food_name);
-      void publishCameraStream();
-    });
-
-    socket.on("admin-stop-stream", () => {
-      if (disposed) return;
-      console.log("[TesterSession] Received admin-stop-stream", {
-        roomId,
-        kioskId,
-      });
-      handleStopSession();
     });
 
     socket.on("signal", async (data) => {
@@ -301,36 +272,95 @@ export default function TesterSession() {
     return true;
   };
 
-  const handleStartSession = (sid: string | number, foodName?: string) => {
-    const numericId = Number(sid);
-    if (!Number.isFinite(numericId)) {
-      setMessage(`Invalid session ID received: ${sid}`);
-      return;
-    }
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-    setSessionId(numericId);
-    sessionIdRef.current = numericId;
-
-    notifyCentralSessionStarted(sid);
-    setIsRecording(true);
-    isRecordingRef.current = true;
-    setStatus("recording");
-    setMessage(
-      foodName
-        ? `Session started! Please taste: ${foodName}`
-        : "Session started! Please taste the product.",
-    );
-    setFrameCount(0);
-
-    intervalRef.current = setInterval(sendFrame, 33);
+  const broadcastStatus = (
+    statusValue: "recording" | "completed",
+    sid?: number,
+    fName?: string,
+  ) => {
+    socketRef.current?.emit("tester-session-status", {
+      room: roomId,
+      status: statusValue,
+      sessionId: sid,
+      foodName: fName,
+    });
   };
 
-  const handleStopSession = () => {
+  // Tester taps "Start Session" 
+  const handleStartSession = async () => {
+    if (isRecording || isStarting) return;
+    setStartError(null);
+
+    const uId = getStoredUserId();
+    const fId = foodId ? Number(foodId) : NaN;
+
+    if (!Number.isFinite(fId)) {
+      setStartError(
+        "No food selected for this session. Ask staff to re-share your session link.",
+      );
+      return;
+    }
+    if (!Number.isFinite(uId as number)) {
+      setStartError("Could not identify your account. Please log in again.");
+      return;
+    }
+
+    setIsStarting(true);
+    try {
+      const res = await fetch(`${SESSIONS_API_BASE}/api/sessions/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: uId,
+          foodId: fId,
+          agentKioskId: kioskId,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || "Failed to start session.");
+      }
+
+      const newSessionId = Number(json.session.id);
+      const newFoodName: string | undefined = json.food?.name ?? undefined;
+
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+
+      setSessionId(newSessionId);
+      sessionIdRef.current = newSessionId;
+      setFoodName(newFoodName);
+
+      notifyCentralSessionStarted(newSessionId);
+      setIsRecording(true);
+      isRecordingRef.current = true;
+      setStatus("recording");
+      setMessage(
+        newFoodName
+          ? `Session started! Please taste: ${newFoodName}`
+          : "Session started! Please taste the product.",
+      );
+      setFrameCount(0);
+
+      broadcastStatus("recording", newSessionId, newFoodName);
+
+      // Make sure the admin monitor (if already watching) gets our stream.
+      void publishCameraStream();
+
+      intervalRef.current = setInterval(sendFrame, 33);
+    } catch (err: any) {
+      console.error("Failed to start session:", err);
+      setStartError(err.message || "Failed to start session.");
+    } finally {
+      setIsStarting(false);
+    }
+  };
+
+  // Tester taps "Stop Session" — ends recording and moves on to the survey.
+  const handleStopSession = async () => {
     const completedSessionId = sessionIdRef.current;
-    if (!isRecordingRef.current && completedSessionId == null) return;
+    if (!isRecordingRef.current || completedSessionId == null) return;
 
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
@@ -344,6 +374,20 @@ export default function TesterSession() {
     setSessionId(null);
     setStatus("completed");
     setMessage("Session completed. Redirecting to survey...");
+
+    try {
+      const res = await fetch(
+        `${SESSIONS_API_BASE}/api/sessions/${completedSessionId}/stop`,
+        { method: "POST" },
+      );
+      if (!res.ok) {
+        console.error("Failed to stop session on server:", res.status);
+      }
+    } catch (err) {
+      console.error("Failed to stop session:", err);
+    }
+
+    broadcastStatus("completed", completedSessionId, foodName);
 
     // Then notify registry
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -458,6 +502,9 @@ export default function TesterSession() {
                     Frames captured: {frameCount}
                   </p>
                 )}
+                {startError && (
+                  <p className="text-sm text-red-600 mt-2">{startError}</p>
+                )}
               </div>
 
               <div className="mt-6">
@@ -476,9 +523,34 @@ export default function TesterSession() {
                   )}
                 </div>
                 <p className="text-xs text-gray-500 mt-2 text-center">
-                  Your camera is on. The administrator will start the session
-                  when ready.
+                  Your camera is on. Start recording whenever you're ready to
+                  taste — the administrator can only watch, not control it.
                 </p>
+              </div>
+
+              <div className="mt-6 flex gap-4">
+                {!isRecording ? (
+                  <button
+                    type="button"
+                    onClick={handleStartSession}
+                    disabled={isStarting}
+                    className={`flex-1 py-3 rounded-lg text-sm font-semibold transition-colors ${
+                      isStarting
+                        ? "bg-gray-200 text-gray-400 cursor-not-allowed"
+                        : "bg-[#e8174a] hover:bg-[#c9143f] text-white"
+                    }`}
+                  >
+                    {isStarting ? "Starting..." : "▶ Start Session"}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleStopSession}
+                    className="flex-1 border border-gray-300 hover:bg-gray-50 text-gray-700 py-3 rounded-lg font-semibold transition-colors"
+                  >
+                    ⏹ Stop Session
+                  </button>
+                )}
               </div>
             </div>
           </div>

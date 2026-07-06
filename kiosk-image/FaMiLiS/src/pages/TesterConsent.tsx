@@ -33,8 +33,10 @@ export default function TesterConsent() {
     const nextParams = new URLSearchParams();
     const room = urlParams.get("room");
     const kioskId = urlParams.get("kiosk_id");
+    const foodId = urlParams.get("foodId");
     if (room) nextParams.set("room", room);
     if (kioskId) nextParams.set("kiosk_id", kioskId);
+    if (foodId) nextParams.set("foodId", foodId);
 
     const query = nextParams.toString();
     navigate(query ? `/tester-session?${query}` : "/tester-session");

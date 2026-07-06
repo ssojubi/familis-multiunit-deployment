@@ -158,6 +158,12 @@ io.on('connection', (socket) => {
     socket.to(room).emit('admin-stop-stream');
   });
 
+  socket.on('tester-session-status', (data) => {
+    const { room, ...rest } = data ?? {};
+    if (!room) return;
+    socket.to(room).emit('tester-session-status', { ...rest, from: socket.id });
+  });
+
   socket.on('disconnect', () => {
     const roomId = socket.data.roomId;
     if (roomId && rooms.has(roomId)) {

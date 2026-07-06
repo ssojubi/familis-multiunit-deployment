@@ -95,6 +95,7 @@ interface ServerToClientEvents {
   'user-disconnected': (userId: string) => void;
   'host-disconnected': () => void;
   'signal': (data: { from: string; sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) => void;
+  'tester-session-status': (data: { status: 'recording' | 'completed'; sessionId?: number; foodName?: string; from?: string }) => void;
 }
 
 interface ClientToServerEvents {
@@ -408,6 +409,19 @@ export default function Dashboard() {
       setKioskStatus('A kiosk disconnected.');
     });
 
+    // Tester started/stopped their own recording — just reflect it, don't control it.
+    socket.on('tester-session-status', (data) => {
+      if (data.status === 'recording') {
+        setKioskStatus(
+          data.foodName
+            ? `Tester started tasting: ${data.foodName} (session #${data.sessionId ?? '?'})`
+            : `Tester started their session (session #${data.sessionId ?? '?'})`,
+        );
+      } else {
+        setKioskStatus('Tester completed their session.');
+      }
+    });
+
     return () => {
       socket.disconnect();
       cleanupWebRTC();
@@ -482,8 +496,10 @@ export default function Dashboard() {
 
   const copyLinkToClipboard = () => {
     if (!shareUrl) return;
-    navigator.clipboard.writeText(`${window.location.origin}/tester-consent?room=${roomId}`);
-    alert('Share link copied! Open it on the kiosk/remote device.');
+    const params = new URLSearchParams({ room: roomId });
+    if (kioskFoodId) params.set('foodId', String(kioskFoodId));
+    navigator.clipboard.writeText(`${window.location.origin}/tester-consent?${params.toString()}`);
+    alert('Share link copied! Open it on the kiosk/remote device. The tester will start and stop their own recording.');
   };
 
   const copyRoomIdToClipboard = () => {
@@ -1436,7 +1452,9 @@ export default function Dashboard() {
             <section className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
               <div className="mb-5">
                 <h2 className="text-gray-900 font-bold">Monitor Kiosks</h2>
-                <p className="text-[12px] text-gray-500 mt-1">Pause or stop recordings.</p>
+                <p className="text-[12px] text-gray-500 mt-1">
+                  View the live tester feed.
+                </p>
               </div>
 
 
@@ -1499,7 +1517,7 @@ export default function Dashboard() {
                     }}
                     className="flex-1 bg-[#e8174a] hover:bg-[#c9143f] disabled:opacity-50 disabled:cursor-not-allowed text-white py-2.5 rounded-md text-sm font-semibold transition-colors"
                   >
-                    ▶ Start Food Tasting
+                    Monitor Food Tasting
                   </button>
                 </div>
               </div>
