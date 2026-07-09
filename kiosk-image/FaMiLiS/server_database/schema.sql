@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS participants (
   participant_id INT AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(255) NULL,
+  email VARCHAR(255) NULL,
+  password_hash TEXT NULL,
   tester_label VARCHAR(50), -- e.g. "T-01"
   kiosk_id INT NULL,
   contact_number VARCHAR(50) NULL,
@@ -27,6 +29,7 @@ CREATE TABLE IF NOT EXISTS participants (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
   INDEX idx_participant_name (name),
+  INDEX idx_participant_email (email),
   INDEX idx_participant_kiosk (kiosk_id),
   CONSTRAINT chk_participant_age CHECK (age >= 0 AND age <= 120)
 );

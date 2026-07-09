@@ -118,16 +118,25 @@ export default function Signup() {
   const navigate = useNavigate();
   const nameId = useId();
   const emailId = useId();
+  const ageId = useId();
+  const genderId = useId();
+  const contactNumberId = useId();
+  const gcashNumberId = useId();
   const passwordId = useId();
   const confirmPasswordId = useId();
 
   const [step, setStep] = useState(0);
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
+  const [age, setAge] = useState("");
+  const [gender, setGender] = useState("");
+  const [contactNumber, setContactNumber] = useState("");
+  const [gcashNumber, setGcashNumber] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [accountCreated, setAccountCreated] = useState(false);
 
   useEffect(() => {
     if (hasStoredUser()) {
@@ -143,6 +152,17 @@ export default function Signup() {
       }
       if (!email.trim()) {
         setError("Please enter an email address.");
+        return false;
+      }
+      if (age.trim()) {
+        const ageValue = Number(age);
+        if (!Number.isFinite(ageValue) || ageValue < 0 || ageValue > 120) {
+          setError("Please enter a valid age between 0 and 120.");
+          return false;
+        }
+      }
+      if (gender && !["male", "female", "other"].includes(gender)) {
+        setError("Please choose a valid gender option.");
         return false;
       }
       return true;
@@ -165,7 +185,6 @@ export default function Signup() {
 
   const checkAccountUniqueness = async () => {
     try {
-      setLoading(true);
       const res = await fetch("/api/signup/check", {
         method: "POST",
         headers: {
@@ -176,18 +195,19 @@ export default function Signup() {
           email: email.trim(),
         }),
       });
+
       const data = await res.json().catch(() => null);
+
       if (!res.ok || !data?.ok) {
         setError(data?.error || "An account with that email or name already exists.");
         return false;
       }
+
       return true;
     } catch (err) {
       console.error(err);
       setError("Unable to reach the server. Please try again.");
       return false;
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -205,7 +225,12 @@ export default function Signup() {
 
   const handleBack = () => {
     setError("");
+    setAccountCreated(false);
     setStep((current) => Math.max(current - 1, 0));
+  };
+
+  const handleProceedToConsent = () => {
+    navigate("/tester-consent", { replace: true });
   };
 
   const handleSignup = async (e: FormEvent) => {
@@ -223,6 +248,11 @@ export default function Signup() {
       return;
     }
 
+    const isUnique = await checkAccountUniqueness();
+    if (!isUnique) {
+      return;
+    }
+
     if (!displayName.trim() || !email.trim() || !password) {
       setError("Please complete the form before creating the account.");
       return;
@@ -235,6 +265,7 @@ export default function Signup() {
 
     try {
       setLoading(true);
+      const ageValue = age.trim() ? Number(age) : null;
       const res = await fetch("/api/signup", {
         method: "POST",
         headers: {
@@ -244,6 +275,10 @@ export default function Signup() {
           username: displayName.trim(),
           email: email.trim(),
           password,
+          age: ageValue,
+          gender: gender || null,
+          contactNumber: contactNumber.trim() || null,
+          gcashNumber: gcashNumber.trim() || null,
         }),
       });
 
@@ -259,11 +294,15 @@ export default function Signup() {
           localStorage.setItem("familis.user", JSON.stringify(data.user));
           localStorage.setItem("user", JSON.stringify(data.user));
         }
+        if (data?.participant) {
+          localStorage.setItem("familis.participant", JSON.stringify(data.participant));
+        }
       } catch {
         // ignore storage failures
       }
 
-      navigate("/tester-consent", { replace: true });
+      setAccountCreated(true);
+      setStep(STEPS.length - 1);
     } catch (err) {
       console.error(err);
       setError("Unable to reach the server. Please try again.");
@@ -406,6 +445,89 @@ export default function Signup() {
                     style={{ fontFamily: "'Albert Sans', sans-serif" }}
                   />
                 </div>
+
+                <div className="mb-6">
+                  <label
+                    htmlFor={ageId}
+                    className="text-black text-[18px] font-medium block mb-3"
+                    style={{ fontFamily: "'Roboto', sans-serif" }}
+                  >
+                    Age
+                  </label>
+                  <input
+                    id={ageId}
+                    type="number"
+                    min="0"
+                    max="120"
+                    inputMode="numeric"
+                    value={age}
+                    onChange={(e) => setAge(e.target.value)}
+                    placeholder="Enter your age"
+                    className="w-full h-[50px] px-7 border border-[#bfbfbf] rounded-[10px] text-[16px] text-black placeholder:text-[#bdb4b4] focus:outline-none focus:border-red-400"
+                    style={{ fontFamily: "'Albert Sans', sans-serif" }}
+                  />
+                </div>
+
+                <div className="mb-6">
+                  <label
+                    htmlFor={genderId}
+                    className="text-black text-[18px] font-medium block mb-3"
+                    style={{ fontFamily: "'Roboto', sans-serif" }}
+                  >
+                    Gender
+                  </label>
+                  <select
+                    id={genderId}
+                    value={gender}
+                    onChange={(e) => setGender(e.target.value)}
+                    className="w-full h-[50px] px-7 border border-[#bfbfbf] rounded-[10px] text-[16px] text-black focus:outline-none focus:border-red-400 bg-white"
+                    style={{ fontFamily: "'Albert Sans', sans-serif" }}
+                  >
+                    <option value="">Select gender</option>
+                    <option value="male">Male</option>
+                    <option value="female">Female</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+
+                <div className="mb-6">
+                  <label
+                    htmlFor={contactNumberId}
+                    className="text-black text-[18px] font-medium block mb-3"
+                    style={{ fontFamily: "'Roboto', sans-serif" }}
+                  >
+                    Contact Number
+                  </label>
+                  <input
+                    id={contactNumberId}
+                    type="tel"
+                    autoComplete="tel"
+                    value={contactNumber}
+                    onChange={(e) => setContactNumber(e.target.value)}
+                    placeholder="Optional"
+                    className="w-full h-[50px] px-7 border border-[#bfbfbf] rounded-[10px] text-[16px] text-black placeholder:text-[#bdb4b4] focus:outline-none focus:border-red-400"
+                    style={{ fontFamily: "'Albert Sans', sans-serif" }}
+                  />
+                </div>
+
+                <div className="mb-6">
+                  <label
+                    htmlFor={gcashNumberId}
+                    className="text-black text-[18px] font-medium block mb-3"
+                    style={{ fontFamily: "'Roboto', sans-serif" }}
+                  >
+                    GCash Number
+                  </label>
+                  <input
+                    id={gcashNumberId}
+                    type="tel"
+                    value={gcashNumber}
+                    onChange={(e) => setGcashNumber(e.target.value)}
+                    placeholder="Optional"
+                    className="w-full h-[50px] px-7 border border-[#bfbfbf] rounded-[10px] text-[16px] text-black placeholder:text-[#bdb4b4] focus:outline-none focus:border-red-400"
+                    style={{ fontFamily: "'Albert Sans', sans-serif" }}
+                  />
+                </div>
               </>
             )}
 
@@ -461,6 +583,16 @@ export default function Signup() {
 
             {step === 2 && (
               <div className="space-y-4">
+                {accountCreated && (
+                  <div className="rounded-[18px] border border-emerald-200 bg-emerald-50 p-5">
+                    <p className="text-[13px] font-semibold uppercase tracking-[0.18em] text-emerald-700">
+                      Account created
+                    </p>
+                    <p className="mt-1 text-[15px] text-emerald-900">
+                      Review the details below, then continue to the informed consent form when you are ready.
+                    </p>
+                  </div>
+                )}
                 <div className="rounded-[18px] border border-[#e9e9e9] bg-[#fafafa] p-5">
                   <p className="text-[13px] font-semibold uppercase tracking-[0.18em] text-[#9b9b9b]">
                     Account name
@@ -479,10 +611,27 @@ export default function Signup() {
                 </div>
                 <div className="rounded-[18px] border border-[#e9e9e9] bg-[#fafafa] p-5">
                   <p className="text-[13px] font-semibold uppercase tracking-[0.18em] text-[#9b9b9b]">
-                    Password
+                    Participant details
                   </p>
                   <p className="mt-1 text-[18px] font-semibold text-black">
-                    {password ? `${password.length} characters set` : "Not set"}
+                    {age.trim() ? `${age} years old` : "Age not set"}
+                  </p>
+                  <p className="mt-1 text-[15px] text-[#5b5b5b]">
+                    {gender ? gender.charAt(0).toUpperCase() + gender.slice(1) : "Gender not set"}
+                  </p>
+                  <p className="mt-1 text-[15px] text-[#5b5b5b]">
+                    {contactNumber.trim() ? `Contact: ${contactNumber.trim()}` : "Contact number not set"}
+                  </p>
+                  <p className="mt-1 text-[15px] text-[#5b5b5b]">
+                    {gcashNumber.trim() ? `GCash: ${gcashNumber.trim()}` : "GCash not set"}
+                  </p>
+                </div>
+                <div className="rounded-[18px] border border-[#e9e9e9] bg-[#fafafa] p-5">
+                  <p className="text-[13px] font-semibold uppercase tracking-[0.18em] text-[#9b9b9b]">
+                    Password
+                  </p>
+                  <p className="mt-1 text-[15px] text-[#5b5b5b]">
+                    Password is set and will be submitted securely.
                   </p>
                 </div>
                 <p className="text-[14px] text-[#5b5b5b]">
@@ -516,6 +665,14 @@ export default function Signup() {
                     }`}
                 >
                   Next
+                </button>
+              ) : accountCreated ? (
+                <button
+                  type="button"
+                  onClick={handleProceedToConsent}
+                  className="h-[54px] flex-1 bg-red-600 text-white rounded-full text-[18px] font-semibold hover:bg-red-700 transition-colors inline-flex items-center justify-center gap-3"
+                >
+                  Proceed to informed consent
                 </button>
               ) : (
                 <button

@@ -2,7 +2,6 @@
 import React, { useEffect, useId, useState } from "react";
 import type { FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { hasStoredUser } from "../RequireAuth";
 import logo from "../assets/logo.png";
 import loginBg from "../assets/login-bg.png";
 
@@ -97,11 +96,16 @@ export default function Login() {
   const emailId = useId();
   const passwordId = useId();
 
+  // Clear any stored session on login page visit — always start fresh
   useEffect(() => {
-    if (hasStoredUser()) {
-      navigate("/dashboard", { replace: true });
+    try {
+      localStorage.removeItem("familis.user");
+      localStorage.removeItem("user");
+      localStorage.removeItem("familis.currentSession");
+    } catch {
+      /* ignore storage errors */
     }
-  }, [navigate]);
+  }, []);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");

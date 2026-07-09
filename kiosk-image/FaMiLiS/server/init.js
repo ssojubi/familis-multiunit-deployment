@@ -48,6 +48,20 @@ export async function initDb() {
   const schemaSql = await readFile(schemaPath, "utf8");
   await pool.query(schemaSql);
 
+  const [[participantPasswordColumn]] = await pool.query(
+    `
+    SELECT COUNT(*) AS column_count
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = 'participants'
+      AND column_name = 'password_hash'
+  `,
+  );
+
+  if (Number(participantPasswordColumn?.column_count ?? 0) === 0) {
+    await pool.query(`ALTER TABLE participants ADD COLUMN password_hash TEXT NULL`);
+  }
+
   await pool.query(`
     ALTER TABLE users
     MODIFY role ENUM('staff', 'tester', 'admin') NOT NULL DEFAULT 'tester'

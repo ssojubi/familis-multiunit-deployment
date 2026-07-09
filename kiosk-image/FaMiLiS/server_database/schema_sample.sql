@@ -15,28 +15,28 @@ INSERT INTO users (user_id, username, email, password_hash, role) VALUES
 -- PARTICIPANTS
 -- =====================================================
 
-INSERT INTO participants (participant_id, tester_label, age, gender) VALUES
-(1,'P1',19,'male'),
-(2,'P2',21,'male'),
-(3,'P3',21,'male'),
-(4,'P4',22,'male'),
-(5,'P5',20,'male'),
-(6,'P6',21,'male'),
-(7,'P7',20,'male'),
-(8,'P8',19,'male'),
-(9,'P9',19,'female'),
-(10,'P10',18,'female'),
-(11,'P11',19,'male'),
-(12,'P12',21,'male'),
-(13,'P13',20,'male'),
-(14,'P14',20,'male'),
-(15,'P15',19,'male'),
-(16,'P16',21,'male'),
-(17,'P17',20,'male'),
-(18,'P18',22,'male'),
-(19,'P19',21,'male'),
-(20,'P20',23,'male'),
-(21,'PT',22,'male');
+INSERT INTO participants (participant_id, tester_label, email, password_hash, age, gender) VALUES
+(1,'P1',NULL,NULL,19,'male'),
+(2,'P2',NULL,NULL,21,'male'),
+(3,'P3',NULL,NULL,21,'male'),
+(4,'P4',NULL,NULL,22,'male'),
+(5,'P5',NULL,NULL,20,'male'),
+(6,'P6',NULL,NULL,21,'male'),
+(7,'P7',NULL,NULL,20,'male'),
+(8,'P8',NULL,NULL,19,'male'),
+(9,'P9',NULL,NULL,19,'female'),
+(10,'P10',NULL,NULL,18,'female'),
+(11,'P11',NULL,NULL,19,'male'),
+(12,'P12',NULL,NULL,21,'male'),
+(13,'P13',NULL,NULL,20,'male'),
+(14,'P14',NULL,NULL,20,'male'),
+(15,'P15',NULL,NULL,19,'male'),
+(16,'P16',NULL,NULL,21,'male'),
+(17,'P17',NULL,NULL,20,'male'),
+(18,'P18',NULL,NULL,22,'male'),
+(19,'P19',NULL,NULL,21,'male'),
+(20,'P20',NULL,NULL,23,'male'),
+(21,'PT',NULL,NULL,22,'male');
 
 -- =====================================================
 -- FOOD PRODUCTS
@@ -300,9 +300,9 @@ INSERT INTO users (user_id, username, email, password_hash, role) VALUES
 --  to exercise the full Manage Participants CRUD table)
 -- =====================================================
 
-INSERT INTO participants (participant_id, name, tester_label, kiosk_id, contact_number, gcash_number, age, gender) VALUES
-(22, 'Juan Dela Cruz',  'P22', 1, '09171234567', '09171234567', 22, 'male'),
-(23, 'Maria Santos',    'P23', 1, '09281234567', '09281234567', 20, 'female'),
-(24, 'Jose Reyes',      'P24', 1, '09391234567', NULL,          25, 'male'),
-(25, 'Ana Gomez',       'P25', 1, NULL,          '09451234567', 19, 'female'),
-(26, 'Carlos Bautista', 'P26', 1, '09561234567', '09561234567', 23, 'male');
+INSERT INTO participants (participant_id, name, tester_label, email, password_hash, kiosk_id, contact_number, gcash_number, age, gender) VALUES
+(22, 'Juan Dela Cruz',  'P22', NULL, NULL, 1, '09171234567', '09171234567', 22, 'male'),
+(23, 'Maria Santos',    'P23', NULL, NULL, 1, '09281234567', '09281234567', 20, 'female'),
+(24, 'Jose Reyes',      'P24', NULL, NULL, 1, '09391234567', NULL,          25, 'male'),
+(25, 'Ana Gomez',       'P25', NULL, NULL, 1, NULL,          '09451234567', 19, 'female'),
+(26, 'Carlos Bautista', 'P26', NULL, NULL, 1, '09561234567', '09561234567', 23, 'male');

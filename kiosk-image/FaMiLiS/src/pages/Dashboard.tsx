@@ -70,6 +70,8 @@ type Analytics = {
 type Participant = {
   id: number;
   name: string | null;
+  email?: string | null;
+  password?: string | null;
   kioskId?: number | null;
   contactNumber?: string | null;
   gcashNumber?: string | null;
@@ -183,6 +185,8 @@ export default function Dashboard() {
   const [deletingFoodId, setDeletingFoodId] = useState<number | null>(null);
   const [deleteFoodError, setDeleteFoodError] = useState<string | null>(null);
   const foodsAbortRef = useRef<AbortController | null>(null);
+  // Incrementing this triggers a participant list re-fetch from the DB
+  const [parRefreshKey, setParRefreshKey] = useState(0);
 
   const parAbortRef = useRef<AbortController | null>(null);
   const [parLoading, setParLoading] = useState(true);
@@ -194,10 +198,20 @@ export default function Dashboard() {
   const [parToDelete, setParToDelete] = useState<Participant | null>(null);
   const [newParticipant, setNewParticipant] = useState({
     name: "",
+    email: "",
+    password: "",
     age: "",
+<<<<<<< Updated upstream
     gender: ""
+=======
+    gender: "",
+    contactNumber: "",
+    gcashNumber: "",
+>>>>>>> Stashed changes
   });
   const [showAddParticipant, setShowAddParticipant] = useState(false);
+  const [addingParticipant, setAddingParticipant] = useState(false);
+  const [addParError, setAddParError] = useState<string | null>(null);
   const [editingParId, setEditingParId] = useState<number | null>(null);
   const [editParError, setEditParError] = useState<string | null>(null);
   const [parToEdit, setParToEdit] = useState<Participant | null>(null);
@@ -268,6 +282,7 @@ export default function Dashboard() {
         const list: Participant[] = (json.participants ?? []).map((p: any) => ({
           id: Number(p.id ?? p.participant_id),
           name: p.name ?? p.testerLabel ?? p.tester_label ?? null,
+          email: p.email ?? p.participantEmail ?? p.participant_email ?? null,
           kioskId: p.kioskId ?? p.kiosk_id ?? null,
           contactNumber: p.contactNumber ?? p.contact_number ?? null,
           gcashNumber: p.gcashNumber ?? p.gcash_number ?? null,
@@ -291,7 +306,8 @@ export default function Dashboard() {
 
     void loadParticipants();
     return () => ac.abort();
-  }, []);
+  }, [parRefreshKey]);
+
 
   useEffect(() => {
     // retrieve the logged-in user
@@ -867,36 +883,54 @@ export default function Dashboard() {
       if (!res.ok || !json?.ok) {
         throw new Error(json?.error || "Failed to delete participant.");
       }
-      setParticipants((prev) => prev.filter((p) => p.id !== participantId));
-      setExpandedParId((prev) => {
-        if (prev !== participantId) return prev;
-        const remaining = participants.filter((p) => p.id !== participantId);
-        return remaining[0]?.id ?? null;
-      });
+      setParToDelete(null);
+      // Trigger re-fetch from DB
+      setParRefreshKey((k) => k + 1);
     } catch (err) {
       setDeleteParError((err as any)?.message || "Failed to delete participant.");
     } finally {
       setDeletingParId(null);
-      setParToDelete(null);
     }
   };
 
   const onAddParticipant = async () => {
     const name = newParticipant.name.trim();
+    const email = newParticipant.email.trim();
+    const password = newParticipant.password.trim();
     const age = newParticipant.age;
     const gender = newParticipant.gender;
-    if (!name || !age || !gender) return;
+    const contactNumber = newParticipant.contactNumber.trim();
+    const gcashNumber = newParticipant.gcashNumber.trim();
 
+    // Front-end validation (mirrors server)
+    if (!name) { setAddParError("Name is required."); return; }
+    if (!email) { setAddParError("Email is required."); return; }
+    if (!age) { setAddParError("Age is required."); return; }
+    if (!gender) { setAddParError("Gender is required."); return; }
+    if (!password) { setAddParError("Password is required."); return; }
+    if (password.length < 8) { setAddParError("Password must be at least 8 characters."); return; }
+
+    setAddParError(null);
+    setAddingParticipant(true);
     try {
       const res = await fetch(`${API_BASE}/api/participants`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name, age: Number(age), gender }),
+        body: JSON.stringify({
+          name,
+          email,
+          password,
+          age: Number(age),
+          gender,
+          contactNumber: contactNumber || null,
+          gcashNumber: gcashNumber || null,
+        }),
       });
       const json = await res.json();
       if (!res.ok || !json?.ok) {
         throw new Error(json?.error || "Failed to add participant.");
       }
+<<<<<<< Updated upstream
       const created = json.participant as { id: number; name: string | null; age: number | null; gender: Gender | null; createdAt: string };
       const newRow: Participant = {
         id: created.id,
@@ -908,19 +942,49 @@ export default function Dashboard() {
     
       setParticipants((prev) => [newRow, ...prev]);
       setExpandedParId(created.id);
+=======
+
+>>>>>>> Stashed changes
       setShowAddParticipant(false);
+      setAddParError(null);
       setTab("participants");
+<<<<<<< Updated upstream
       setNewParticipant({ name: "", age: "", gender: ""});
     } catch (err) {
+=======
+      setNewParticipant({
+        name: "",
+        email: "",
+        password: "",
+        age: "",
+        gender: "",
+        contactNumber: "",
+        gcashNumber: "",
+      });
+
+      // Trigger re-fetch from DB so newly created participant shows up
+      setParRefreshKey((k) => k + 1);
+    } catch (err: any) {
+>>>>>>> Stashed changes
       console.error(err);
+      setAddParError(err?.message || "Failed to add participant.");
+    } finally {
+      setAddingParticipant(false);
     }
   };
+
 
   const onEditParticipant = async () => {
     if (!parToEdit) return;
     const name = parToEdit.name?.trim() ?? "";
+    const email = parToEdit.email?.trim() ?? "";
     if (!name) return;
+<<<<<<< Updated upstream
     if (!parToEdit.id) return;  
+=======
+    if (!email) return;
+    if (!parToEdit.id) return;
+>>>>>>> Stashed changes
 
     try {
       setEditingParId(parToEdit.id);
@@ -930,9 +994,13 @@ export default function Dashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: name,
+          email,
           age: parToEdit.age,
           gender: parToEdit.gender,
+<<<<<<< Updated upstream
           kioskId: parToEdit.kioskId ?? null,
+=======
+>>>>>>> Stashed changes
           contactNumber: parToEdit.contactNumber ?? null,
           gcashNumber: parToEdit.gcashNumber ?? null,
         }),
@@ -941,6 +1009,7 @@ export default function Dashboard() {
       if (!res.ok || !json?.ok) {
         throw new Error(json?.error || "Failed to update participant.");
       }
+<<<<<<< Updated upstream
       setParticipants((prev) =>
         prev.map((p) =>
           p.id === parToEdit.id
@@ -948,7 +1017,11 @@ export default function Dashboard() {
             : p
         )
       );
+=======
+>>>>>>> Stashed changes
       setParToEdit(null);
+      // Trigger re-fetch from DB to reflect actual saved values
+      setParRefreshKey((k) => k + 1);
     } catch (err) {
       setEditParError((err as any)?.message || "Failed to update participant.");
     } finally {
@@ -1558,6 +1631,8 @@ export default function Dashboard() {
                       <th scope="col">Session Number</th>
                       <th scope="col">Kiosk Number</th>
                       <th scope="col">Name</th>
+                      <th scope="col">Age</th>
+                      <th scope="col">Email</th>
                       <th scope="col">Contact Number</th>
                       <th scope="col">GCash Number</th>
                       <th scope="col">Date &amp; Time</th>
@@ -1565,6 +1640,7 @@ export default function Dashboard() {
                     </tr>
                   </thead>
                   <tbody>
+<<<<<<< Updated upstream
                     {participants.sort((a, b) => a.id - b.id).map(p => {
                       return (
                         <tr key={p.id}>
@@ -1596,6 +1672,43 @@ export default function Dashboard() {
                         </tr>
                       );
                     })}
+=======
+                    {participants
+                      .sort((a, b) => a.id - b.id)
+                      .map((p) => {
+                        return (
+                          <tr key={p.id}>
+                            <td>{p.id}</td>
+                            <td>-</td>
+                            <td>-</td>
+                            <td>{p.name}</td>
+                            <td>{p.age}</td>
+                            <td>{p.email ?? "-"}</td>
+                            <td>{p.contactNumber ?? "-"}</td>
+                            <td>{p.gcashNumber ?? "-"}</td>
+                            <td>{formatDateTime(p.createdAt)}</td>
+                            <td>
+                              <button
+                                type="button"
+                                onClick={() => setParToEdit(p)}
+                                className="text-[12px] font-semibold text-black hover:text-green transition-colors inline-flex items-center gap-1"
+                              >
+                                <span aria-hidden="true">✍️</span>
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setParToDelete(p)}
+                                className="text-[12px] font-semibold text-[#e8174a] hover:text-[#c9143f] transition-colors inline-flex items-center gap-1"
+                              >
+                                <span aria-hidden="true">🗑️</span>
+                                Delete
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+>>>>>>> Stashed changes
                   </tbody>
                 </table>
               )}
@@ -1708,6 +1821,18 @@ export default function Dashboard() {
                 />
               </Field>
 
+              <Field label="Email Address *">
+                <input
+                  type="email"
+                  value={newParticipant.email}
+                  onChange={(e) =>
+                    setNewParticipant((p) => ({ ...p, email: e.target.value }))
+                  }
+                  placeholder="e.g. john@example.com"
+                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
+                />
+              </Field>
+
               <Field label="Age *">
                 <input
                   type="number"
@@ -1730,12 +1855,56 @@ export default function Dashboard() {
                   <option value="other">Other</option>
                 </select>
               </Field>
+
+              <Field label="Password *">
+                <input
+                  type="password"
+                  value={newParticipant.password}
+                  onChange={(e) =>
+                    setNewParticipant((p) => ({ ...p, password: e.target.value }))
+                  }
+                  placeholder="Min. 8 characters"
+                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
+                />
+              </Field>
+
+              <Field label="Contact Number">
+                <input
+                  type="tel"
+                  value={newParticipant.contactNumber}
+                  onChange={(e) =>
+                    setNewParticipant((p) => ({ ...p, contactNumber: e.target.value }))
+                  }
+                  placeholder="Optional"
+                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
+                />
+              </Field>
+
+              <Field label="GCash Number">
+                <input
+                  type="tel"
+                  value={newParticipant.gcashNumber}
+                  onChange={(e) =>
+                    setNewParticipant((p) => ({ ...p, gcashNumber: e.target.value }))
+                  }
+                  placeholder="Optional"
+                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
+                />
+              </Field>
             </div>
+
+            {addParError && (
+              <p className="text-xs text-red-600 mt-3 font-semibold">{addParError}</p>
+            )}
 
             <div className="flex gap-3 mt-5">
               <button
                 type="button"
-                onClick={() => setShowAddParticipant(false)}
+                onClick={() => {
+                  setShowAddParticipant(false);
+                  setAddParError(null);
+                }}
+                disabled={addingParticipant}
                 className="flex-1 border border-gray-200 text-gray-700 hover:bg-gray-50 py-2 rounded-md text-sm font-semibold transition-colors"
               >
                 Cancel
@@ -1743,9 +1912,10 @@ export default function Dashboard() {
               <button
                 type="button"
                 onClick={onAddParticipant}
+                disabled={addingParticipant}
                 className="flex-1 bg-[#e8174a] hover:bg-[#c9143f] text-white py-2 rounded-md text-sm font-semibold transition-colors"
               >
-                Add Participant
+                {addingParticipant ? "Adding..." : "Add Participant"}
               </button>
             </div>
           </div>
@@ -1799,6 +1969,20 @@ export default function Dashboard() {
                 />
               </Field>
 
+              <Field label="Email Address *">
+                <input
+                  type="email"
+                  value={parToEdit.email ?? ""}
+                  onChange={(e) =>
+                    setParToEdit((p) =>
+                      p ? { ...p, email: e.target.value } : p,
+                    )
+                  }
+                  placeholder="e.g. john@example.com"
+                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
+                />
+              </Field>
+
               <Field label="Age *">
                 <input
                   type="number"
@@ -1820,6 +2004,34 @@ export default function Dashboard() {
                   <option value="female">Female</option>
                   <option value="other">Other</option>
                 </select>
+              </Field>
+
+              <Field label="Contact Number">
+                <input
+                  type="tel"
+                  value={parToEdit.contactNumber ?? ""}
+                  onChange={(e) =>
+                    setParToEdit((p) =>
+                      p ? { ...p, contactNumber: e.target.value } : p,
+                    )
+                  }
+                  placeholder="Optional"
+                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
+                />
+              </Field>
+
+              <Field label="GCash Number">
+                <input
+                  type="tel"
+                  value={parToEdit.gcashNumber ?? ""}
+                  onChange={(e) =>
+                    setParToEdit((p) =>
+                      p ? { ...p, gcashNumber: e.target.value } : p,
+                    )
+                  }
+                  placeholder="Optional"
+                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
+                />
               </Field>
             </div>
 
