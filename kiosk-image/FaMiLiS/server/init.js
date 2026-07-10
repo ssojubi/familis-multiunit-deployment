@@ -10,6 +10,23 @@ const __dirname = path.dirname(__filename);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+async function addColumnIfMissing(pool, tableName, columnName, definition) {
+  const [[row]] = await pool.query(
+    `
+    SELECT COUNT(*) AS column_count
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = ?
+      AND column_name = ?
+    `,
+    [tableName, columnName],
+  );
+
+  if (Number(row?.column_count ?? 0) === 0) {
+    await pool.query(`ALTER TABLE \`${tableName}\` ADD COLUMN \`${columnName}\` ${definition}`);
+  }
+}
+
 function createPool() {
   // Example: mysql://user:password@localhost:3306/familis_central
   const connectionString =
@@ -48,18 +65,22 @@ export async function initDb() {
   const schemaSql = await readFile(schemaPath, "utf8");
   await pool.query(schemaSql);
 
-  const [[participantPasswordColumn]] = await pool.query(
-    `
-    SELECT COUNT(*) AS column_count
-    FROM information_schema.columns
-    WHERE table_schema = DATABASE()
-      AND table_name = 'participants'
-      AND column_name = 'password_hash'
-  `,
-  );
+  const participantColumns = [
+    ["name", "VARCHAR(255) NULL"],
+    ["email", "VARCHAR(255) NULL"],
+    ["password_hash", "TEXT NULL"],
+    ["tester_label", "VARCHAR(50) NULL"],
+    ["kiosk_id", "INT NULL"],
+    ["contact_number", "VARCHAR(50) NULL"],
+    ["gcash_number", "VARCHAR(50) NULL"],
+    ["age", "INT NULL"],
+    ["gender", "ENUM('male', 'female', 'other') NULL"],
+    ["photo_url", "TEXT NULL"],
+    ["created_at", "TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP"],
+  ];
 
-  if (Number(participantPasswordColumn?.column_count ?? 0) === 0) {
-    await pool.query(`ALTER TABLE participants ADD COLUMN password_hash TEXT NULL`);
+  for (const [columnName, definition] of participantColumns) {
+    await addColumnIfMissing(pool, "participants", columnName, definition);
   }
 
   await pool.query(`
@@ -168,4 +189,3 @@ export async function initDb() {
 
   return pool;
 }
-

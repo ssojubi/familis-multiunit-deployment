@@ -201,13 +201,9 @@ export default function Dashboard() {
     email: "",
     password: "",
     age: "",
-<<<<<<< Updated upstream
-    gender: ""
-=======
     gender: "",
     contactNumber: "",
     gcashNumber: "",
->>>>>>> Stashed changes
   });
   const [showAddParticipant, setShowAddParticipant] = useState(false);
   const [addingParticipant, setAddingParticipant] = useState(false);
@@ -930,28 +926,9 @@ export default function Dashboard() {
       if (!res.ok || !json?.ok) {
         throw new Error(json?.error || "Failed to add participant.");
       }
-<<<<<<< Updated upstream
-      const created = json.participant as { id: number; name: string | null; age: number | null; gender: Gender | null; createdAt: string };
-      const newRow: Participant = {
-        id: created.id,
-        name: created.name,
-        age: created.age ?? 0,
-        gender: created.gender ?? "other",
-        createdAt: created.createdAt,
-      };
-    
-      setParticipants((prev) => [newRow, ...prev]);
-      setExpandedParId(created.id);
-=======
-
->>>>>>> Stashed changes
       setShowAddParticipant(false);
       setAddParError(null);
       setTab("participants");
-<<<<<<< Updated upstream
-      setNewParticipant({ name: "", age: "", gender: ""});
-    } catch (err) {
-=======
       setNewParticipant({
         name: "",
         email: "",
@@ -965,7 +942,6 @@ export default function Dashboard() {
       // Trigger re-fetch from DB so newly created participant shows up
       setParRefreshKey((k) => k + 1);
     } catch (err: any) {
->>>>>>> Stashed changes
       console.error(err);
       setAddParError(err?.message || "Failed to add participant.");
     } finally {
@@ -979,12 +955,8 @@ export default function Dashboard() {
     const name = parToEdit.name?.trim() ?? "";
     const email = parToEdit.email?.trim() ?? "";
     if (!name) return;
-<<<<<<< Updated upstream
-    if (!parToEdit.id) return;  
-=======
     if (!email) return;
     if (!parToEdit.id) return;
->>>>>>> Stashed changes
 
     try {
       setEditingParId(parToEdit.id);
@@ -997,10 +969,6 @@ export default function Dashboard() {
           email,
           age: parToEdit.age,
           gender: parToEdit.gender,
-<<<<<<< Updated upstream
-          kioskId: parToEdit.kioskId ?? null,
-=======
->>>>>>> Stashed changes
           contactNumber: parToEdit.contactNumber ?? null,
           gcashNumber: parToEdit.gcashNumber ?? null,
         }),
@@ -1009,16 +977,6 @@ export default function Dashboard() {
       if (!res.ok || !json?.ok) {
         throw new Error(json?.error || "Failed to update participant.");
       }
-<<<<<<< Updated upstream
-      setParticipants((prev) =>
-        prev.map((p) =>
-          p.id === parToEdit.id
-            ? { ...p, name: name, age: parToEdit.age, gender: parToEdit.gender }
-            : p
-        )
-      );
-=======
->>>>>>> Stashed changes
       setParToEdit(null);
       // Trigger re-fetch from DB to reflect actual saved values
       setParRefreshKey((k) => k + 1);
@@ -1640,39 +1598,6 @@ export default function Dashboard() {
                     </tr>
                   </thead>
                   <tbody>
-<<<<<<< Updated upstream
-                    {participants.sort((a, b) => a.id - b.id).map(p => {
-                      return (
-                        <tr key={p.id}>
-                          <td>{p.id}</td>
-                          <td>-</td>
-                          <td>{p.kioskId ?? "-"}</td>
-                          <td>{p.name}</td> {/*name*/}
-                          <td>{p.contactNumber ?? "-"}</td>
-                          <td>{p.gcashNumber ?? "-"}</td>
-                          <td>{formatDateTime(p.createdAt)}</td>
-                          <td>
-                            <button
-                              type="button"
-                              onClick={() => setParToEdit(p)}
-                              className="text-[12px] font-semibold text-black hover:text-green transition-colors inline-flex items-center gap-1"
-                            >
-                              <span aria-hidden="true">✍️</span>
-                              Edit
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setParToDelete(p)}
-                              className="text-[12px] font-semibold text-[#e8174a] hover:text-[#c9143f] transition-colors inline-flex items-center gap-1"
-                            >
-                              <span aria-hidden="true">🗑️</span>
-                              Delete
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-=======
                     {participants
                       .sort((a, b) => a.id - b.id)
                       .map((p) => {
@@ -1708,7 +1633,6 @@ export default function Dashboard() {
                           </tr>
                         );
                       })}
->>>>>>> Stashed changes
                   </tbody>
                 </table>
               )}
@@ -1926,8 +1850,8 @@ export default function Dashboard() {
           <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
             <h2 className="text-gray-900 font-bold mb-2">Delete participant?</h2>
             <p className="text-sm text-gray-600">
-              This will permanently remove <span className="font-semibold">{parToDelete.name}</span> and
-              its related sessions.
+              This will permanently remove <span className="font-semibold">{parToDelete.name}</span>.
+              If they have a tester account, that account and its sessions will also be removed.
             </p>
             {deleteParError ? <p className="text-xs text-red-600 mt-2">{deleteParError}</p> : null}
             <div className="flex gap-3 mt-5">

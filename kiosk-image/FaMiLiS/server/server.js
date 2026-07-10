@@ -433,8 +433,6 @@ async function start() {
     }
   });
 
-<<<<<<< Updated upstream
-=======
   app.post("/api/signup/check", async (req, res) => {
     const rawUsername = req.body?.username ?? req.body?.name ?? req.body?.displayName;
     const rawEmail = req.body?.email;
@@ -581,7 +579,6 @@ async function start() {
     };
   }
 
->>>>>>> Stashed changes
   app.post("/api/signup", async (req, res) => {
     const rawUsername =
       req.body?.username ?? req.body?.name ?? req.body?.displayName;
@@ -766,11 +763,7 @@ async function start() {
 
       const [rows] = await pool.query(
         `
-<<<<<<< Updated upstream
-        SELECT participant_id, name, kiosk_id, contact_number, gcash_number, age, gender, photo_url, created_at
-=======
         SELECT participant_id, name, email, tester_label, kiosk_id, contact_number, gcash_number, age, gender, photo_url, created_at
->>>>>>> Stashed changes
         FROM participants
         ORDER BY created_at DESC, participant_id DESC
       `
@@ -780,11 +773,8 @@ async function start() {
         participants: rows.map((r) => ({
           id: Number(r.participant_id),
           name: r.name == null ? null : String(r.name),
-<<<<<<< Updated upstream
-=======
           email: r.email == null ? null : String(r.email),
           testerLabel: r.tester_label == null ? null : String(r.tester_label),
->>>>>>> Stashed changes
           kioskId: r.kiosk_id == null ? null : Number(r.kiosk_id),
           contactNumber: r.contact_number == null ? null : String(r.contact_number),
           gcashNumber: r.gcash_number == null ? null : String(r.gcash_number),
@@ -804,12 +794,9 @@ async function start() {
   app.post("/api/participants", async (req, res) => {
     const rawName = req.body?.name ?? req.body?.testerLabel;
     const name = typeof rawName === "string" ? rawName.trim() : "";
-<<<<<<< Updated upstream
-=======
     const rawEmail = req.body?.email ?? req.body?.participantEmail;
     const email = typeof rawEmail === "string" ? rawEmail.trim() : "";
     const rawPassword = req.body?.password;
->>>>>>> Stashed changes
     const kioskIdRaw = req.body?.kioskId ?? req.body?.kiosk_id;
     const ageRaw = req.body?.age;
     const genderRaw = req.body?.gender;
@@ -831,79 +818,11 @@ async function start() {
         ? Math.round(Number(ageRaw))
         : null;
     if (age != null && (age < 0 || age > 120)) {
-<<<<<<< Updated upstream
-      return res.status(400).json({ ok: false, error: "age must be between 0 and 120." });
-=======
       return res.status(400).json({ ok: false, error: "Age must be between 0 and 120." });
->>>>>>> Stashed changes
     }
     const allowedGenders = new Set(["male", "female", "other"]);
     const gender = genderRaw == null || genderRaw === "" ? null : String(genderRaw);
     if (gender != null && !allowedGenders.has(gender)) {
-<<<<<<< Updated upstream
-      return res.status(400).json({ ok: false, error: "gender must be male, female, or other." });
-    }
-
-    const contactNumber = contactNumberRaw == null || contactNumberRaw === "" ? null : String(contactNumberRaw);
-    const gcashNumber = gcashNumberRaw == null || gcashNumberRaw === "" ? null : String(gcashNumberRaw);
-
-    try {
-      // If a participant with the same name exists, update fields; otherwise insert.
-      const [[existing]] = await pool.query(
-        `SELECT participant_id, name, kiosk_id, age, gender, contact_number, gcash_number, photo_url, created_at FROM participants WHERE name = ? LIMIT 1`,
-        [name]
-      );
-
-      if (existing) {
-        await pool.query(
-          `
-          UPDATE participants
-          SET kiosk_id = COALESCE(?, kiosk_id),
-              age = COALESCE(?, age),
-              gender = COALESCE(?, gender),
-              contact_number = COALESCE(?, contact_number),
-              gcash_number = COALESCE(?, gcash_number)
-          WHERE participant_id = ?
-        `,
-          [kioskId, age, gender, contactNumber, gcashNumber, Number(existing.participant_id)]
-        );
-        const [[updated]] = await pool.query(
-          `SELECT participant_id, name, kiosk_id, contact_number, gcash_number, age, gender, photo_url, created_at FROM participants WHERE participant_id = ? LIMIT 1`,
-          [Number(existing.participant_id)]
-        );
-        return res.json({
-          ok: true,
-          participant: {
-            id: Number(updated.participant_id),
-            name: updated.name == null ? null : String(updated.name),
-            kioskId: updated.kiosk_id == null ? null : Number(updated.kiosk_id),
-            contactNumber: updated.contact_number == null ? null : String(updated.contact_number),
-            gcashNumber: updated.gcash_number == null ? null : String(updated.gcash_number),
-            age: updated.age == null ? null : Number(updated.age),
-            gender: updated.gender == null ? null : String(updated.gender),
-            photoUrl: updated.photo_url == null ? null : String(updated.photo_url),
-            createdAt: toIsoOrNull(updated.created_at),
-          },
-          reused: true,
-        });
-      }
-
-      const [result] = await pool.query(
-        `INSERT INTO participants (name, kiosk_id, contact_number, gcash_number, age, gender) VALUES (?, ?, ?, ?, ?, ?)`,
-        [name, kioskId, contactNumber, gcashNumber, age, gender]
-      );
-      const [[inserted]] = await pool.query(`SELECT participant_id, name, kiosk_id, contact_number, gcash_number, age, gender, photo_url, created_at FROM participants WHERE participant_id = ? LIMIT 1`, [Number(result.insertId)]);
-      return res.json({
-        ok: true,
-        participant: {
-          id: Number(result.insertId),
-          name,
-          kioskId: kioskId == null ? null : Number(kioskId),
-          contactNumber,
-          gcashNumber,
-          age,
-          gender,
-=======
       return res.status(400).json({ ok: false, error: "Gender must be male, female, or other." });
     }
     const contactNumber =
@@ -972,7 +891,6 @@ async function start() {
           gcashNumber: inserted.gcash_number == null ? null : String(inserted.gcash_number),
           age: inserted.age == null ? null : Number(inserted.age),
           gender: inserted.gender == null ? null : String(inserted.gender),
->>>>>>> Stashed changes
           photoUrl: inserted.photo_url == null ? null : String(inserted.photo_url),
           createdAt: toIsoOrNull(inserted.created_at),
         },
@@ -992,18 +910,45 @@ async function start() {
     if (!Number.isFinite(id)) {
       return res.status(400).json({ ok: false, error: "Invalid id." });
     }
+
+    const connection = await pool.getConnection();
     try {
-      const [result] = await pool.query(
+      await connection.beginTransaction();
+
+      const [[participant]] = await connection.query(
+        `SELECT participant_id, email FROM participants WHERE participant_id = ? FOR UPDATE`,
+        [id],
+      );
+      if (!participant) {
+        await connection.rollback();
+        return res.status(404).json({ ok: false, error: "Participant not found." });
+      }
+
+      let deletedTesterAccount = false;
+      if (participant.email) {
+        const [userResult] = await connection.query(
+          `DELETE FROM users WHERE LOWER(email) = LOWER(?) AND role = 'tester'`,
+          [participant.email],
+        );
+        deletedTesterAccount = userResult.affectedRows > 0;
+      }
+
+      const [result] = await connection.query(
         `DELETE FROM participants WHERE participant_id = ?`,
         [id]
       );
-      if (result.affectedRows === 0) {
-        return res.status(404).json({ ok: false, error: "Participant not found." });
-      }
-      return res.json({ ok: true });
+      await connection.commit();
+      return res.json({ ok: true, deletedTesterAccount, deletedParticipantId: id });
     } catch (err) {
+      try {
+        await connection.rollback();
+      } catch {
+        // Ignore rollback failures so the original error is returned.
+      }
       console.error("DELETE /api/participants error:", err);
       return res.status(500).json({ ok: false, error: "Server error." });
+    } finally {
+      connection.release();
     }
   });
 
@@ -1031,12 +976,9 @@ async function start() {
     }
     const rawName = req.body?.name ?? req.body?.testerLabel;
     const name = typeof rawName === "string" ? rawName.trim() : "";
-<<<<<<< Updated upstream
-=======
     const testerLabel = typeof req.body?.testerLabel === "string" ? req.body.testerLabel.trim() : name;
     const rawEmail = req.body?.email ?? req.body?.participantEmail;
     const email = typeof rawEmail === "string" ? rawEmail.trim() : "";
->>>>>>> Stashed changes
     const kioskIdRaw = req.body?.kioskId ?? req.body?.kiosk_id;
     const ageRaw = req.body?.age;
     const genderRaw = req.body?.gender;
@@ -1069,11 +1011,6 @@ async function start() {
     try {
       const [result] = await pool.query(
         `UPDATE participants
-<<<<<<< Updated upstream
-        SET name = ?, kiosk_id = ?, contact_number = ?, gcash_number = ?, age = ?, gender = ?
-        WHERE participant_id = ?`,
-        [name, kioskId, contactNumber, gcashNumber, age, gender, id]
-=======
         SET name = ?, email = ?, tester_label = ?, kiosk_id = ?, contact_number = ?, gcash_number = ?, age = ?, gender = ?
         WHERE participant_id = ?`,
         [
@@ -1087,14 +1024,10 @@ async function start() {
           gender,
           id,
         ],
->>>>>>> Stashed changes
       );
       if (result.affectedRows === 0) {
         return res.status(404).json({ ok: false, error: "Participant not found." });
       }
-<<<<<<< Updated upstream
-      return res.json({ ok: true, participant: { id, name, kioskId, contactNumber, gcashNumber, age, gender } });
-=======
 
       // Re-fetch the updated row so we return what's actually in the DB
       const [[updated]] = await pool.query(
@@ -1119,7 +1052,6 @@ async function start() {
           createdAt: toIsoOrNull(updated.created_at),
         },
       });
->>>>>>> Stashed changes
     } catch (err) {
       console.error("PUT /api/participants error:", err);
       return res.status(500).json({ ok: false, error: String(err?.message || "Server error.") });
