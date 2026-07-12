@@ -1,4 +1,34 @@
 services:
+  traefik:
+    image: traefik:v3.7
+    container_name: traefik
+    restart: unless-stopped
+    command:
+      - --api.dashboard=false
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.file.filename=/etc/traefik/dynamic/tls.yml
+      # The kiosk's existing internal services use a self-signed certificate.
+      - --serversTransport.insecureSkipVerify=true
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      # Preserve the ports that the kiosk UI and its API already use.
+      - --entrypoints.familis.address=:5173
+      - --entrypoints.familis-api.address=:8080
+      - --entrypoints.central-api.address=:8000
+    ports:
+      - "80:80"
+      - "443:443"
+      - "5173:5173"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/tls.yml:/etc/traefik/dynamic/tls.yml:ro
+      - "8000:8000"
+      - ../certs:/etc/traefik/certs:ro
+
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.1
     container_name: zookeeper
@@ -53,12 +83,9 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
       - ../kiosk-image/FaMiLiS/server_database/schema.sql:/docker-entrypoint-initdb.d/01-familis-schema.sql:ro
-
   central-server:
     build: .
     container_name: central-server
-    ports:
-      - "8000:8000"
     depends_on:
       kafka-init:
         condition: service_completed_successfully
@@ -74,6 +101,12 @@ services:
       FRAME_STORAGE_ROOT: /frames
     volumes:
       - ./frames:/frames
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.central-server.rule=PathPrefix(`/`)
+      - traefik.http.routers.central-server.entrypoints=central-api
+      - traefik.http.routers.central-server.tls=true
+      - traefik.http.services.central-server.loadbalancer.server.port=8000
 
   familis:
     build:
@@ -81,8 +114,6 @@ services:
       dockerfile: Dockerfile
     container_name: familis
     ports:
-      - "5173:5173"
-      - "8080:8080"
       - "8765:8765"
     depends_on:
       central-server:
@@ -100,6 +131,20 @@ services:
       SSL_CERT_FILE: /app/certs/cert.pem
     volumes:
       - ../certs:/app/certs:ro
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.familis.rule=PathPrefix(`/`)
+      - traefik.http.routers.familis.entrypoints=websecure,familis
+      - traefik.http.routers.familis.tls=true
+      - traefik.http.routers.familis.service=familis
+      - traefik.http.services.familis.loadbalancer.server.port=5173
+      - traefik.http.services.familis.loadbalancer.server.scheme=https
+      - traefik.http.routers.familis-api.rule=PathPrefix(`/`)
+      - traefik.http.routers.familis-api.entrypoints=familis-api
+      - traefik.http.routers.familis-api.tls=true
+      - traefik.http.routers.familis-api.service=familis-api
+      - traefik.http.services.familis-api.loadbalancer.server.port=8080
+      - traefik.http.services.familis-api.loadbalancer.server.scheme=https
 
 volumes:
   mysql_data:

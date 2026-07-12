@@ -41,10 +41,12 @@ familis-multiunit-deployment/
 ## Services
 
 ```text
-5173  FaMiLiS React app
-8080  Express API + Socket.IO
+80    HTTP to HTTPS redirect (Traefik)
+443   FaMiLiS React app over HTTPS (Traefik)
+5173  FaMiLiS React app over HTTPS (legacy-compatible Traefik entry point)
+8080  Express API + Socket.IO over HTTPS (Traefik)
 8765  Python emotion service
-8000  FastAPI central service
+8000  FastAPI central service (Traefik)
 3308  MySQL exposed on host
 9092  Kafka
 2181  Zookeeper
@@ -59,6 +61,7 @@ kafka-init
 central-mysql
 central-server
 familis
+traefik
 ```
 
 ## Install And Run
@@ -85,7 +88,8 @@ docker compose ps
 Check the central service:
 
 ```powershell
-Invoke-WebRequest -UseBasicParsing http://localhost:8000/api/health
+# The bundled development certificate is self-signed.
+curl.exe -k https://localhost:8000/api/health
 ```
 
 Check Kafka topics:
