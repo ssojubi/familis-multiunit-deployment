@@ -16,6 +16,7 @@ import {
 import { Line, Radar } from "react-chartjs-2";
 import React from "react";
 import { io, Socket } from 'socket.io-client';
+import { getApiBase, getSocketUrl } from "../apiConfig";
 
 ChartJS.register(
   RadialLinearScale,
@@ -128,10 +129,7 @@ function statusClasses(status: SessionStatus) {
   }
 }
 
-// dynamic API base
-const API_BASE = window.location.hostname === 'localhost'
-  ? 'https://localhost:8080'
-  : `https://${window.location.hostname}:8080`;
+const API_BASE = getApiBase();
 
 const toApiUrl = (url: string | null) => {
   if (!url) return null;
@@ -139,7 +137,7 @@ const toApiUrl = (url: string | null) => {
   return `${API_BASE}${url}`;
 };
 
-const SOCKET_SERVER_URL = API_BASE; 
+const SOCKET_SERVER_URL = getSocketUrl();
 
 const WEBRTC_CONFIG: RTCConfiguration = {
   iceServers: [

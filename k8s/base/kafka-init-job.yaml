@@ -1,0 +1,25 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-init
+spec:
+  backoffLimit: 8
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: kafka-init
+          image: confluentinc/cp-kafka:7.4.1
+          command:
+            - bash
+            - -c
+            - |
+              echo "Waiting for Kafka broker..."
+              for i in {1..60}; do
+                kafka-topics --bootstrap-server kafka:9092 --list >/dev/null 2>&1 && break
+                echo "  Not ready..."
+                sleep 2
+              done
+              echo "Creating Kafka topics..."
+              kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic video-frames --partitions 6 --replication-factor 1
+              kafka-topics --bootstrap-server kafka:9092 --describe --topic video-frames

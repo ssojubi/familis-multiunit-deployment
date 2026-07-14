@@ -19,7 +19,7 @@ class FrameData(BaseModel):
 @router.post("/frame")
 async def ingest_frame(frame_data: FrameData):
     """
-    Receive video frame from kiosk client agent
+    Receive video frame from a browser kiosk
     Pushes to Kafka for async processing
     """
     try:

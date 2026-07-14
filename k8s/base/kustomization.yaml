@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: familis
+
+resources:
+  - namespace.yaml
+  - mysql-init-configmap.yaml
+  - mysql-secret.yaml
+  - mysql.yaml
+  - zookeeper.yaml
+  - kafka.yaml
+  - kafka-init-job.yaml
+  - central-api.yaml
+  - fer-worker.yaml
+  - familis.yaml
+  - ingress.yaml

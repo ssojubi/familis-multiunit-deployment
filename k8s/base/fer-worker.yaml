@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fer-frames
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fer-worker
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: fer-worker
+  template:
+    metadata:
+      labels:
+        app: fer-worker
+    spec:
+      containers:
+        - name: fer-worker
+          image: familis-central-server:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - app.worker
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: kafka:9092
+            - name: VIDEO_FRAMES_TOPIC
+              value: video-frames
+            - name: DB_HOST
+              value: mysql
+            - name: DB_PORT
+              value: "3306"
+            - name: DB_USER
+              value: root
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: root-password
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: database
+            - name: FRAME_STORAGE_ROOT
+              value: /frames
+          volumeMounts:
+            - name: frames
+              mountPath: /frames
+      volumes:
+        - name: frames
+          persistentVolumeClaim:
+            claimName: fer-frames

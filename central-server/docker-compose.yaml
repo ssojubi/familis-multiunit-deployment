@@ -23,10 +23,10 @@ services:
       - "443:443"
       - "5173:5173"
       - "8080:8080"
+      - "8000:8000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik/tls.yml:/etc/traefik/dynamic/tls.yml:ro
-      - "8000:8000"
       - ../certs:/etc/traefik/certs:ro
 
   zookeeper:
@@ -67,7 +67,7 @@ services:
           sleep 2
         done
         echo "Creating Kafka topics..."
-        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic video-frames --partitions 3 --replication-factor 1
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic video-frames --partitions 6 --replication-factor 1
         echo "Kafka topics ready:"
         kafka-topics --bootstrap-server kafka:9092 --list
       '
@@ -108,6 +108,28 @@ services:
       - traefik.http.routers.central-server.tls=true
       - traefik.http.services.central-server.loadbalancer.server.port=8000
 
+  fer-worker:
+    build: .
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      mysql:
+        condition: service_started
+    deploy:
+      replicas: 1
+    command: ["python", "-m", "app.worker"]
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      VIDEO_FRAMES_TOPIC: "video-frames"
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_NAME: familis_central
+      FRAME_STORAGE_ROOT: /frames
+    volumes:
+      - ./frames:/frames
+
   familis:
     build:
       context: ../kiosk-image
@@ -123,7 +145,7 @@ services:
       DATABASE_URL: mysql://root:root@central-mysql:3306/familis_central
       EMOTION_SERVICE_URL: http://localhost:8765
       CENTRAL_SERVER_URL: http://central-server:8000
-      DEFAULT_KIOSK_AGENT_ID: kiosk-01
+      DEFAULT_KIOSK_ID: kiosk-01
       WEB_KIOSK_MODE: "true"
       HOST_LAN_IP: ${HOST_LAN_IP:-}
       USE_HTTPS: "true"

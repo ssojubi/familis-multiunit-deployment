@@ -1,8 +1,30 @@
 # FaMiLiS Multi-Unit Deployment
 
-FaMiLiS Multi-Unit Deployment runs the browser-based kiosk UI, central dashboard, emotion service, MySQL database, and Kafka pipeline through Docker Compose.
+FaMiLiS Multi-Unit Deployment runs the browser-based kiosk UI, central dashboard, emotion service, MySQL database, and Kafka-based FER processing pipeline.
 
-The active kiosk flow is handled by the FaMiLiS web app. The `client-agent` folder is kept as a legacy native camera implementation.
+The current deployment target is Kubernetes. Docker is still used to build the application images, while Kubernetes runs those images as containers inside pods and manages service networking, restarts, and worker scaling.
+
+## Architecture Summary
+
+```text
+Kiosks / admin browser
+  -> HTTPS server IP or local test port-forward
+  -> Traefik Ingress
+  -> familis-web Service
+  -> familis pod
+  -> MySQL / Kafka / central-api / fer-worker services
+```
+
+Main components:
+
+- `familis`: React/Vite browser app, Express API, Socket.IO, and local emotion service
+- `central-api`: FastAPI API, WebSocket kiosk registry, and Kafka producer
+- `fer-worker`: scalable Kafka consumer for FER video-frame processing
+- `kafka` and `zookeeper`: queue layer for frame load balancing
+- `mysql`: central database initialized from `server_database/schema.sql`
+- `traefik`: ingress router for HTTPS traffic
+
+The active kiosk flow is handled by the FaMiLiS web app in the browser. The old native `client-agent` workflow is deprecated.
 
 ## File Structure
 
@@ -12,13 +34,16 @@ familis-multiunit-deployment/
     app/                     FastAPI service, Kafka producer/consumer, dashboard APIs
     models/                  FER model files for central processing
     Dockerfile
-    docker-compose.yaml      Main Docker Compose stack
+    docker-compose.yaml      Legacy/local Docker Compose stack
     requirements.txt
     .dockerignore
 
   certs/
-    cert.pem                 HTTPS certificate used by the FaMiLiS container
-    key.pem                  HTTPS key used by the FaMiLiS container
+    cert.pem                 HTTPS certificate used for local testing
+    key.pem                  HTTPS key used for local testing
+
+  k8s/
+    base/                    Kubernetes manifests and kustomization
 
   kiosk-image/
     Dockerfile               FaMiLiS app container image
@@ -32,87 +57,233 @@ familis-multiunit-deployment/
       package.json
       package-lock.json
 
-  client-agent/              Legacy native kiosk camera agent
-  send_start.py              Legacy start command helper
-  send_stop.py               Legacy stop command helper
+  client-agent/              Deprecated native camera implementation
+  send_start.py              Deprecated central command helper
+  send_stop.py               Deprecated central command helper
   README.md
 ```
 
-## Services
+## Kubernetes Deployment
 
-```text
-80    HTTP to HTTPS redirect (Traefik)
-443   FaMiLiS React app over HTTPS (Traefik)
-5173  FaMiLiS React app over HTTPS (legacy-compatible Traefik entry point)
-8080  Express API + Socket.IO over HTTPS (Traefik)
-8765  Python emotion service
-8000  FastAPI central service (Traefik)
-3308  MySQL exposed on host
-9092  Kafka
-2181  Zookeeper
+### 1. Build Images
+
+From the repository root:
+
+```powershell
+docker build -t familis-central-server:latest .\central-server
+docker build -t familis-app:k8s .\kiosk-image
 ```
 
-Docker Compose starts these containers:
+`docker build -t` names the images. Kubernetes then runs those images as containers inside pods.
 
-```text
-zookeeper
-kafka
-kafka-init
-central-mysql
-central-server
-familis
-traefik
+### 2. Confirm Kubernetes Is Running
+
+For Docker Desktop Kubernetes:
+
+```powershell
+kubectl config use-context docker-desktop
+kubectl get nodes
 ```
 
-## Install And Run
+You should see a `Ready` node.
 
-Install Docker Desktop, then start the full stack from the repository root:
+### 3. Deploy
+
+```powershell
+kubectl apply -f .\k8s\base\namespace.yaml
+kubectl -n familis create secret tls familis-tls --cert=.\certs\cert.pem --key=.\certs\key.pem
+kubectl apply -k .\k8s\base
+kubectl -n familis get pods -w
+```
+
+Expected healthy state:
+
+```text
+central-api   1/1 Running
+familis       1/1 Running
+fer-worker    1/1 Running
+kafka         1/1 Running
+kafka-init    0/1 Completed
+mysql         1/1 Running
+zookeeper     1/1 Running
+```
+
+If the TLS secret already exists:
+
+```powershell
+kubectl -n familis delete secret familis-tls
+kubectl -n familis create secret tls familis-tls --cert=.\certs\cert.pem --key=.\certs\key.pem
+```
+
+### 4. Access The Website
+
+For local testing:
+
+```powershell
+kubectl -n familis port-forward svc/familis-web 5173:443
+```
+
+Keep that terminal open, then visit:
+
+```text
+https://localhost:5173
+```
+
+For kiosk devices on the same LAN, use the admin/server machine IP or a local DNS name:
+
+```text
+https://<SERVER-IP>
+https://familis.local
+```
+
+Kiosks must be on the same Wi-Fi/LAN unless a VPN, public domain, or secure tunnel is configured.
+
+## Network Exposure
+
+These manifests do not require MetalLB.
+
+`familis-web` is a private `ClusterIP` service. Traefik is the public HTTPS entry point and routes traffic to internal Kubernetes services.
+
+```text
+Kiosks
+  -> server IP / local DNS
+  -> Traefik Ingress
+  -> familis-web ClusterIP
+  -> familis pod
+```
+
+Private internal services:
+
+- `familis-web`
+- `familis-api`
+- `central-api`
+- `mysql`
+- `kafka`
+- `zookeeper`
+
+Check services and ingress:
+
+```powershell
+kubectl -n familis get svc
+kubectl -n familis get ingress
+```
+
+## Kafka FER Processing
+
+`kafka-init` creates the `video-frames` topic with 6 partitions. The `fer-worker` Deployment starts with 3 replicas using the same consumer group, so Kafka distributes frame messages across workers.
+
+Scale FER processing:
+
+```powershell
+kubectl -n familis scale deployment/fer-worker --replicas=6
+```
+
+For more than 6 active workers, increase the Kafka topic partition count.
+
+## Useful Kubernetes Commands
+
+Check pod state:
+
+```powershell
+kubectl -n familis get pods
+```
+
+View logs:
+
+```powershell
+kubectl -n familis logs deployment/familis --tail=120
+kubectl -n familis logs deployment/central-api --tail=120
+kubectl -n familis logs deployment/fer-worker --tail=120
+```
+
+Describe a pod:
+
+```powershell
+kubectl -n familis describe pod <pod-name>
+```
+
+Restart a deployment:
+
+```powershell
+kubectl -n familis rollout restart deployment/familis
+kubectl -n familis rollout restart deployment/fer-worker
+```
+
+Delete the deployment namespace:
+
+```powershell
+kubectl delete namespace familis
+```
+
+## Docker Notes
+
+Images are shown under Docker Desktop's **Images** tab, not **Containers**.
+
+```powershell
+docker images
+```
+
+The images should include:
+
+```text
+familis-central-server:latest
+familis-app:k8s
+```
+
+Random container names such as `sad_sinoussi` only appear when a container is run manually without `--name`. Kubernetes pod names come from the manifests.
+
+## Full Cleanup
+
+Warning: these commands delete Docker images, containers, volumes, build cache, and the Kubernetes app namespace.
+
+```powershell
+kubectl delete namespace familis
+docker rm -f $(docker ps -aq)
+docker rmi -f $(docker images -aq)
+docker volume rm $(docker volume ls -q)
+docker builder prune -af
+docker system prune -af --volumes
+```
+
+Restart Docker Desktop after a full cleanup, then rebuild and redeploy.
+
+## Legacy Docker Compose
+
+Docker Compose is still available for local/legacy testing:
 
 ```powershell
 cd central-server
 docker compose up -d --build
 ```
 
-Open the app:
+Open:
 
 ```text
 https://localhost:5173
 ```
 
-Check running containers:
+Check:
 
 ```powershell
 docker compose ps
-```
-
-Check the central service:
-
-```powershell
-# The bundled development certificate is self-signed.
 curl.exe -k https://localhost:8000/api/health
-```
-
-Check Kafka topics:
-
-```powershell
 docker exec kafka kafka-topics --bootstrap-server kafka:9092 --list
-```
-
-Check MySQL:
-
-```powershell
 docker exec central-mysql mysql -uroot -proot -e "USE familis_central; SHOW TABLES;"
 ```
 
-Stop the stack:
+Stop:
 
 ```powershell
 docker compose down
 ```
 
-Reset the database volume and start fresh:
+Reset Compose volumes:
 
 ```powershell
 docker compose down -v
 docker compose up -d --build
 ```
+
+## Storage Note
+
+The `fer-worker` frame PVC uses `ReadWriteOnce`, which is fine for single-node local clusters. For multi-node clusters with multiple FER workers, switch `fer-frames` to a `ReadWriteMany` storage class or replace frame file storage with object storage.

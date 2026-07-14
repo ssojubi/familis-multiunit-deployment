@@ -18,7 +18,7 @@ type Participant = {
 };
 
 const API_BASE = getApiBase();
-const DEFAULT_KIOSK_AGENT_ID = "kiosk-01";
+const DEFAULT_KIOSK_ID = "kiosk-01";
 
 function getStoredUserId(): number {
   try {
@@ -54,19 +54,20 @@ export default function Setup() {
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
 
-  const kioskAgentId = useMemo(() => {
+  const browserKioskId = useMemo(() => {
     const params = new URLSearchParams(location.search);
     return (
       params.get("kiosk_id") ||
       params.get("kioskId") ||
+      // Backward-compatible with older shared links.
       params.get("agentKioskId") ||
-      DEFAULT_KIOSK_AGENT_ID
+      DEFAULT_KIOSK_ID
     ).trim();
   }, [location.search]);
   const roomId = useMemo(() => {
     const params = new URLSearchParams(location.search);
-    return (params.get("room") || `kiosk-${kioskAgentId}`).trim();
-  }, [location.search, kioskAgentId]);
+    return (params.get("room") || `kiosk-${browserKioskId}`).trim();
+  }, [location.search, browserKioskId]);
 
   useEffect(() => {
     async function loadFoods() {
@@ -202,7 +203,7 @@ export default function Setup() {
           foodId: started.foodId,
           status: started.status,
           startTime: started.startTime,
-          agentKioskId: kioskAgentId,
+          browserKioskId,
           roomId,
         })
       );
@@ -352,7 +353,7 @@ export default function Setup() {
                 <h3 className="text-sm text-gray-700 mb-3 font-semibold">Kiosk Device</h3>
                 <div className="aspect-video bg-gray-100 rounded-lg overflow-hidden border border-gray-200 flex items-center justify-center">
                   <div className="text-center px-6">
-                    <p className="text-sm text-gray-600 font-semibold">{kioskAgentId}</p>
+                    <p className="text-sm text-gray-600 font-semibold">{browserKioskId}</p>
                     <p className="text-xs text-gray-500 mt-1">
                       Camera capture runs in this browser after you start the session.
                     </p>

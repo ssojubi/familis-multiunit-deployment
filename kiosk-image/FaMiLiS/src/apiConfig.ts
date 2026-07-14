@@ -1,4 +1,4 @@
-/** Shared URL helpers: match the page protocol and prefer Vite proxy on :5173. */
+/** Shared URL helpers: match the page protocol and prefer the web proxy. */
 
 function getPageProtocol(): "http:" | "https:" {
   return window.location.protocol === "https:" ? "https:" : "http:";
@@ -9,22 +9,28 @@ function getEnv(name: string): string | undefined {
   return meta.env?.[name];
 }
 
-export function getApiBase(): string {
-  if (window.location.port === "5173") {
+function shouldUseWebProxy(): boolean {
+  return window.location.port === "5173" || window.location.port === "";
+}
+
+function getCurrentPortSuffix(): string {
+  const port = window.location.port;
+  if (!port || port === "443" || port === "80") {
     return "";
   }
-  return `${getPageProtocol()}//${window.location.hostname}:8080`;
+  return `:${port}`;
+}
+
+export function getApiBase(): string {
+  return shouldUseWebProxy() ? "" : `${getPageProtocol()}//${window.location.hostname}:8080`;
 }
 
 export function getSocketUrl(): string {
-  if (window.location.port === "5173") {
-    return "";
-  }
-  return `${getPageProtocol()}//${window.location.hostname}:8080`;
+  return shouldUseWebProxy() ? "" : `${getPageProtocol()}//${window.location.hostname}:8080`;
 }
 
 export function getWsBase(): string {
-  if (window.location.port === "5173") {
+  if (shouldUseWebProxy()) {
     const proto = getPageProtocol() === "https:" ? "wss:" : "ws:";
     return `${proto}//${window.location.host}`;
   }
@@ -33,7 +39,7 @@ export function getWsBase(): string {
 }
 
 export function getCentralApiBase(): string {
-  if (window.location.port === "5173") {
+  if (shouldUseWebProxy()) {
     return "/central-api";
   }
 
@@ -44,7 +50,7 @@ export function getCentralApiBase(): string {
 }
 
 export function getCentralWsBase(): string {
-  if (window.location.port === "5173") {
+  if (shouldUseWebProxy()) {
     const proto = getPageProtocol() === "https:" ? "wss:" : "ws:";
     return `${proto}//${window.location.host}/central-ws`;
   }
@@ -83,7 +89,7 @@ export function buildShareLink(
   kioskId: string,
 ): string {
   const protocol = getPageProtocol();
-  return `${protocol}//${hostIP}:5173/tester-consent?kiosk_id=${encodeURIComponent(kioskId)}&room=${roomId}`;
+  return `${protocol}//${hostIP}${getCurrentPortSuffix()}/tester-consent?kiosk_id=${encodeURIComponent(kioskId)}&room=${roomId}`;
 }
 
 export function toApiUrl(url: string | null, apiBase = getApiBase()): string | null {

@@ -33,18 +33,23 @@ import { Server } from 'socket.io';
 import fs from 'fs';
 import os from 'os';
 
-// use HTTPS if cert files exist, otherwise fall back to HTTP
+// Use HTTPS only when requested; Kubernetes runs plain HTTP inside the cluster.
 let http;
-try {
-  const sslOptions = {
-    key: fs.readFileSync('./key.pem'),
-    cert: fs.readFileSync('./cert.pem'),
-  };
-  http = createHttpsServer(sslOptions, app);
-  console.log('🔒 Running in HTTPS mode');
-} catch {
+if (process.env.USE_HTTPS === "true") {
+  try {
+    const sslOptions = {
+      key: fs.readFileSync(process.env.SSL_KEY_FILE || './key.pem'),
+      cert: fs.readFileSync(process.env.SSL_CERT_FILE || './cert.pem'),
+    };
+    http = createHttpsServer(sslOptions, app);
+    console.log('Running in HTTPS mode');
+  } catch {
+    http = createHttpServer(app);
+    console.log('cert/key not found; running in HTTP mode');
+  }
+} else {
   http = createHttpServer(app);
-  console.log('⚠️  cert/key not found — running in HTTP mode');
+  console.log('Running in HTTP mode');
 }
 const io = new Server(http, {
   cors: {
@@ -1492,7 +1497,7 @@ async function start() {
 
   // Start a new session for a given food/user (used by Camera Setup / Video Monitoring)
   app.post("/api/sessions/start", async (req, res) => {
-    const { userId, foodId, participantId, kioskId, agentKioskId } = req.body ?? {};
+    const { userId, foodId, participantId, kioskId, browserKioskId, agentKioskId } = req.body ?? {};
     const uId = Number.parseInt(String(userId ?? ""), 10);
     const fId = Number.parseInt(String(foodId ?? ""), 10);
     const pId =
@@ -1500,10 +1505,12 @@ async function start() {
         ? null
         : Number.parseInt(String(participantId), 10);
     const kId = kioskId == null || kioskId === "" ? null : Number.parseInt(String(kioskId), 10);
-    const agentId =
-      typeof agentKioskId === "string" && agentKioskId.trim()
-        ? agentKioskId.trim()
-        : null;
+    const browserKiosk =
+      typeof browserKioskId === "string" && browserKioskId.trim()
+        ? browserKioskId.trim()
+        : typeof agentKioskId === "string" && agentKioskId.trim()
+          ? agentKioskId.trim()
+          : null;
 
     if (!Number.isFinite(uId) || !Number.isFinite(fId) || (pId != null && !Number.isFinite(pId)) || (kId != null && !Number.isFinite(kId))) {
       return res.status(400).json({ ok: false, error: "userId, foodId, and optional participantId/kioskId are required." });
@@ -1519,14 +1526,14 @@ async function start() {
       );
       const sessionId = Number(result.insertId);
 
-      if (agentId) {
+      if (browserKiosk) {
         try {
           await pool.query(
             `INSERT INTO system_logs (session_id, log_type, message) VALUES (?, 'info', ?)`,
-            [sessionId, `Session started by kiosk agent ${agentId}.`],
+            [sessionId, `Session started by browser kiosk ${browserKiosk}.`],
           );
         } catch (logErr) {
-          console.warn("Failed to write kiosk agent start log:", logErr?.message || logErr);
+          console.warn("Failed to write browser kiosk start log:", logErr?.message || logErr);
         }
       }
 
@@ -1538,7 +1545,7 @@ async function start() {
           kioskId: kId,
           participantId: pId,
           foodId: fId,
-          agentKioskId: agentId,
+          browserKioskId: browserKiosk,
           status: "active",
           startTime: new Date().toISOString(),
         },

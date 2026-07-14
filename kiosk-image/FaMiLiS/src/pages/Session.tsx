@@ -11,7 +11,6 @@ const SOCKET_SERVER_URL = getSocketUrl();
 const FRAME_CAPTURE_MS = 750;
 // Use backend so session_id in this page matches DB rows.
 const USE_DB = true;
-const USE_AGENT_CAPTURE = false;
 
 type Food = {
   id: number;
@@ -34,6 +33,7 @@ type StoredSession = {
   foodId: number;
   status: SessionRow["status"];
   startTime: string;
+  browserKioskId?: string;
   agentKioskId?: string;
   roomId?: string;
 };
@@ -106,7 +106,9 @@ export default function Session() {
 
   const frameInFlightRef = useRef(false);
   const cameraSessionActiveRef = useRef(true);
-  const roomId = storedCurrent?.roomId || `kiosk-${storedCurrent?.agentKioskId || "kiosk-01"}`;
+  const roomId =
+    storedCurrent?.roomId ||
+    `kiosk-${storedCurrent?.browserKioskId || storedCurrent?.agentKioskId || "kiosk-01"}`;
   const userRole = useMemo(() => {
     try {
       const raw = localStorage.getItem("familis.user") || localStorage.getItem("user");
@@ -331,7 +333,6 @@ export default function Session() {
   }, [sessionId]);
 
   useEffect(() => {
-    if (USE_AGENT_CAPTURE) return;
     if (!sessionId || !isRecording || isPaused || cameraError) return;
 
     const id = window.setInterval(() => {
@@ -616,16 +617,7 @@ export default function Session() {
                   <h3 className="text-sm text-gray-700 font-semibold mb-3">Camera Preview</h3>
 
                   <div className="aspect-video bg-gray-100 rounded-lg overflow-hidden border border-gray-200 relative">
-                    {USE_AGENT_CAPTURE ? (
-                      <div className="text-center px-6 h-full flex items-center justify-center">
-                        <div>
-                          <p className="text-sm text-gray-700 font-semibold">Kiosk agent recording</p>
-                          <p className="text-xs text-gray-500 mt-1">
-                            Frames are captured by the Python kiosk agent and processed by the central server.
-                          </p>
-                        </div>
-                      </div>
-                    ) : cameraError ? (
+                    {cameraError ? (
                       <div className="text-center px-6 h-full flex items-center justify-center">
                         <div>
                           <p className="text-sm text-gray-700 font-semibold">Camera unavailable</p>

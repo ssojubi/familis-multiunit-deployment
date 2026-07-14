@@ -20,6 +20,7 @@ const WS_BASE = getCentralWsBase();
 const SOCKET_SERVER_URL = getSocketUrl();
 
 type ServerToClientEvents = {
+  "viewer-connected": () => void;
   signal: (data: {
     sdp?: RTCSessionDescriptionInit;
     candidate?: RTCIceCandidateInit;
@@ -312,7 +313,7 @@ export default function TesterSession() {
         body: JSON.stringify({
           userId: uId,
           foodId: fId,
-          agentKioskId: kioskId,
+          browserKioskId: kioskId,
         }),
       });
       const json = await res.json();

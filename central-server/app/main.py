@@ -5,7 +5,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api import commands, dashboard, ingest
-from .services.kafka_consumer import start_fer_consumer
 from .services.kafka_producer import KafkaProducerService, set_kafka_producer
 from .services.kiosk_registry import KioskRegistry, set_kiosk_registry
 
@@ -32,17 +31,9 @@ async def lifespan(app: FastAPI):
     else:
         raise RuntimeError("Kafka unavailable after retrying")
 
-    consumer_task = asyncio.create_task(start_fer_consumer())
-
     try:
         yield
     finally:
-        consumer_task.cancel()
-        try:
-            await consumer_task
-        except asyncio.CancelledError:
-            pass
-
         if kafka_producer:
             await kafka_producer.stop()
 

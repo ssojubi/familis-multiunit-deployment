@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: familis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: familis
+  template:
+    metadata:
+      labels:
+        app: familis
+    spec:
+      initContainers:
+        - name: wait-for-mysql
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - until nc -z mysql 3306; do echo waiting for mysql; sleep 2; done
+      containers:
+        - name: familis
+          image: familis-app:k8s
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: web
+              containerPort: 5173
+            - name: api
+              containerPort: 8080
+            - name: emotion
+              containerPort: 8765
+          env:
+            - name: DATABASE_URL
+              value: mysql://root:root@mysql:3306/familis_central
+            - name: EMOTION_SERVICE_URL
+              value: http://localhost:8765
+            - name: CENTRAL_SERVER_URL
+              value: http://central-api:8000
+            - name: DEFAULT_KIOSK_ID
+              value: kiosk-01
+            - name: WEB_KIOSK_MODE
+              value: "true"
+            - name: HOST_LAN_IP
+              value: ""
+            - name: USE_HTTPS
+              value: "true"
+            - name: SSL_KEY_FILE
+              value: /app/familis/key.pem
+            - name: SSL_CERT_FILE
+              value: /app/familis/cert.pem
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8080
+              scheme: HTTPS
+            initialDelaySeconds: 30
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: familis-web
+  annotations:
+    traefik.ingress.kubernetes.io/service.serversscheme: https
+spec:
+  type: ClusterIP
+  selector:
+    app: familis
+  ports:
+    - name: https
+      port: 443
+      targetPort: 5173
+    - name: web
+      port: 5173
+      targetPort: 5173
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: familis-api
+spec:
+  type: ClusterIP
+  selector:
+    app: familis
+  ports:
+    - name: api
+      port: 8080
+      targetPort: 8080
+    - name: emotion
+      port: 8765
+      targetPort: 8765

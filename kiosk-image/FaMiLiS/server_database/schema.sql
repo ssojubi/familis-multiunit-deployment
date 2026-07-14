@@ -134,7 +134,7 @@ CREATE TABLE IF NOT EXISTS survey_results (
   CONSTRAINT chk_final CHECK (final_overall_rating BETWEEN 1 AND 9)
 );
 
--- CENTRAL FER RESULTS (Kafka/client-agent path)
+-- CENTRAL FER RESULTS (Kafka/browser ingest path)
 CREATE TABLE IF NOT EXISTS emotion_results (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   session_id VARCHAR(255) NOT NULL,
