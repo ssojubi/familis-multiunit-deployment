@@ -57,9 +57,6 @@ familis-multiunit-deployment/
       package.json
       package-lock.json
 
-  client-agent/              Deprecated native camera implementation
-  send_start.py              Deprecated central command helper
-  send_stop.py               Deprecated central command helper
   README.md
 ```
 
