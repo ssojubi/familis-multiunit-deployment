@@ -1,17 +1,17 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { io, Socket } from "socket.io-client";
 import logo from "../assets/logo.png";
-import { performLogout } from "../RequireAuth";
+import { performLogout } from "../auth";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import {
+  buildShareLink,
+  getShareHostIP,
+  getSocketUrl,
+} from "../apiConfig";
 
 type Role = "host" | "viewer" | null;
 
-const API_BASE =
-  window.location.hostname === "localhost"
-    ? "https://localhost:8080"
-    : `https://${window.location.hostname}:8080`;
-
-const SOCKET_SERVER_URL = API_BASE;
+const SOCKET_SERVER_URL = getSocketUrl();
 
 const WEBRTC_CONFIG: RTCConfiguration = {
   iceServers: [
@@ -60,9 +60,25 @@ export default function VideoMonitoring() {
   const [searchParams] = useSearchParams();
 
   const [kioskStatus, setKioskStatus] = useState<string>("Connecting…");
-  const [role, setRole] = useState<Role>(null);
-  const [roomId, setRoomId] = useState<string>("");
-  const [shareUrl, setShareUrl] = useState<string>("");
+  const [{ role, roomId }] = useState<{ role: Role; roomId: string }>(() => {
+    const storedUser =
+      localStorage.getItem("familis.user") || localStorage.getItem("user");
+    const user = storedUser ? JSON.parse(storedUser) : null;
+    const userRole = user?.role;
+    const urlRoom = searchParams.get("room");
+
+    if (userRole === "admin") {
+      return {
+        role: "viewer",
+        roomId: urlRoom || Math.random().toString(36).substring(2, 9),
+      };
+    }
+    if (userRole === "staff" || userRole === "tester") {
+      return { role: "host", roomId: urlRoom || "default-staff-room" };
+    }
+    return { role: urlRoom ? "viewer" : null, roomId: urlRoom || "" };
+  });
+  const [shareHostIP, setShareHostIP] = useState<string>("");
 
   const [remoteKiosks, setRemoteKiosks] = useState<RemoteKiosk[]>([]);
   const remoteKiosksRef = useRef<RemoteKiosk[]>([]);
@@ -79,35 +95,17 @@ export default function VideoMonitoring() {
   // Food selected on the Dashboard, carried over via ?foodId= — informational only now.
   const foodIdParam = searchParams.get("foodId");
 
-  // set role and room
   useEffect(() => {
-    const storedUser =
-      localStorage.getItem("familis.user") || localStorage.getItem("user");
-    const user = storedUser ? JSON.parse(storedUser) : null;
-    const userRole = user?.role;
-
-    const urlRoom = searchParams.get("room");
-
-    if (userRole === "admin") {
-      setRole("viewer");
-      setRoomId(urlRoom || Math.random().toString(36).substring(2, 9));
-    } else if (userRole === "staff" || userRole === "tester") {
-      setRole("host");
-      setRoomId(urlRoom || "default-staff-room");
-    } else if (urlRoom) {
-      setRoomId(urlRoom);
-      setRole("viewer");
-    }
+    void getShareHostIP().then(setShareHostIP);
   }, []);
 
-  // build the tester share link (carries the room, and the food if we have one)
-  useEffect(() => {
-    if (roomId) {
-      const params = new URLSearchParams({ room: roomId });
-      if (foodIdParam) params.set("foodId", foodIdParam);
-      setShareUrl(`${window.location.origin}/tester-consent?${params.toString()}`);
-    }
-  }, [roomId, foodIdParam]);
+  const shareUrl = useMemo(
+    () =>
+      roomId && shareHostIP
+        ? buildShareLink(shareHostIP, roomId, null, foodIdParam)
+        : "",
+    [foodIdParam, roomId, shareHostIP],
+  );
 
   const copyLinkToClipboard = () => {
     if (!shareUrl) return;

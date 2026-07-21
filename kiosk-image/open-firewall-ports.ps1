@@ -9,7 +9,13 @@ $rules = @(
 foreach ($rule in $rules) {
   $existing = Get-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue
   if ($existing) {
-    Write-Host "Rule already exists: $($rule.Name)"
+    Set-NetFirewallRule `
+      -DisplayName $rule.Name `
+      -Enabled True `
+      -Profile Private,Public,Domain | Out-Null
+    $existing | Get-NetFirewallAddressFilter |
+      Set-NetFirewallAddressFilter -RemoteAddress LocalSubnet | Out-Null
+    Write-Host "Updated firewall rule: $($rule.Name)"
     continue
   }
   New-NetFirewallRule `
@@ -18,7 +24,8 @@ foreach ($rule in $rules) {
     -Action Allow `
     -Protocol TCP `
     -LocalPort $rule.Port `
-    -Profile Private,Domain | Out-Null
+    -Profile Private,Public,Domain `
+    -RemoteAddress LocalSubnet | Out-Null
   Write-Host "Created firewall rule: $($rule.Name)"
 }
 

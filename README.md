@@ -45,6 +45,12 @@ familis-multiunit-deployment/
   k8s/
     base/                    Kubernetes manifests and kustomization
 
+  scripts/
+    start-familis.ps1        Builds, deploys, waits, and opens local access
+    check-familis.ps1        Shows Kubernetes and access status
+    stop-familis.ps1         Stops local access or removes the deployment
+    backup-familis.ps1       Exports a MySQL backup
+
   kiosk-image/
     Dockerfile               FaMiLiS app container image
     start.sh                 Starts frontend, Express API, and emotion service
@@ -62,6 +68,83 @@ familis-multiunit-deployment/
   send_stop.py               Deprecated central command helper
   README.md
 ```
+
+## Admin Operation
+
+For a simple admin/server setup on Windows with Docker Desktop Kubernetes enabled, use the scripts in `scripts/`.
+
+Start FaMiLiS:
+
+```powershell
+.\scripts\start-familis.ps1
+```
+
+That command builds the Docker images, applies the Kubernetes manifests, waits for the app to become healthy, and starts a local access tunnel for the web app.
+
+After it finishes, open:
+
+```text
+https://localhost:5173
+```
+
+For another device on the same network:
+
+```text
+https://<ADMIN-SERVER-IP>:5173
+```
+
+Before connecting an iPad or another kiosk device for the first time, generate
+a LAN certificate for the admin machine's current IP address:
+
+```powershell
+.\scripts\new-familis-certificate.ps1
+```
+
+Install `certs\familis-ca.cer` on the device. On iPadOS, install the downloaded
+profile and enable it under **Settings > General > About > Certificate Trust
+Settings**. Then start FaMiLiS normally. Regenerate and reinstall the certificate
+if the local root CA is reset. If only the admin machine's LAN IP changes, rerun
+the certificate script and restart FaMiLiS; the already trusted root remains valid.
+
+Example:
+
+```text
+https://10.159.90.87:5173
+```
+
+If the images were already built and you only want to redeploy:
+
+```powershell
+.\scripts\start-familis.ps1 -SkipBuild
+```
+
+Check status:
+
+```powershell
+.\scripts\check-familis.ps1
+```
+
+Stop only the local access tunnel:
+
+```powershell
+.\scripts\stop-familis.ps1
+```
+
+Stop and delete the Kubernetes app:
+
+```powershell
+.\scripts\stop-familis.ps1 -DeleteNamespace
+```
+
+Back up the database:
+
+```powershell
+.\scripts\backup-familis.ps1
+```
+
+Backups are written to `.familis\backups`.
+
+For the final client installation, the preferred setup is a dedicated server or mini-PC on the client's LAN. Kiosks connect to that server by IP address or local DNS name. Port forwarding is only used for local Windows/Docker Desktop testing; the final setup should expose HTTPS through Traefik on the server.
 
 ## Kubernetes Deployment
 

@@ -40,7 +40,7 @@ export default function App() {
           <Route path="/kiosk" element={<Kiosk />} />
           <Route path="/video-monitoring" element={<VideoMonitoring />} />
           
-          {/* Tester routes */}
+          {/* Tester routes preserve shared room links through authentication. */}
           <Route path="/tester-consent" element={<TesterConsent />} />
           <Route path="/tester-session" element={<TesterSession />} />
           <Route path="/tester-survey" element={<TesterSurvey />} />

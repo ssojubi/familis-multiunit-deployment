@@ -1,4 +1,8 @@
 .DS_Store
 Icon?
 node_modules/
+dist/
 venv/
+.familis/
+certs/familis-root-ca-key.pem
+familis-app-k8s-hotfix.tar

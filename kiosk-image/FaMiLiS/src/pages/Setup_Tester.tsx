@@ -5,7 +5,7 @@
 // @ts-nocheck
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { performLogout } from "../RequireAuth";
+import { performLogout } from "../auth";
 import logo from "../assets/logo.png";
 import { getApiBase } from "../apiConfig";
 

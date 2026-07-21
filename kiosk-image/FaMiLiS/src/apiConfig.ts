@@ -86,10 +86,27 @@ export function resolveShareHostIP(serverIP?: string | null): string {
 export function buildShareLink(
   hostIP: string,
   roomId: string,
-  kioskId: string,
+  kioskId?: string | null,
+  foodId?: string | number | null,
 ): string {
   const protocol = getPageProtocol();
-  return `${protocol}//${hostIP}${getCurrentPortSuffix()}/tester-consent?kiosk_id=${encodeURIComponent(kioskId)}&room=${roomId}`;
+  const params = new URLSearchParams({ room: roomId });
+  if (kioskId) params.set("kiosk_id", kioskId);
+  if (foodId != null && String(foodId)) params.set("foodId", String(foodId));
+  return `${protocol}//${hostIP}${getCurrentPortSuffix()}/tester-consent?${params.toString()}`;
+}
+
+export async function getShareHostIP(): Promise<string> {
+  try {
+    const response = await fetch("/config");
+    if (response.ok) {
+      const config = (await response.json()) as { serverIP?: string | null };
+      return resolveShareHostIP(config.serverIP);
+    }
+  } catch {
+    // The current host remains the safest fallback outside Kubernetes.
+  }
+  return resolveShareHostIP();
 }
 
 export function toApiUrl(url: string | null, apiBase = getApiBase()): string | null {

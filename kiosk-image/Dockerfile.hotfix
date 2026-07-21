@@ -1,0 +1,8 @@
+FROM familis-app:k8s
+
+COPY FaMiLiS/src /app/familis/src
+COPY FaMiLiS/server/server.js /app/familis/server/server.js
+COPY FaMiLiS/tsconfig.app.json /app/familis/tsconfig.app.json
+COPY start.sh /app/start.sh
+
+RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh

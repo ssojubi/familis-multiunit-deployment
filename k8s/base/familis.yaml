@@ -46,9 +46,13 @@ spec:
             - name: USE_HTTPS
               value: "true"
             - name: SSL_KEY_FILE
-              value: /app/familis/key.pem
+              value: /app/tls/tls.key
             - name: SSL_CERT_FILE
-              value: /app/familis/cert.pem
+              value: /app/tls/tls.crt
+          volumeMounts:
+            - name: familis-tls
+              mountPath: /app/tls
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /api/health
@@ -56,6 +60,10 @@ spec:
               scheme: HTTPS
             initialDelaySeconds: 30
             periodSeconds: 10
+      volumes:
+        - name: familis-tls
+          secret:
+            secretName: familis-tls
 ---
 apiVersion: v1
 kind: Service

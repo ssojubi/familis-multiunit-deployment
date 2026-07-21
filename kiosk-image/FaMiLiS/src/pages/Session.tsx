@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { io, Socket } from "socket.io-client";
-import { performLogout } from "../RequireAuth";
+import { performLogout } from "../auth";
 import logo from "../assets/logo.png";
 
 import { getApiBase, getSocketUrl, isKioskPublicPath, kioskRoute } from "../apiConfig";

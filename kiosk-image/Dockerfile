@@ -26,17 +26,11 @@ COPY FaMiLiS /app/familis/
 
 # install python backend dependencies
 WORKDIR /app/familis/backend
-RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir opencv-python-headless mediapipe scikit-learn pandas joblib numpy
+RUN pip install --no-cache-dir --retries 10 --timeout 120 -r requirements.txt
 
 # install Node dependencies (including tailwind CSS)
 WORKDIR /app/familis
 RUN npm install
-RUN npm install tailwindcss @tailwindcss/vite tw-animate-css
-RUN npm install socket.io
-RUN npm install socket.io-client
-RUN npm install -D @vitejs/plugin-basic-ssl
-#possibly add npm install -g npm@11.14.1
 
 EXPOSE 8765
 EXPOSE 5173

@@ -7,7 +7,7 @@
 
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { performLogout } from "../RequireAuth";
+import { performLogout } from "../auth";
 import logo from "../assets/logo.png";
 
 export default function TesterConsent() {

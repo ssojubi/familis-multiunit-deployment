@@ -5,7 +5,7 @@ cd /app/familis/backend
 python emotion_service.py &
 
 # Start Backend API Server on port 8080
-cd /app/familis/server
+cd /app/familis
 PORT=8080 npm run server &
 
 # Start Frontend (port 5173)

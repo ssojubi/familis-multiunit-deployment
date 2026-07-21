@@ -83,6 +83,7 @@ function getLocalIP() {
 }
 
 const localIP = getLocalIP();
+const hostLanIP = process.env.HOST_LAN_IP?.trim() || "";
 console.log('Using IO:', localIP);
 app.use(express.static(__dirname));
 
@@ -96,7 +97,7 @@ app.use((req, res, next) => {
 
 // make IP address available to client
 app.get('/config', (req, res) => {
-  res.json({ serverIP: localIP });
+  res.json({ serverIP: hostLanIP || localIP, hostLanIP: hostLanIP || null });
 });
 
 const rooms = new Map();

@@ -1,7 +1,8 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import React, { useEffect, useId, useState } from "react";
 import type { FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import logo from "../assets/logo.png";
 import loginBg from "../assets/login-bg.png";
 
@@ -93,6 +94,7 @@ function IconLogin(props: { className?: string; size?: number }) {
 
 export default function Login() {
   const navigate = useNavigate();
+  const location = useLocation();
   const emailId = useId();
   const passwordId = useId();
 
@@ -152,7 +154,15 @@ export default function Login() {
       localStorage.setItem("user", JSON.stringify(data.user));
 
       const role = data.user?.role;
-      if (role === "tester") {
+      const requestedRoute = (location.state as { returnTo?: unknown } | null)
+        ?.returnTo;
+      if (
+        typeof requestedRoute === "string" &&
+        requestedRoute.startsWith("/") &&
+        !requestedRoute.startsWith("//")
+      ) {
+        navigate(requestedRoute, { replace: true });
+      } else if (role === "tester") {
         navigate("/tester-consent");
       } else {
         navigate("/dashboard");
@@ -287,7 +297,7 @@ export default function Login() {
                 </p>
                 <button
                   type="button"
-                  onClick={() => navigate("/signup")}
+                  onClick={() => navigate("/signup", { state: location.state })}
                   className="mt-2 inline-flex items-center justify-center rounded-full border border-red-200 px-5 py-2 text-[15px] font-semibold text-red-700 hover:bg-red-50 transition-colors"
                 >
                   Create account

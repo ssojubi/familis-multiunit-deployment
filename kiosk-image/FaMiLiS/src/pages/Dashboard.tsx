@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { performLogout } from "../RequireAuth";
+import { performLogout } from "../auth";
 import logo from "../assets/logo.png";
 import {
   Chart as ChartJS,
@@ -16,7 +16,12 @@ import {
 import { Line, Radar } from "react-chartjs-2";
 import React from "react";
 import { io, Socket } from 'socket.io-client';
-import { getApiBase, getSocketUrl } from "../apiConfig";
+import {
+  buildShareLink,
+  getApiBase,
+  getShareHostIP,
+  getSocketUrl,
+} from "../apiConfig";
 
 ChartJS.register(
   RadialLinearScale,
@@ -213,7 +218,7 @@ export default function Dashboard() {
   const [role, setRole] = useState<Role>(null);        
   const [roomId, setRoomId] = useState<string>('');
   const [kioskStatus, setKioskStatus] = useState<string>('Select a role to begin.');
-  const [shareUrl, setShareUrl] = useState<string>('');
+  const [shareHostIP, setShareHostIP] = useState<string>('');
 
   const socketRef = useRef<Socket<ServerToClientEvents, ClientToServerEvents> | null>(null);
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
@@ -226,6 +231,14 @@ export default function Dashboard() {
   const [kioskSessionId, setKioskSessionId] = useState<number | null>(null);
   const [kioskCmdLoading, setKioskCmdLoading] = useState(false);
   const [kioskCmdError, setKioskCmdError] = useState<string | null>(null);
+
+  const shareUrl = useMemo(
+    () =>
+      roomId && shareHostIP
+        ? buildShareLink(shareHostIP, roomId, null, kioskFoodId)
+        : '',
+    [kioskFoodId, roomId, shareHostIP],
+  );
 
   useEffect(() => {
     foodsAbortRef.current?.abort();
@@ -336,13 +349,9 @@ export default function Dashboard() {
     }
   }, []);
 
-  // automatically update the shareable link when roomId changes
   useEffect(() => {
-    if (roomId) {
-      const generatedLink = `${window.location.origin}${window.location.pathname}?room=${roomId}`;
-      setShareUrl(generatedLink);
-    }
-  }, [roomId]);
+    void getShareHostIP().then(setShareHostIP);
+  }, []);
 
   useEffect(() => {
     if (!roomId || !role) return;
@@ -506,9 +515,7 @@ export default function Dashboard() {
 
   const copyLinkToClipboard = () => {
     if (!shareUrl) return;
-    const params = new URLSearchParams({ room: roomId });
-    if (kioskFoodId) params.set('foodId', String(kioskFoodId));
-    navigator.clipboard.writeText(`${window.location.origin}/tester-consent?${params.toString()}`);
+    navigator.clipboard.writeText(shareUrl);
     alert('Share link copied! Open it on the kiosk/remote device. The tester will start and stop their own recording.');
   };
 

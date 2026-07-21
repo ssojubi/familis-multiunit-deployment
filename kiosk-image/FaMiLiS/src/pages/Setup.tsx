@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { performLogout } from "../RequireAuth";
+import { performLogout } from "../auth";
 import logo from "../assets/logo.png";
 import { getApiBase, isKioskPublicPath, kioskRoute } from "../apiConfig";
 

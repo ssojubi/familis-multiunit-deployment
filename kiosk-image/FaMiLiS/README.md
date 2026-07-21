@@ -88,7 +88,7 @@ npm run dev
 Open:
 
 ```bash
-http://localhost:5173
+https://localhost:5173
 ```
 
 ## Typical User Flow

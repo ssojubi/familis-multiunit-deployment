@@ -1,8 +1,9 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import React, { useEffect, useId, useState } from "react";
 import type { FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
-import { hasStoredUser } from "../RequireAuth";
+import { useLocation, useNavigate } from "react-router-dom";
+import { hasStoredUser } from "../auth";
 import logo from "../assets/logo.png";
 import loginBg from "../assets/login-bg.png";
 
@@ -116,6 +117,7 @@ const STEPS = [
 
 export default function Signup() {
   const navigate = useNavigate();
+  const location = useLocation();
   const nameId = useId();
   const emailId = useId();
   const ageId = useId();
@@ -230,7 +232,17 @@ export default function Signup() {
   };
 
   const handleProceedToConsent = () => {
-    navigate("/tester-consent", { replace: true });
+    const requestedRoute = (location.state as { returnTo?: unknown } | null)
+      ?.returnTo;
+    if (
+      typeof requestedRoute === "string" &&
+      requestedRoute.startsWith("/") &&
+      !requestedRoute.startsWith("//")
+    ) {
+      navigate(requestedRoute, { replace: true });
+    } else {
+      navigate("/tester-consent", { replace: true });
+    }
   };
 
   const handleSignup = async (e: FormEvent) => {
