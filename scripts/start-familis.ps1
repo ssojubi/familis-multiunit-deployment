@@ -43,6 +43,35 @@ try {
   kubectl get nodes | Out-Host
 
   $ip = Get-PrimaryIPv4
+  if ($ip -eq "localhost") {
+    throw "Could not detect a LAN IPv4 address. Connect this computer to the kiosk network and try again."
+  }
+
+  $certFile = Join-Path $Root "certs\cert.pem"
+  $keyFile = Join-Path $Root "certs\key.pem"
+  $certificateScript = Join-Path $PSScriptRoot "new-familis-certificate.ps1"
+  $refreshCertificate = -not (Test-Path $certFile) -or -not (Test-Path $keyFile)
+
+  if (-not $refreshCertificate) {
+    if (-not (Get-Command openssl -ErrorAction SilentlyContinue)) {
+      throw "OpenSSL is required to validate the FaMiLiS LAN certificate."
+    }
+
+    & openssl x509 -in $certFile -noout -checkip $ip *> $null
+    $refreshCertificate = $LASTEXITCODE -ne 0
+
+    if (-not $refreshCertificate) {
+      & openssl x509 -in $certFile -noout -checkend 86400 *> $null
+      $refreshCertificate = $LASTEXITCODE -ne 0
+    }
+  }
+
+  if ($refreshCertificate) {
+    Write-Host "Refreshing the LAN certificate for $ip..."
+    & $certificateScript -LanIP $ip
+  } else {
+    Write-Host "LAN certificate already covers $ip."
+  }
 
   if (-not $SkipBuild) {
     Write-Host "Building Docker images..."
@@ -104,6 +133,7 @@ try {
   if (-not $NoPortForward) {
     Write-Host "Admin laptop URL: https://localhost:$Port"
     Write-Host "Same-network device URL: https://$ip`:$Port"
+    Write-Host "First-time devices must trust certs\familis-ca.cer."
     Write-Host "If same-network devices cannot connect, check Windows Firewall or Wi-Fi client isolation."
   } else {
     Write-Host "Port-forward was skipped. Use the server IP or configured ingress URL."

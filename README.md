@@ -93,8 +93,8 @@ For another device on the same network:
 https://<ADMIN-SERVER-IP>:5173
 ```
 
-Before connecting an iPad or another kiosk device for the first time, generate
-a LAN certificate for the admin machine's current IP address:
+The start script automatically detects the admin machine's current LAN address
+and creates or refreshes its server certificate. To generate it manually, run:
 
 ```powershell
 .\scripts\new-familis-certificate.ps1
@@ -102,9 +102,11 @@ a LAN certificate for the admin machine's current IP address:
 
 Install `certs\familis-ca.cer` on the device. On iPadOS, install the downloaded
 profile and enable it under **Settings > General > About > Certificate Trust
-Settings**. Then start FaMiLiS normally. Regenerate and reinstall the certificate
-if the local root CA is reset. If only the admin machine's LAN IP changes, rerun
-the certificate script and restart FaMiLiS; the already trusted root remains valid.
+Settings**. This trust approval is required once per device and cannot be
+automated by the server. If the admin machine's LAN IP changes, start FaMiLiS
+normally; the server certificate is refreshed automatically and the already
+trusted root remains valid. Reinstall the device certificate only when the local
+root CA is explicitly reset.
 
 Example:
 
