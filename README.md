@@ -6,35 +6,57 @@ FaMiLiS is a browser-based product testing system with facial valence processing
 
 The system runs on Kubernetes and consists of:
 
-- React and Vite frontend
-- Express API and Socket.IO server
-- FastAPI central service
-- FER processing workers
-- Apache Kafka and ZooKeeper
-- MySQL database
+- `familis`: React/Vite browser app, Express API, Socket.IO, and local emotion service
+- `central-api`: FastAPI API, WebSocket kiosk registry, and Kafka producer
+- `fer-worker`: scalable Kafka consumer for FER video-frame processing
+- `kafka` and `zookeeper`: queue layer for frame load balancing
+- `mysql`: central database initialized from `server_database/schema.sql`
+- `traefik`: ingress router for HTTPS traffic
 
-## Requirements
+The active kiosk flow is handled by the FaMiLiS web app in the browser. The old native `client-agent` workflow is deprecated.
 
-- Windows 10 or 11
-- Docker Desktop with Kubernetes enabled
-- PowerShell
-- `kubectl`
-- OpenSSL
+## File Structure
 
-Run the commands below from the repository root.
+```text
+familis-multiunit-deployment/
+  central-server/
+    app/                     FastAPI service, Kafka producer/consumer, dashboard APIs
+    models/                  FER model files for central processing
+    Dockerfile
+    docker-compose.yaml      Legacy/local Docker Compose stack
+    requirements.txt
+    .dockerignore
 
-## Run the System
+  certs/
+    cert.pem                 HTTPS certificate used for local testing
+    key.pem                  HTTPS key used for local testing
 
-### 1. Check Kubernetes
+  k8s/
+    base/                    Kubernetes manifests and kustomization
 
-```powershell
-kubectl config use-context docker-desktop
-kubectl get nodes
+  kiosk-image/
+    Dockerfile               FaMiLiS app container image
+    start.sh                 Starts frontend, Express API, and emotion service
+    .dockerignore
+    FaMiLiS/
+      backend/               Python emotion service and model files
+      server/                Express API and Socket.IO server
+      server_database/       MySQL schema
+      src/                   React frontend
+      package.json
+      package-lock.json
+
+  client-agent/              Deprecated native camera implementation
+  send_start.py              Deprecated central command helper
+  send_stop.py               Deprecated central command helper
+  README.md
 ```
 
-The Docker Desktop node must show `Ready`.
+## Kubernetes Deployment
 
-### 2. Build the Docker Images
+### 1. Build Images
+
+From the repository root:
 
 ```powershell
 docker build -t familis-central-server:latest .\central-server
