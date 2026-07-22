@@ -156,24 +156,6 @@ Open another terminal and start the public tunnel:
 
 Open the `https://...trycloudflare.com` address printed in the terminal. Press `Ctrl+C` to stop the tunnel.
 
-## iPhone and iPad Certificate
-
-Transfer `certs\familis-ca.cer` to the device and install the profile.
-
-Enable the certificate under:
-
-```text
-Settings > General > About > Certificate Trust Settings
-```
-
-The IP address used in the browser must be included in the server certificate.
-
-Check the certificate addresses with:
-
-```powershell
-openssl x509 -in .\certs\cert.pem -noout -ext subjectAltName
-```
-
 ## Login
 
 Default administrator account:
