@@ -46,9 +46,6 @@ familis-multiunit-deployment/
       package.json
       package-lock.json
 
-  client-agent/              Deprecated native camera implementation
-  send_start.py              Deprecated central command helper
-  send_stop.py               Deprecated central command helper
   README.md
 ```
 
@@ -156,15 +153,6 @@ Open another terminal and start the public tunnel:
 
 Open the `https://...trycloudflare.com` address printed in the terminal. Press `Ctrl+C` to stop the tunnel.
 
-## Login
-
-Default administrator account:
-
-```text
-Email: admin@familis.com
-Password: admin123
-```
-
 Tester accounts are created from the participant management page.
 
 ## Check Services
@@ -214,14 +202,4 @@ Delete the Kubernetes deployment:
 
 ```powershell
 kubectl delete namespace familis
-```
-
-## Project Structure
-
-```text
-central-server/       FastAPI service and central FER worker code
-k8s/base/             Kubernetes manifests
-kiosk-image/          Browser application, Express API, and FER service
-certs/                Local HTTPS certificates
-scripts/              Optional deployment helper commands
 ```
