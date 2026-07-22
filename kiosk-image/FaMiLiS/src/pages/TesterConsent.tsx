@@ -1,10 +1,3 @@
-/**
- * Tester Consent Form
- * First page testers see after login
- * If they consent → redirect to /tester-session
- * If they decline → logout
- */
-
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { performLogout } from "../auth";

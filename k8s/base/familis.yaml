@@ -53,6 +53,8 @@ spec:
             - name: familis-tls
               mountPath: /app/tls
               readOnly: true
+            - name: familis-uploads
+              mountPath: /app/familis/server/uploads
           readinessProbe:
             httpGet:
               path: /api/health
@@ -64,6 +66,20 @@ spec:
         - name: familis-tls
           secret:
             secretName: familis-tls
+        - name: familis-uploads
+          persistentVolumeClaim:
+            claimName: familis-uploads
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: familis-uploads
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
 ---
 apiVersion: v1
 kind: Service

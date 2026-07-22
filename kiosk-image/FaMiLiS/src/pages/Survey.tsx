@@ -28,7 +28,6 @@ const RATING_LABELS: Record<number, string> = {
 };
 
 function getGuideEmoji(score: number) {
-  // Simple mapping to mimic the screenshot's vibe (not meant to be scientific).
   switch (score) {
     case 9:
       return "😍";

@@ -1,374 +1,223 @@
 # FaMiLiS Multi-Unit Deployment
 
-FaMiLiS Multi-Unit Deployment runs the browser-based kiosk UI, central dashboard, emotion service, MySQL database, and Kafka-based FER processing pipeline.
+## Overview
 
-The current deployment target is Kubernetes. Docker is still used to build the application images, while Kubernetes runs those images as containers inside pods and manages service networking, restarts, and worker scaling.
+FaMiLiS is a browser-based product testing system with facial valence processing, survey collection, session monitoring, and centralized reporting.
 
-## Architecture Summary
+The system runs on Kubernetes and consists of:
 
-```text
-Kiosks / admin browser
-  -> HTTPS server IP or local test port-forward
-  -> Traefik Ingress
-  -> familis-web Service
-  -> familis pod
-  -> MySQL / Kafka / central-api / fer-worker services
-```
+- React and Vite frontend
+- Express API and Socket.IO server
+- FastAPI central service
+- FER processing workers
+- Apache Kafka and ZooKeeper
+- MySQL database
 
-Main components:
+## Requirements
 
-- `familis`: React/Vite browser app, Express API, Socket.IO, and local emotion service
-- `central-api`: FastAPI API, WebSocket kiosk registry, and Kafka producer
-- `fer-worker`: scalable Kafka consumer for FER video-frame processing
-- `kafka` and `zookeeper`: queue layer for frame load balancing
-- `mysql`: central database initialized from `server_database/schema.sql`
-- `traefik`: ingress router for HTTPS traffic
+- Windows 10 or 11
+- Docker Desktop with Kubernetes enabled
+- PowerShell
+- `kubectl`
+- OpenSSL
 
-The active kiosk flow is handled by the FaMiLiS web app in the browser. The old native `client-agent` workflow is deprecated.
+Run the commands below from the repository root.
 
-## File Structure
+## Run the System
 
-```text
-familis-multiunit-deployment/
-  central-server/
-    app/                     FastAPI service, Kafka producer/consumer, dashboard APIs
-    models/                  FER model files for central processing
-    Dockerfile
-    docker-compose.yaml      Legacy/local Docker Compose stack
-    requirements.txt
-    .dockerignore
-
-  certs/
-    cert.pem                 HTTPS certificate used for local testing
-    key.pem                  HTTPS key used for local testing
-
-  k8s/
-    base/                    Kubernetes manifests and kustomization
-
-  scripts/
-    start-familis.ps1        Builds, deploys, waits, and opens local access
-    check-familis.ps1        Shows Kubernetes and access status
-    stop-familis.ps1         Stops local access or removes the deployment
-    backup-familis.ps1       Exports a MySQL backup
-
-  kiosk-image/
-    Dockerfile               FaMiLiS app container image
-    start.sh                 Starts frontend, Express API, and emotion service
-    .dockerignore
-    FaMiLiS/
-      backend/               Python emotion service and model files
-      server/                Express API and Socket.IO server
-      server_database/       MySQL schema
-      src/                   React frontend
-      package.json
-      package-lock.json
-
-  client-agent/              Deprecated native camera implementation
-  send_start.py              Deprecated central command helper
-  send_stop.py               Deprecated central command helper
-  README.md
-```
-
-## Admin Operation
-
-For a simple admin/server setup on Windows with Docker Desktop Kubernetes enabled, use the scripts in `scripts/`.
-
-Start FaMiLiS:
-
-```powershell
-.\scripts\start-familis.ps1
-```
-
-That command builds the Docker images, applies the Kubernetes manifests, waits for the app to become healthy, and starts a local access tunnel for the web app.
-
-After it finishes, open:
-
-```text
-https://localhost:5173
-```
-
-For another device on the same network:
-
-```text
-https://<ADMIN-SERVER-IP>:5173
-```
-
-The start script automatically detects the admin machine's current LAN address
-and creates or refreshes its server certificate. To generate it manually, run:
-
-```powershell
-.\scripts\new-familis-certificate.ps1
-```
-
-Install `certs\familis-ca.cer` on the device. On iPadOS, install the downloaded
-profile and enable it under **Settings > General > About > Certificate Trust
-Settings**. This trust approval is required once per device and cannot be
-automated by the server. If the admin machine's LAN IP changes, start FaMiLiS
-normally; the server certificate is refreshed automatically and the already
-trusted root remains valid. Reinstall the device certificate only when the local
-root CA is explicitly reset.
-
-Example:
-
-```text
-https://10.159.90.87:5173
-```
-
-If the images were already built and you only want to redeploy:
-
-```powershell
-.\scripts\start-familis.ps1 -SkipBuild
-```
-
-Check status:
-
-```powershell
-.\scripts\check-familis.ps1
-```
-
-Stop only the local access tunnel:
-
-```powershell
-.\scripts\stop-familis.ps1
-```
-
-Stop and delete the Kubernetes app:
-
-```powershell
-.\scripts\stop-familis.ps1 -DeleteNamespace
-```
-
-Back up the database:
-
-```powershell
-.\scripts\backup-familis.ps1
-```
-
-Backups are written to `.familis\backups`.
-
-For the final client installation, the preferred setup is a dedicated server or mini-PC on the client's LAN. Kiosks connect to that server by IP address or local DNS name. Port forwarding is only used for local Windows/Docker Desktop testing; the final setup should expose HTTPS through Traefik on the server.
-
-## Kubernetes Deployment
-
-### 1. Build Images
-
-From the repository root:
-
-```powershell
-docker build -t familis-central-server:latest .\central-server
-docker build -t familis-app:k8s .\kiosk-image
-```
-
-`docker build -t` names the images. Kubernetes then runs those images as containers inside pods.
-
-### 2. Confirm Kubernetes Is Running
-
-For Docker Desktop Kubernetes:
+### 1. Check Kubernetes
 
 ```powershell
 kubectl config use-context docker-desktop
 kubectl get nodes
 ```
 
-You should see a `Ready` node.
+The Docker Desktop node must show `Ready`.
 
-### 3. Deploy
-
-```powershell
-kubectl apply -f .\k8s\base\namespace.yaml
-kubectl -n familis create secret tls familis-tls --cert=.\certs\cert.pem --key=.\certs\key.pem
-kubectl apply -k .\k8s\base
-kubectl -n familis get pods -w
-```
-
-Expected healthy state:
-
-```text
-central-api   1/1 Running
-familis       1/1 Running
-fer-worker    1/1 Running
-kafka         1/1 Running
-kafka-init    0/1 Completed
-mysql         1/1 Running
-zookeeper     1/1 Running
-```
-
-If the TLS secret already exists:
+### 2. Build the Docker Images
 
 ```powershell
-kubectl -n familis delete secret familis-tls
-kubectl -n familis create secret tls familis-tls --cert=.\certs\cert.pem --key=.\certs\key.pem
+docker build -t familis-central-server:latest .\central-server
+docker build -t familis-app:k8s .\kiosk-image
 ```
 
-### 4. Access The Website
-
-For local testing:
-
-```powershell
-kubectl -n familis port-forward svc/familis-web 5173:443
-```
-
-Keep that terminal open, then visit:
-
-```text
-https://localhost:5173
-```
-
-For kiosk devices on the same LAN, use the admin/server machine IP or a local DNS name:
-
-```text
-https://<SERVER-IP>
-https://familis.local
-```
-
-Kiosks must be on the same Wi-Fi/LAN unless a VPN, public domain, or secure tunnel is configured.
-
-## Network Exposure
-
-These manifests do not require MetalLB.
-
-`familis-web` is a private `ClusterIP` service. Traefik is the public HTTPS entry point and routes traffic to internal Kubernetes services.
-
-```text
-Kiosks
-  -> server IP / local DNS
-  -> Traefik Ingress
-  -> familis-web ClusterIP
-  -> familis pod
-```
-
-Private internal services:
-
-- `familis-web`
-- `familis-api`
-- `central-api`
-- `mysql`
-- `kafka`
-- `zookeeper`
-
-Check services and ingress:
-
-```powershell
-kubectl -n familis get svc
-kubectl -n familis get ingress
-```
-
-## Kafka FER Processing
-
-`kafka-init` creates the `video-frames` topic with 6 partitions. The `fer-worker` Deployment starts with 3 replicas using the same consumer group, so Kafka distributes frame messages across workers.
-
-Scale FER processing:
-
-```powershell
-kubectl -n familis scale deployment/fer-worker --replicas=6
-```
-
-For more than 6 active workers, increase the Kafka topic partition count.
-
-## Useful Kubernetes Commands
-
-Check pod state:
-
-```powershell
-kubectl -n familis get pods
-```
-
-View logs:
-
-```powershell
-kubectl -n familis logs deployment/familis --tail=120
-kubectl -n familis logs deployment/central-api --tail=120
-kubectl -n familis logs deployment/fer-worker --tail=120
-```
-
-Describe a pod:
-
-```powershell
-kubectl -n familis describe pod <pod-name>
-```
-
-Restart a deployment:
-
-```powershell
-kubectl -n familis rollout restart deployment/familis
-kubectl -n familis rollout restart deployment/fer-worker
-```
-
-Delete the deployment namespace:
-
-```powershell
-kubectl delete namespace familis
-```
-
-## Docker Notes
-
-Images are shown under Docker Desktop's **Images** tab, not **Containers**.
+Confirm that the images were created:
 
 ```powershell
 docker images
 ```
 
-The images should include:
-
-```text
-familis-central-server:latest
-familis-app:k8s
-```
-
-Random container names such as `sad_sinoussi` only appear when a container is run manually without `--name`. Kubernetes pod names come from the manifests.
-
-## Full Cleanup
-
-Warning: these commands delete Docker images, containers, volumes, build cache, and the Kubernetes app namespace.
+### 3. Create the Namespace and TLS Secret
 
 ```powershell
-kubectl delete namespace familis
-docker rm -f $(docker ps -aq)
-docker rmi -f $(docker images -aq)
-docker volume rm $(docker volume ls -q)
-docker builder prune -af
-docker system prune -af --volumes
+kubectl apply -f .\k8s\base\namespace.yaml
+kubectl -n familis create secret tls familis-tls --cert=.\certs\cert.pem --key=.\certs\key.pem --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-Restart Docker Desktop after a full cleanup, then rebuild and redeploy.
-
-## Legacy Docker Compose
-
-Docker Compose is still available for local/legacy testing:
+### 4. Deploy the Application
 
 ```powershell
-cd central-server
-docker compose up -d --build
+kubectl apply -k .\k8s\base --validate=false
 ```
 
-Open:
+Wait for the deployments:
+
+```powershell
+kubectl -n familis rollout status deployment/mysql --timeout=180s
+kubectl -n familis rollout status deployment/zookeeper --timeout=180s
+kubectl -n familis rollout status deployment/kafka --timeout=180s
+kubectl -n familis rollout status deployment/central-api --timeout=180s
+kubectl -n familis rollout status deployment/fer-worker --timeout=180s
+kubectl -n familis rollout status deployment/familis --timeout=180s
+```
+
+Check the pods:
+
+```powershell
+kubectl -n familis get pods
+```
+
+Application pods must show `Running`. The `kafka-init` pod shows `Completed`.
+
+### 5. Open Local Access
+
+```powershell
+kubectl -n familis port-forward svc/familis-web 5173:443
+```
+
+Keep the terminal open and visit:
 
 ```text
 https://localhost:5173
 ```
 
-Check:
+### 6. Open LAN Access
+
+Use this command instead of the local-only port-forward:
 
 ```powershell
-docker compose ps
-curl.exe -k https://localhost:8000/api/health
-docker exec kafka kafka-topics --bootstrap-server kafka:9092 --list
-docker exec central-mysql mysql -uroot -proot -e "USE familis_central; SHOW TABLES;"
+kubectl -n familis port-forward --address 0.0.0.0 svc/familis-web 5173:443
 ```
 
-Stop:
+Find the server computer's IPv4 address:
 
 ```powershell
-docker compose down
+ipconfig
 ```
 
-Reset Compose volumes:
+Open the following address on a device connected to the same network:
+
+```text
+https://<SERVER-IP>:5173
+```
+
+## Temporary Public Access
+
+Keep the LAN access command running in one terminal:
 
 ```powershell
-docker compose down -v
-docker compose up -d --build
+kubectl -n familis port-forward --address 0.0.0.0 svc/familis-web 5173:443
 ```
 
-## Storage Note
+Download `cloudflared` once:
 
-The `fer-worker` frame PVC uses `ReadWriteOnce`, which is fine for single-node local clusters. For multi-node clusters with multiple FER workers, switch `fer-frames` to a `ReadWriteMany` storage class or replace frame file storage with object storage.
+```powershell
+New-Item -ItemType Directory -Force .\.familis\tools
+Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile ".\.familis\tools\cloudflared.exe"
+```
+
+Open another terminal and start the public tunnel:
+
+```powershell
+.\.familis\tools\cloudflared.exe tunnel --no-autoupdate --url https://127.0.0.1:5173 --no-tls-verify
+```
+
+Open the `https://...trycloudflare.com` address printed in the terminal. Press `Ctrl+C` to stop the tunnel.
+
+## iPhone and iPad Certificate
+
+Transfer `certs\familis-ca.cer` to the device and install the profile.
+
+Enable the certificate under:
+
+```text
+Settings > General > About > Certificate Trust Settings
+```
+
+The IP address used in the browser must be included in the server certificate.
+
+Check the certificate addresses with:
+
+```powershell
+openssl x509 -in .\certs\cert.pem -noout -ext subjectAltName
+```
+
+## Login
+
+Default administrator account:
+
+```text
+Email: admin@familis.com
+Password: admin123
+```
+
+Tester accounts are created from the participant management page.
+
+## Check Services
+
+```powershell
+kubectl -n familis get pods
+kubectl -n familis get services
+kubectl -n familis get ingress
+```
+
+## View Logs
+
+```powershell
+kubectl -n familis logs deployment/familis --tail=120
+kubectl -n familis logs deployment/central-api --tail=120
+kubectl -n familis logs deployment/fer-worker --tail=120
+kubectl -n familis logs deployment/kafka --tail=120
+kubectl -n familis logs deployment/mysql --tail=120
+```
+
+## Restart a Service
+
+```powershell
+kubectl -n familis rollout restart deployment/familis
+kubectl -n familis rollout status deployment/familis
+```
+
+Restart the FER workers:
+
+```powershell
+kubectl -n familis rollout restart deployment/fer-worker
+kubectl -n familis rollout status deployment/fer-worker
+```
+
+## Back Up the Database
+
+```powershell
+$mysqlPod = kubectl -n familis get pod -l app=mysql -o jsonpath='{.items[0].metadata.name}'
+kubectl -n familis exec $mysqlPod -- mysqldump -uroot -proot familis_central > familis-backup.sql
+```
+
+## Stop the System
+
+Press `Ctrl+C` in the port-forward terminal.
+
+Delete the Kubernetes deployment:
+
+```powershell
+kubectl delete namespace familis
+```
+
+## Project Structure
+
+```text
+central-server/       FastAPI service and central FER worker code
+k8s/base/             Kubernetes manifests
+kiosk-image/          Browser application, Express API, and FER service
+certs/                Local HTTPS certificates
+scripts/              Optional deployment helper commands
+```

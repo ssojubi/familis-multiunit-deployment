@@ -188,7 +188,6 @@ export default function Dashboard() {
   const [deletingFoodId, setDeletingFoodId] = useState<number | null>(null);
   const [deleteFoodError, setDeleteFoodError] = useState<string | null>(null);
   const foodsAbortRef = useRef<AbortController | null>(null);
-  // Incrementing this triggers a participant list re-fetch from the DB
   const [parRefreshKey, setParRefreshKey] = useState(0);
 
   const parAbortRef = useRef<AbortController | null>(null);
@@ -317,7 +316,6 @@ export default function Dashboard() {
 
 
   useEffect(() => {
-    // retrieve the logged-in user
     const storedUser = localStorage.getItem("user"); 
     const user = storedUser ? JSON.parse(storedUser) : null;
     const userRole = user?.role;
@@ -326,22 +324,21 @@ export default function Dashboard() {
     const urlRoom = urlParams.get('room');
 
     if (userRole === 'admin') {
-      setRole('viewer'); // admin is automatically the remote viewer
+      setRole('viewer');
       if (urlRoom) {
         setRoomId(urlRoom);
       } else {
         const newRoomId = Math.random().toString(36).substring(2, 9);
         setRoomId(newRoomId);
       }
-    } else if (userRole === 'staff') {  // TODO : might wanna change that
-      setRole('host'); // staff is automatically the camera host
+    } else if (userRole === 'staff') {
+      setRole('host');
       if (urlRoom) {
         setRoomId(urlRoom);
       } else {
         setRoomId('default-staff-room'); 
       }
     } else {
-      // fallback if no user is found
       if (urlRoom) {
         setRoomId(urlRoom);
         setRole('viewer');
@@ -364,7 +361,6 @@ export default function Dashboard() {
 
     socket.on('connect', () => {
       setKioskStatus(`Connected as ${role}. Room: ${roomId}`);
-      // pass both roomId and role to help the server configure user sets
       socket.emit('join-room', roomId, role);
     });
 
@@ -378,7 +374,6 @@ export default function Dashboard() {
 
       if (!localStreamRef.current) await startCamera();
 
-      // for host, use socket.id as the peerId key
       const pc = await createPeerConnection(socket.id ?? 'host');
 
       if (localStreamRef.current) {
@@ -392,7 +387,6 @@ export default function Dashboard() {
       socket.emit('signal', { room: roomId, sdp: offer });
     });
 
-    // signaling listener for offers, answers, and candidates
     socket.on('signal', async (data) => {
       const peerId = data.from;  
       if (!peerId) return;
@@ -428,7 +422,6 @@ export default function Dashboard() {
       setKioskStatus('A kiosk disconnected.');
     });
 
-    // Tester started/stopped their own recording — just reflect it, don't control it.
     socket.on('tester-session-status', (data) => {
       if (data.status === 'recording') {
         setKioskStatus(
@@ -476,7 +469,6 @@ export default function Dashboard() {
     return pc;
   };
   
-  // start local camera (host only)
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -495,7 +487,6 @@ export default function Dashboard() {
     }
   };
 
-  // stop everything
   const stopCamera = () => {
     cleanupWebRTC();
     if (localVideoRef.current) localVideoRef.current.srcObject = null;
@@ -873,7 +864,6 @@ export default function Dashboard() {
     }
   };
 
-  // Manage Participant Functions
   const onDeleteParticipant = async (participantId: number) => {
     if (!participantId) return;
     try {
@@ -885,7 +875,6 @@ export default function Dashboard() {
         throw new Error(json?.error || "Failed to delete participant.");
       }
       setParToDelete(null);
-      // Trigger re-fetch from DB
       setParRefreshKey((k) => k + 1);
     } catch (err) {
       setDeleteParError((err as any)?.message || "Failed to delete participant.");
@@ -903,7 +892,6 @@ export default function Dashboard() {
     const contactNumber = newParticipant.contactNumber.trim();
     const gcashNumber = newParticipant.gcashNumber.trim();
 
-    // Front-end validation (mirrors server)
     if (!name) { setAddParError("Name is required."); return; }
     if (!email) { setAddParError("Email is required."); return; }
     if (!age) { setAddParError("Age is required."); return; }
@@ -944,7 +932,6 @@ export default function Dashboard() {
         gcashNumber: "",
       });
 
-      // Trigger re-fetch from DB so newly created participant shows up
       setParRefreshKey((k) => k + 1);
     } catch (err: any) {
       console.error(err);
@@ -983,7 +970,6 @@ export default function Dashboard() {
         throw new Error(json?.error || "Failed to update participant.");
       }
       setParToEdit(null);
-      // Trigger re-fetch from DB to reflect actual saved values
       setParRefreshKey((k) => k + 1);
     } catch (err) {
       setEditParError((err as any)?.message || "Failed to update participant.");

@@ -363,8 +363,6 @@
 
     // ─── WebRTC helpers ───────────────────────────────────────────────────────
     function makePeerConnection() {
-      // Empty iceServers = LAN-only (no Google STUN needed on same subnet)
-      // Add stun:stun.l.google.com:19302 only if you have internet
       const pc = new RTCPeerConnection({ iceServers: [] });
 
       pc.onicecandidate = ({ candidate }) => {

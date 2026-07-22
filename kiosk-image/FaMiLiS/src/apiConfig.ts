@@ -103,9 +103,7 @@ export async function getShareHostIP(): Promise<string> {
       const config = (await response.json()) as { serverIP?: string | null };
       return resolveShareHostIP(config.serverIP);
     }
-  } catch {
-    // The current host remains the safest fallback outside Kubernetes.
-  }
+  } catch {}
   return resolveShareHostIP();
 }
 

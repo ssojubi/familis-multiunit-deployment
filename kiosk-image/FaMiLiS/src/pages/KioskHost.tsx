@@ -35,13 +35,11 @@ export default function KioskHost() {
   const socketRef = useRef<Socket<ServerToClientEvents, ClientToServerEvents> | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
-  const localVideoRef = useRef<HTMLVideoElement | null>(null);   // host's camera
-  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);  // remote stream (viewer sees this)
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
 
 
-  // get room ID from URL
   useEffect(() => {
-    // retrieve the logged-in user from your auth state / localStorage
     const storedUser = localStorage.getItem("user"); 
     const user = storedUser ? JSON.parse(storedUser) : null;
     const userRole = user?.role;
@@ -50,7 +48,7 @@ export default function KioskHost() {
     const urlRoom = urlParams.get('room');
   
     if (userRole === 'admin') {
-      setRole('viewer'); // admin is automatically the remote viewer
+      setRole('viewer');
       if (urlRoom) {
         setRoomId(urlRoom);
       } else {
@@ -58,14 +56,13 @@ export default function KioskHost() {
         setRoomId(newRoomId);
       }
     } else if (userRole === 'tester') {
-      setRole('host'); // tester is automatically the camera host
+      setRole('host');
       if (urlRoom) {
         setRoomId(urlRoom);
       } else {
         setRoomId('default-tester-room');
       }
     } else {
-      // fallback if no user is found
       if (urlRoom) {
         setRoomId(urlRoom);
         setRole('host');
@@ -77,7 +74,6 @@ export default function KioskHost() {
   }, []);
   
 
-  // connect socket once room is known
   useEffect(() => {
     if (!roomId || !role) return;
   
@@ -89,7 +85,6 @@ export default function KioskHost() {
   
     socket.on('connect', () => {
       setKioskStatus(`Connected as ${role}. Room: ${roomId}`);
-      // pass both roomId and role to help the server configure user sets
       socket.emit('join-room', roomId, role);
     });
   
@@ -97,7 +92,6 @@ export default function KioskHost() {
       setKioskStatus('Connection failed — check that server.js is running.');
     });
   
-    // HOST: Changed listener from 'user-connected' to 'viewer-connected'
     socket.on('viewer-connected', async () => {
       if (role !== 'host') return;
       setKioskStatus('Viewer connected! Starting stream...');
@@ -117,11 +111,9 @@ export default function KioskHost() {
       const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
       await pc.setLocalDescription(offer);
       
-      // package inside the server's expected 'signal' wrapper
       socket.emit('signal', { room: roomId, sdp: offer });
     });
   
-    // unified signaling listener for offers, answers, and candidates
     socket.on('signal', async (data) => {
       if (!peerConnectionRef.current && role === 'viewer') {
         await createPeerConnection();
@@ -136,7 +128,6 @@ export default function KioskHost() {
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
           
-          // return the answer packaged inside the signal wrapper
           socket.emit('signal', { room: roomId, sdp: answer });
         } else if (data.sdp.type === 'answer' && role === 'host') {
           if (pc.signalingState === 'have-local-offer') {
@@ -178,7 +169,6 @@ export default function KioskHost() {
 
     pc.onicecandidate = (event) => {
       if (event.candidate && socketRef.current && roomId) {
-        // send ICE candidates wrapped inside the 'signal' packet structure
         socketRef.current.emit('signal', { room: roomId, candidate: event.candidate });
       }
     };
@@ -191,7 +181,6 @@ export default function KioskHost() {
       console.log('ICE state:', pc.iceConnectionState);
     };
 
-    // remote track appears on the remote video element for both roles
     pc.ontrack = (event) => {
       console.log('Remote track received:', event.track.kind);
       if (remoteVideoRef.current && event.streams[0]) {
@@ -209,7 +198,6 @@ export default function KioskHost() {
     return pc;
   };
 
-  // start local camera (host only)
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -228,7 +216,6 @@ export default function KioskHost() {
     }
   };
 
-  // stop everything
   const stopCamera = () => {
     cleanupWebRTC();
     if (localVideoRef.current) localVideoRef.current.srcObject = null;

@@ -1,8 +1,3 @@
-/**
- * notes:
- * - backend: answers get sent to admin
- * - modal reference: https://youtu.be/1CN7C6u31zA?si=A300qvK5Q5-8HuSv
- **/
 // @ts-nocheck
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -34,7 +29,6 @@ const RATING_LABELS: Record<number, string> = {
 };
 
 function getGuideEmoji(score: number) {
-  // Simple mapping to mimic the screenshot's vibe (not meant to be scientific).
   switch (score) {
     case 9:
       return "😍";
@@ -81,7 +75,6 @@ export default function Survey() {
   const [loading, setLoading] = useState<boolean>(!!sessionId);
   const [error, setError] = useState<string | null>(null);
 
-  // new
   const [open, setOpen] = useState<boolean>(false);
 
   useEffect(() => {
@@ -176,7 +169,6 @@ export default function Survey() {
         throw new Error(json?.error || "Failed to submit survey.");
       }
 
-      // navigate(`/session-detail?sessionId=${sessionId}`);
       setOpen(true);
     } catch (err: any) {
       setError(err?.message || "Failed to submit survey.");
@@ -356,7 +348,6 @@ function RatingRow({
   );
 }
 
-// new
 type propTypes = {
     open: boolean;
     onClose: ()=> void;

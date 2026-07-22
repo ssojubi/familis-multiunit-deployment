@@ -1,8 +1,3 @@
-/**
- * notes:
- * - backend: admin controls pause and stop recording
- **/
-
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { performLogout } from "../auth";
@@ -11,7 +6,6 @@ import { getApiBase } from "../apiConfig";
 
 const API_BASE = getApiBase();
 const FRAME_CAPTURE_MS = 750;
-// Use backend so session_id in this page matches DB rows.
 const USE_DB = true;
 
 type Food = {
@@ -43,7 +37,7 @@ function formatMmSs(totalSeconds: number) {
   return `${mm}:${ss}`;
 }
 
-/** hedonic 0..1 from DB/model → 1..9 display (matches SessionDetail) */
+// Model values are 0..1; the UI uses a 1..9 scale.
 function hedonic01ToScale(hedonic01: number) {
   return Number((hedonic01 * 8 + 1).toFixed(1));
 }

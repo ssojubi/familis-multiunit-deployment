@@ -34,6 +34,7 @@ FACE_MESH = None
 _MODEL_ERR: str | None = None
 
 # session_id -> deque of raw valence predictions (1..9 scale)
+_INFERENCE_LOCK = threading.Lock()
 _HISTORY_LOCK = threading.Lock()
 _VALENCE_HISTORY: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=15))
 
@@ -122,24 +123,26 @@ def predict_frame_jpeg(session_id: str, jpeg_bytes: bytes) -> dict:
         }
 
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = FACE_MESH.process(rgb)
+    # FaceMesh.process is not thread-safe.
+    with _INFERENCE_LOCK:
+        results = FACE_MESH.process(rgb)
 
-    if not results.multi_face_landmarks:
-        with _HISTORY_LOCK:
-            _VALENCE_HISTORY[session_id].clear()
-        return {
-            "ok": True,
-            "faceDetected": False,
-            "hedonicScore": None,
-            "confidenceScore": None,
-            "valence1to9": None,
-            "sentiment": None,
-        }
+        if not results.multi_face_landmarks:
+            with _HISTORY_LOCK:
+                _VALENCE_HISTORY[session_id].clear()
+            return {
+                "ok": True,
+                "faceDetected": False,
+                "hedonicScore": None,
+                "confidenceScore": None,
+                "valence1to9": None,
+                "sentiment": None,
+            }
 
-    landmarks = results.multi_face_landmarks[0].landmark
-    features = extract_facial_features(landmarks)
-    features_scaled = SCALER.transform([features])
-    raw_valence = float(MODEL.predict(features_scaled)[0])
+        landmarks = results.multi_face_landmarks[0].landmark
+        features = extract_facial_features(landmarks)
+        features_scaled = SCALER.transform([features])
+        raw_valence = float(MODEL.predict(features_scaled)[0])
 
     with _HISTORY_LOCK:
         hist = _VALENCE_HISTORY[session_id]

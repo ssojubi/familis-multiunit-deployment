@@ -55,7 +55,7 @@ function formatMmSs(totalSeconds: number) {
   return `${mm}:${ss}`;
 }
 
-/** hedonic 0..1 from DB/model → 1..9 display (matches SessionDetail) */
+// Model values are 0..1; the UI uses a 1..9 scale.
 function hedonic01ToScale(hedonic01: number) {
   return Number((hedonic01 * 8 + 1).toFixed(1));
 }

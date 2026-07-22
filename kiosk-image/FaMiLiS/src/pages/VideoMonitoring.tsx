@@ -89,10 +89,8 @@ export default function VideoMonitoring() {
   const socketRef = useRef<Socket<ServerToClientEvents, ClientToServerEvents> | null>(
     null,
   );
-  // Map<peerId, RTCPeerConnection> ensures one connection per kiosk, grown/shrunk dynamically as kiosks join or leave the room.
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
 
-  // Food selected on the Dashboard, carried over via ?foodId= — informational only now.
   const foodIdParam = searchParams.get("foodId");
 
   useEffect(() => {
@@ -119,7 +117,6 @@ export default function VideoMonitoring() {
     alert("Room ID copied!");
   };
 
-  // WebRTC peer connection
   const createPeerConnectionFor = (peerId: string): RTCPeerConnection => {
     const existing = peerConnectionsRef.current.get(peerId);
     if (existing) return existing;
@@ -165,7 +162,6 @@ export default function VideoMonitoring() {
     setRemoteKiosks([]);
   };
 
-  // socket / signalling
   useEffect(() => {
     if (!roomId || !role) return;
 
@@ -208,7 +204,6 @@ export default function VideoMonitoring() {
       }
     });
 
-    // Tester started/stopped their own recording — reflect it on that kiosk's tile.
     socket.on("tester-session-status", (data) => {
       const { from, status, sessionId, foodName } = data;
       if (!from) return;

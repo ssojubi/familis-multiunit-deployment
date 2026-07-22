@@ -226,10 +226,7 @@ def process_video(video_path, selected_video_name, csv_path, sample_dir, saved_c
             face_mesh.close()
             exit(0)
         
-        # ============ FIX: ARROW KEYS WORK CORRECTLY ============
-        # We check the raw `key` (not masked). 
-        # I've added Mac/Linux standard codes just in case you ever switch OS!
-        
+        # Arrow key codes cover Windows, Linux, and macOS.
         elif key in (2490368, 65362, 82):  # ↑: Skip 1 frame
             new_pos = min(total_frames, frame_count + 1)
             cap.set(cv2.CAP_PROP_POS_FRAMES, new_pos)
@@ -273,11 +270,9 @@ def process_video(video_path, selected_video_name, csv_path, sample_dir, saved_c
     cap.release()
     return saved_count
 
-# ============ MAIN PROGRAM ============
 def main():
     video_folder = "Vid"
-    
-    # Setup output directories
+
     sample_dir = "data/samples"
     os.makedirs(sample_dir, exist_ok=True)
     

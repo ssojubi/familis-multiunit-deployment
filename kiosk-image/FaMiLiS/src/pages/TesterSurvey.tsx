@@ -1,8 +1,3 @@
-/**
- * Tester Survey Page
- * Shown after session ends
- */
-
 import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { performLogout } from "../auth";

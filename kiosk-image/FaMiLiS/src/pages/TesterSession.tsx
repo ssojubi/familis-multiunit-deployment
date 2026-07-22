@@ -1,8 +1,3 @@
-/**
- * Tester Session Page
- * Frames go to central server → Kafka → FER pipeline
- */
-
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { io, Socket } from "socket.io-client";
@@ -83,8 +78,8 @@ export default function TesterSession() {
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(document.createElement("canvas"));
-  const isRecordingRef = useRef(false); // ref mirror to avoid stale closure in setInterval
-  const sessionIdRef = useRef<number | null>(null); // same reason
+  const isRecordingRef = useRef(false);
+  const sessionIdRef = useRef<number | null>(null);
   const lastRegistryNotifyRef = useRef(0);
 
   const urlParams = new URLSearchParams(window.location.search);
@@ -100,10 +95,8 @@ export default function TesterSession() {
   useEffect(() => {
     let disposed = false;
 
-    // Persist kiosk ID
     localStorage.setItem("kiosk_id", kioskId);
 
-    // Start camera immediately so tester is ready to hit "Start"
     ensureCameraStream()
       .then(() => {
         if (disposed) return;
@@ -155,7 +148,6 @@ export default function TesterSession() {
       socket.emit("join-room", roomId, "host");
     });
 
-    // An admin/viewer opened the monitoring page
     socket.on("viewer-connected", () => {
       void publishCameraStream();
     });
@@ -286,7 +278,6 @@ export default function TesterSession() {
     });
   };
 
-  // Tester taps "Start Session" 
   const handleStartSession = async () => {
     if (isRecording || isStarting) return;
     setStartError(null);
@@ -346,7 +337,6 @@ export default function TesterSession() {
 
       broadcastStatus("recording", newSessionId, newFoodName);
 
-      // Make sure the admin monitor (if already watching) gets our stream.
       void publishCameraStream();
 
       intervalRef.current = setInterval(sendFrame, 33);
@@ -358,7 +348,6 @@ export default function TesterSession() {
     }
   };
 
-  // Tester taps "Stop Session" — ends recording and moves on to the survey.
   const handleStopSession = async () => {
     const completedSessionId = sessionIdRef.current;
     if (!isRecordingRef.current || completedSessionId == null) return;
@@ -390,7 +379,6 @@ export default function TesterSession() {
 
     broadcastStatus("completed", completedSessionId, foodName);
 
-    // Then notify registry
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: "session_stopped" }));
     }

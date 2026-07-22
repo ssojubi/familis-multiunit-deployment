@@ -62,15 +62,12 @@ const io = new Server(http, {
   pingInterval: 25000
 });
 
-// ip detection
 function getLocalIP() {
   const interfaces = os.networkInterfaces();
   const addresses = [];
 
-  // collect all IPv4 addresses
   Object.keys(interfaces).forEach((name) => {
     interfaces[name].forEach((net) => {
-      // skip internal (ie. 127.0.0.1) and non-ipv4 addresses
       if (net.family === "IPv4" && !net.internal) {
         console.log(`Found IP on ${name}:`, net.address);
         addresses.push(net.address);
@@ -78,7 +75,6 @@ function getLocalIP() {
     });
   });
 
-  // return first non-internal IPv4 address or localhost as fallback
   return addresses.length > 0 ? addresses[0] : '127.0.0.1';
 }
 
@@ -87,7 +83,6 @@ const hostLanIP = process.env.HOST_LAN_IP?.trim() || "";
 console.log('Using IO:', localIP);
 app.use(express.static(__dirname));
 
-// enable CORS for all routes
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -95,18 +90,15 @@ app.use((req, res, next) => {
   next();
 });
 
-// make IP address available to client
 app.get('/config', (req, res) => {
   res.json({ serverIP: hostLanIP || localIP, hostLanIP: hostLanIP || null });
 });
 
 const rooms = new Map();
 
-// Socket.io connection handling
 io.on('connection', (socket) => {
   console.log(`User connected: ${socket.id}`);
 
-  // existing room joining logic
   socket.on('join-room', (roomId, role) => {
     socket.join(roomId);
     socket.data.roomId = roomId;
@@ -120,22 +112,18 @@ io.on('connection', (socket) => {
     }
   });
 
-  // existing WebRTC signaling relay logic...
   socket.on('signal', (data) => {
     const { room, ...rest } = data;
     socket.to(room).emit('signal', { ...rest, from: socket.id });
   });
 
-  // receive frame captures
   socket.on('kiosk-frame-captured', async (data) => {
     try {
       const { room, peerId, label, frame, timestamp } = data;
       console.log(`[Frame Capture] Room: ${room} | Node: ${label} (${peerId}) at ${timestamp}`);
 
-      // relay the frame to all other admin panels watching this room
       socket.to(room).emit('admin-frame-received', { peerId, label, frame, timestamp });
 
-      // decode Base64 and write the image directly into `frame_logs` directory
       if (frame && frame.startsWith('data:image')) {
         const base64Data = frame.replace(/^data:image\/\w+;base64,/, "");
         const buffer = Buffer.from(base64Data, 'base64');
@@ -145,7 +133,6 @@ io.on('connection', (socket) => {
         
         const filePath = path.join(frameLogsRoot, filename);
 
-        // save file to disk
         await fs.promises.writeFile(filePath, buffer);
         console.log(`Saved kiosk capture locally to: ${filePath}`);
       }
@@ -745,8 +732,7 @@ async function start() {
 
   app.get("/api/participants", async (_req, res) => {
     try {
-      // Auto-sync: ensure every tester user has a participant record.
-      // This fixes cases where the signup flow failed to create one.
+      // Backfill participant rows for tester accounts created by older flows.
       const [orphanedTesters] = await pool.query(
         `SELECT u.user_id, u.username, u.email
          FROM users u
@@ -836,7 +822,6 @@ async function start() {
     const gcashNumber =
       gcashNumberRaw == null || gcashNumberRaw === "" ? null : String(gcashNumberRaw);
 
-    // Password is required — admin must set one (same as signup)
     const plainPassword =
       typeof rawPassword === "string" ? rawPassword.trim() : "";
     if (!plainPassword) {
@@ -847,7 +832,6 @@ async function start() {
     }
 
     try {
-      // Step 1: Insert participant record (always creates a new one)
       const [insertResult] = await pool.query(
         `INSERT INTO participants (name, email, kiosk_id, contact_number, gcash_number, age, gender)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -855,15 +839,13 @@ async function start() {
       );
       const newParticipantId = insertResult.insertId;
 
-      // Fetch the newly created participant to return accurate DB data
       const [[inserted]] = await pool.query(
         `SELECT participant_id, name, email, kiosk_id, contact_number, gcash_number, age, gender, photo_url, created_at
          FROM participants WHERE participant_id = ? LIMIT 1`,
         [newParticipantId],
       );
 
-      // Step 2: Try to create a user account for this participant.
-      // Failure here must NOT roll back the participant insertion.
+      // Participant creation is independent of account creation.
       let passwordNote = "";
       try {
         const [existingUsers] = await pool.query(
@@ -881,7 +863,6 @@ async function start() {
           passwordNote = "User account already exists — password unchanged.";
         }
       } catch (userErr) {
-        // Non-fatal: participant was already saved, just warn about user creation
         console.warn("Could not create user account for participant:", userErr?.message);
         passwordNote = "Participant saved, but user account could not be created (email may already exist in users table).";
       }
@@ -1035,7 +1016,6 @@ async function start() {
         return res.status(404).json({ ok: false, error: "Participant not found." });
       }
 
-      // Re-fetch the updated row so we return what's actually in the DB
       const [[updated]] = await pool.query(
         `SELECT participant_id, name, email, tester_label, kiosk_id, contact_number, gcash_number, age, gender, photo_url, created_at
          FROM participants WHERE participant_id = ? LIMIT 1`,
