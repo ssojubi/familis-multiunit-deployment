@@ -5,6 +5,7 @@ import type { FormEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import logo from "../assets/logo.png";
 import loginBg from "../assets/login-bg.png";
+import { captureTesterContext } from "../testerContext";
 
 function IconMail(props: { className?: string; size?: number }) {
   const size = props.size ?? 20;
@@ -108,6 +109,15 @@ export default function Login() {
       /* ignore storage errors */
     }
   }, []);
+
+  useEffect(() => {
+    const requestedRoute = location.state?.returnTo;
+    if (typeof requestedRoute !== "string") return;
+    const queryIndex = requestedRoute.indexOf("?");
+    if (queryIndex >= 0 && requestedRoute.startsWith("/tester-")) {
+      captureTesterContext(requestedRoute.slice(queryIndex));
+    }
+  }, [location.state]);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");

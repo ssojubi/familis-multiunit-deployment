@@ -3,6 +3,7 @@ FROM familis-app:k8s
 COPY FaMiLiS/src /app/familis/src
 COPY FaMiLiS/server/server.js /app/familis/server/server.js
 COPY FaMiLiS/tsconfig.app.json /app/familis/tsconfig.app.json
+COPY FaMiLiS/vite.config.ts /app/familis/vite.config.ts
 COPY start.sh /app/start.sh
 
 RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh

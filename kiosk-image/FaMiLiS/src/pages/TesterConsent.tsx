@@ -1,10 +1,18 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { performLogout } from "../auth";
 import logo from "../assets/logo.png";
+import {
+  captureTesterContext,
+  testerContextSearch,
+} from "../testerContext";
 
 export default function TesterConsent() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const [testerContext] = useState(() =>
+    captureTesterContext(location.search),
+  );
   const [consent, setConsent] = useState({
     recording: false,
     dataUsage: false,
@@ -22,16 +30,7 @@ export default function TesterConsent() {
     }
     localStorage.setItem("familis.consent", "true");
 
-    const urlParams = new URLSearchParams(window.location.search);
-    const nextParams = new URLSearchParams();
-    const room = urlParams.get("room");
-    const kioskId = urlParams.get("kiosk_id");
-    const foodId = urlParams.get("foodId");
-    if (room) nextParams.set("room", room);
-    if (kioskId) nextParams.set("kiosk_id", kioskId);
-    if (foodId) nextParams.set("foodId", foodId);
-
-    const query = nextParams.toString();
+    const query = testerContextSearch(testerContext);
     navigate(query ? `/tester-session?${query}` : "/tester-session");
   };
 

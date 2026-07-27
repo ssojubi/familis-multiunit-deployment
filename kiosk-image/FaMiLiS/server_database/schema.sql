@@ -151,6 +151,43 @@ CREATE TABLE IF NOT EXISTS emotion_results (
   INDEX idx_emotion_results_processed_at (processed_at)
 );
 
+-- DEMO TESTER ACCOUNTS
+-- Password for all accounts: Tester123!
+INSERT INTO users (username, email, password_hash, role) VALUES
+('Tester 01', 'tester01@familis.com', '$2b$10$jU7EytTjthP8zV0PdRdq7upE8XZmdCTRCoqKEmKWDtJQU7q7ZNsJe', 'tester'),
+('Tester 02', 'tester02@familis.com', '$2b$10$jU7EytTjthP8zV0PdRdq7upE8XZmdCTRCoqKEmKWDtJQU7q7ZNsJe', 'tester'),
+('Tester 03', 'tester03@familis.com', '$2b$10$jU7EytTjthP8zV0PdRdq7upE8XZmdCTRCoqKEmKWDtJQU7q7ZNsJe', 'tester'),
+('Tester 04', 'tester04@familis.com', '$2b$10$jU7EytTjthP8zV0PdRdq7upE8XZmdCTRCoqKEmKWDtJQU7q7ZNsJe', 'tester'),
+('Tester 05', 'tester05@familis.com', '$2b$10$jU7EytTjthP8zV0PdRdq7upE8XZmdCTRCoqKEmKWDtJQU7q7ZNsJe', 'tester'),
+('Tester 06', 'tester06@familis.com', '$2b$10$jU7EytTjthP8zV0PdRdq7upE8XZmdCTRCoqKEmKWDtJQU7q7ZNsJe', 'tester'),
+('Tester 07', 'tester07@familis.com', '$2b$10$jU7EytTjthP8zV0PdRdq7upE8XZmdCTRCoqKEmKWDtJQU7q7ZNsJe', 'tester'),
+('Tester 08', 'tester08@familis.com', '$2b$10$jU7EytTjthP8zV0PdRdq7upE8XZmdCTRCoqKEmKWDtJQU7q7ZNsJe', 'tester'),
+('Tester 09', 'tester09@familis.com', '$2b$10$jU7EytTjthP8zV0PdRdq7upE8XZmdCTRCoqKEmKWDtJQU7q7ZNsJe', 'tester'),
+('Tester 10', 'tester10@familis.com', '$2b$10$jU7EytTjthP8zV0PdRdq7upE8XZmdCTRCoqKEmKWDtJQU7q7ZNsJe', 'tester')
+ON DUPLICATE KEY UPDATE
+  username = VALUES(username),
+  role = VALUES(role);
+
+INSERT INTO participants (name, email, tester_label)
+SELECT seed.name, seed.email, seed.tester_label
+FROM (
+  SELECT 'Tester 01' AS name, 'tester01@familis.com' AS email, 'T-01' AS tester_label
+  UNION ALL SELECT 'Tester 02', 'tester02@familis.com', 'T-02'
+  UNION ALL SELECT 'Tester 03', 'tester03@familis.com', 'T-03'
+  UNION ALL SELECT 'Tester 04', 'tester04@familis.com', 'T-04'
+  UNION ALL SELECT 'Tester 05', 'tester05@familis.com', 'T-05'
+  UNION ALL SELECT 'Tester 06', 'tester06@familis.com', 'T-06'
+  UNION ALL SELECT 'Tester 07', 'tester07@familis.com', 'T-07'
+  UNION ALL SELECT 'Tester 08', 'tester08@familis.com', 'T-08'
+  UNION ALL SELECT 'Tester 09', 'tester09@familis.com', 'T-09'
+  UNION ALL SELECT 'Tester 10', 'tester10@familis.com', 'T-10'
+) AS seed
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM participants p
+  WHERE LOWER(p.email) = LOWER(seed.email)
+);
+
 -- =====================================================
 -- RELATIONSHIPS
 -- =====================================================

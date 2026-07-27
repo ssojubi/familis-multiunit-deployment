@@ -3,7 +3,7 @@ import cors from "cors";
 import bcrypt from "bcryptjs";
 import { initDb } from "./init.js";
 import multer from "multer";
-import { mkdir, readFile } from "fs/promises";
+import { mkdir } from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 import readline from 'readline';
@@ -25,7 +25,8 @@ await mkdir(frameLogsRoot, { recursive: true });
 await mkdir(kiosksUploadsDir, { recursive: true });
 await mkdir(participantsUploadsDir, { recursive: true });
 
-const EMOTION_SERVICE_URL = (process.env.EMOTION_SERVICE_URL || "http://127.0.0.1:8765").replace(/\/$/, "");
+const CENTRAL_SERVER_URL = (process.env.CENTRAL_SERVER_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "";
 
 import { createServer as createHttpServer } from 'http';
 import { createServer as createHttpsServer } from 'https';
@@ -108,12 +109,22 @@ io.on('connection', (socket) => {
     rooms.get(roomId).set(socket.id, { role });
 
     if (role === 'viewer') {
-      socket.to(roomId).emit('viewer-connected');
+      socket.to(roomId).emit('viewer-connected', socket.id);
+    } else if (role === 'host') {
+      rooms.get(roomId).forEach((entry, peerId) => {
+        if (entry.role === 'viewer') {
+          socket.emit('viewer-connected', peerId);
+        }
+      });
     }
   });
 
   socket.on('signal', (data) => {
-    const { room, ...rest } = data;
+    const { room, to, ...rest } = data;
+    if (to) {
+      io.to(to).emit('signal', { ...rest, from: socket.id });
+      return;
+    }
     socket.to(room).emit('signal', { ...rest, from: socket.id });
   });
 
@@ -225,16 +236,6 @@ rl.on('line', (input) => {
 
 const port = process.env.PORT || 8080;
 
-async function clearEmotionHistory(sessionId) {
-  try {
-    await fetch(`${EMOTION_SERVICE_URL}/session/${encodeURIComponent(String(sessionId))}/history`, {
-      method: "DELETE",
-    });
-  } catch {
-    /* Python emotion service is optional at runtime */
-  }
-}
-
 const foodStorage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, foodUploadsDir),
   filename: (req, file, cb) => {
@@ -256,17 +257,8 @@ const uploadFoodImage = multer({
   },
 });
 
-const frameUploadStorage = multer.diskStorage({
-  destination: (req, _file, cb) => {
-    cb(null, req._frameDir);
-  },
-  filename: (_req, _file, cb) => {
-    cb(null, `frame_${Date.now()}.jpg`);
-  },
-});
-
 const uploadSessionFrame = multer({
-  storage: frameUploadStorage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 2 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (file.mimetype?.startsWith("image/")) {
@@ -335,6 +327,42 @@ async function start() {
     return Number.isNaN(d.getTime()) ? null : d.toISOString();
   }
   const allowedSessionStatuses = new Set(["pending", "active", "completed", "cancelled"]);
+  const staleSessionMinutes = Math.max(
+    1,
+    Number.parseInt(process.env.STALE_SESSION_MINUTES || "10", 10) || 10,
+  );
+
+  async function completeStaleSessions() {
+    const cutoff = new Date(Date.now() - staleSessionMinutes * 60 * 1000);
+    try {
+      const [result] = await pool.query(
+        `
+        UPDATE sessions s
+        LEFT JOIN (
+          SELECT session_id, MAX(timestamp) AS last_frame_at
+          FROM frame_logs
+          GROUP BY session_id
+        ) fl ON fl.session_id = s.session_id
+        SET s.status = 'completed',
+            s.end_time = COALESCE(s.end_time, fl.last_frame_at, s.start_time, NOW())
+        WHERE s.status = 'active'
+          AND COALESCE(fl.last_frame_at, s.start_time, s.created_at) < ?
+        `,
+        [cutoff],
+      );
+      if (result.affectedRows > 0) {
+        console.log(`Completed ${result.affectedRows} stale session(s).`);
+      }
+    } catch (err) {
+      console.error("Failed to complete stale sessions:", err);
+    }
+  }
+
+  await completeStaleSessions();
+  const staleSessionTimer = setInterval(() => {
+    void completeStaleSessions();
+  }, 60 * 1000);
+  staleSessionTimer.unref?.();
 
   async function prepareSessionFrameUpload(req, res, next) {
     const sessionId = Number.parseInt(req.params.sessionId, 10);
@@ -342,14 +370,7 @@ async function start() {
       return res.status(400).json({ ok: false, error: "Invalid sessionId." });
     }
     req._frameSessionId = sessionId;
-    req._frameDir = path.join(frameLogsRoot, String(sessionId));
-    try {
-      await mkdir(req._frameDir, { recursive: true });
-      return next();
-    } catch (err) {
-      console.error("prepareSessionFrameUpload:", err);
-      return res.status(500).json({ ok: false, error: "Could not prepare upload directory." });
-    }
+    return next();
   }
 
   // Simple health endpoint to verify server + DB
@@ -371,6 +392,7 @@ async function start() {
     }
 
     try {
+      await completeStaleSessions();
       const [rows] = await pool.query(
         `
         SELECT user_id, username, email, password_hash, role
@@ -1598,23 +1620,36 @@ async function start() {
     }
   });
 
-  // Proxy: Python emotion service health (optional; used by Session UI)
+  // Processing health used by the recording screens.
   app.get("/api/emotion/health", async (_req, res) => {
     try {
-      const r = await fetch(`${EMOTION_SERVICE_URL}/health`);
+      const r = await fetch(`${CENTRAL_SERVER_URL}/api/health`);
       const j = await r.json().catch(() => null);
-      return res.json({ ok: true, emotion: j });
+      const ok = r.ok && j?.status === "ok" && j?.kafka_ready === true;
+      return res.status(ok ? 200 : 503).json({
+        ok,
+        processing: "kubernetes-fer-workers",
+        emotion: {
+          modelLoaded: ok,
+          backend: "kubernetes-fer-workers",
+        },
+        central: j,
+      });
     } catch (err) {
-      console.warn("GET /api/emotion/health: emotion service unreachable:", err?.message || err);
-      return res.json({
+      console.warn("GET /api/emotion/health: central processing unavailable:", err?.message || err);
+      return res.status(503).json({
         ok: false,
-        emotion: null,
-        error: "Emotion service unreachable. Start backend/6.3/emotion_service.py or set EMOTION_SERVICE_URL.",
+        processing: "kubernetes-fer-workers",
+        emotion: {
+          modelLoaded: false,
+          backend: "kubernetes-fer-workers",
+        },
+        error: "Central API or Kafka is unavailable.",
       });
     }
   });
 
-  // Upload one camera frame: save image, run 6.3 inference, insert frame_logs
+  // Validate the session, then queue the frame for Kubernetes FER processing.
   app.post(
     "/api/sessions/:sessionId/frames",
     prepareSessionFrameUpload,
@@ -1628,7 +1663,7 @@ async function start() {
     },
     async (req, res) => {
       const sessionId = req._frameSessionId;
-      if (!req.file?.path) {
+      if (!req.file?.buffer) {
         return res.status(400).json({ ok: false, error: "Missing frame (multipart field name: frame)." });
       }
 
@@ -1641,65 +1676,35 @@ async function start() {
           return res.status(409).json({ ok: false, error: "Session is not active; cannot record frames." });
         }
 
-        let faceDetected = null;
-        let hedonic = null;
-        let conf = null;
-        let inferenceOk = false;
-        let inferenceError = null;
-        let sentiment = null;
-        let valence1to9 = null;
-
-        try {
-          const buf = await readFile(req.file.path);
-          const fd = new FormData();
-          fd.append("session_id", String(sessionId));
-          fd.append(
-            "image",
-            new Blob([buf], { type: req.file.mimetype || "image/jpeg" }),
-            req.file.filename || "frame.jpg"
-          );
-          const predRes = await fetch(`${EMOTION_SERVICE_URL}/predict`, { method: "POST", body: fd });
-          const predJson = await predRes.json().catch(() => null);
-          if (predRes.ok && predJson && predJson.ok === true) {
-            inferenceOk = true;
-            sentiment = predJson.sentiment == null ? null : String(predJson.sentiment);
-            valence1to9 = typeof predJson.valence1to9 === "number" ? predJson.valence1to9 : null;
-            if (predJson.faceDetected === true) {
-              faceDetected = true;
-              hedonic = typeof predJson.hedonicScore === "number" ? predJson.hedonicScore : null;
-              conf = typeof predJson.confidenceScore === "number" ? predJson.confidenceScore : null;
-            } else if (predJson.faceDetected === false) {
-              faceDetected = false;
-            }
-          } else {
-            inferenceError =
-              (predJson && predJson.error) || `Emotion service HTTP ${predRes.status}`;
-          }
-        } catch (err) {
-          inferenceError = err?.message || String(err);
-          console.warn("Frame inference error:", inferenceError);
+        const kioskId =
+          String(req.body?.kiosk_id || req.body?.kioskId || `session-${sessionId}`).trim();
+        const centralResponse = await fetch(`${CENTRAL_SERVER_URL}/api/ingest/frame`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(INTERNAL_API_TOKEN
+              ? { "X-Internal-Token": INTERNAL_API_TOKEN }
+              : {}),
+          },
+          body: JSON.stringify({
+            kiosk_id: kioskId,
+            session_id: String(sessionId),
+            frame: req.file.buffer.toString("base64"),
+            timestamp: new Date().toISOString(),
+          }),
+        });
+        const queued = await centralResponse.json().catch(() => null);
+        if (!centralResponse.ok) {
+          const error =
+            queued?.detail || queued?.error || `Central API HTTP ${centralResponse.status}`;
+          return res.status(centralResponse.status).json({ ok: false, error });
         }
 
-        const relUrl = `/uploads/frame_logs/${sessionId}/${req.file.filename}`;
-        const [insertResult] = await pool.query(
-          `
-          INSERT INTO frame_logs (session_id, timestamp, face_detected, confidence_score, hedonic_score, frame_image_url)
-          VALUES (?, NOW(), ?, ?, ?, ?)
-        `,
-          [sessionId, faceDetected, conf, hedonic, relUrl]
-        );
-
-        return res.json({
+        return res.status(202).json({
           ok: true,
-          frameLogId: Number(insertResult.insertId),
-          frameImageUrl: relUrl,
-          faceDetected,
-          confidenceScore: conf,
-          hedonicScore: hedonic,
-          sentiment,
-          valence1to9,
-          inferenceOk,
-          inferenceError,
+          queued: true,
+          frameId: queued?.frame_id ?? null,
+          processing: "kubernetes-fer-workers",
         });
       } catch (err) {
         console.error("POST /api/sessions/:sessionId/frames error:", err);
@@ -1901,8 +1906,6 @@ async function start() {
       `,
         [sessionId]
       );
-
-      void clearEmotionHistory(sessionId);
 
       return res.json({
         ok: true,

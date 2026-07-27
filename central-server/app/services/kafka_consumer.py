@@ -69,6 +69,24 @@ def _ensure_db_schema():
             INDEX idx_emotion_results_processed_at (processed_at)
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS frame_logs (
+            frame_log_id INT AUTO_INCREMENT PRIMARY KEY,
+            session_id INT NOT NULL,
+            timestamp TIMESTAMP NOT NULL,
+            face_detected BOOLEAN,
+            confidence_score FLOAT,
+            hedonic_score FLOAT,
+            frame_image_url TEXT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_frame_session (session_id),
+            INDEX idx_frame_time (timestamp),
+            CONSTRAINT fk_frame_session FOREIGN KEY (session_id)
+                REFERENCES sessions(session_id) ON DELETE CASCADE,
+            CONSTRAINT chk_confidence CHECK (confidence_score BETWEEN 0 AND 1),
+            CONSTRAINT chk_hedonic CHECK (hedonic_score BETWEEN 0 AND 1)
+        )
+    """)
     conn.commit()
     cursor.close()
     conn.close()
@@ -193,39 +211,69 @@ def predict_frame(session_id: str, jpeg_bytes: bytes) -> dict:
     }
 
 
-async def store_emotion_result(session_id: str, frame_id: str, kiosk_id: str, result: dict):
+async def store_frame_result(
+    session_id: str,
+    frame_id: str,
+    kiosk_id: str,
+    captured_at: datetime,
+    frame_image_url: str,
+    result: dict,
+):
     global db_pool
     if db_pool is None:
         return
 
     conn = db_pool.get_connection()
     cursor = conn.cursor()
-    query = """
-        INSERT INTO emotion_results 
-        (session_id, frame_id, kiosk_id, face_detected, hedonic_score, confidence, valence, sentiment, processed_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-    """
-    cursor.execute(query, (
-        session_id,
-        frame_id,
-        kiosk_id,
-        result.get("face_detected"),
-        result.get("hedonic_score"),
-        result.get("confidence"),
-        result.get("valence"),
-        result.get("sentiment"),
-        datetime.now()
-    ))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO emotion_results
+            (session_id, frame_id, kiosk_id, face_detected, hedonic_score, confidence, valence, sentiment, processed_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                session_id,
+                frame_id,
+                kiosk_id,
+                result.get("face_detected"),
+                result.get("hedonic_score"),
+                result.get("confidence"),
+                result.get("valence"),
+                result.get("sentiment"),
+                datetime.now(),
+            ),
+        )
+        cursor.execute(
+            """
+            INSERT INTO frame_logs
+            (session_id, timestamp, face_detected, confidence_score, hedonic_score, frame_image_url)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                int(session_id),
+                captured_at,
+                result.get("face_detected"),
+                result.get("confidence"),
+                result.get("hedonic_score"),
+                frame_image_url,
+            ),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
 
 
-async def save_frame_to_storage(kiosk_id: str, session_id: str, frame_id: str, frame_bytes: bytes):
-    session_path = FRAME_STORAGE_ROOT / kiosk_id / session_id
+async def save_frame_to_storage(session_id: str, frame_id: str, frame_bytes: bytes) -> str:
+    session_path = FRAME_STORAGE_ROOT / "frame_logs" / session_id
     session_path.mkdir(parents=True, exist_ok=True)
     file_path = session_path / f"{frame_id}.jpg"
     file_path.write_bytes(frame_bytes)
+    return f"/uploads/frame_logs/{session_id}/{frame_id}.jpg"
 
 
 async def start_fer_consumer():
@@ -257,17 +305,40 @@ async def start_fer_consumer():
 
     try:
         async for msg in consumer:
-            frame_data = msg.value
-            kiosk_id = frame_data["kiosk_id"]
-            session_id = frame_data["session_id"]
-            frame_id = frame_data["frame_id"]
-            frame_bytes = bytes.fromhex(frame_data["frame_bytes"])
+            try:
+                frame_data = msg.value
+                kiosk_id = frame_data["kiosk_id"]
+                session_id = frame_data["session_id"]
+                frame_id = frame_data["frame_id"]
+                frame_bytes = bytes.fromhex(frame_data["frame_bytes"])
+                captured_at = datetime.fromisoformat(
+                    frame_data["timestamp"].replace("Z", "+00:00")
+                ).replace(tzinfo=None)
 
-            result = predict_frame(session_id, frame_bytes)
-            await store_emotion_result(session_id, frame_id, kiosk_id, result)
-            await save_frame_to_storage(kiosk_id, session_id, frame_id, frame_bytes)
+                result = predict_frame(session_id, frame_bytes)
+                frame_image_url = await save_frame_to_storage(
+                    session_id, frame_id, frame_bytes
+                )
+                await store_frame_result(
+                    session_id,
+                    frame_id,
+                    kiosk_id,
+                    captured_at,
+                    frame_image_url,
+                    result,
+                )
 
-            print(f"Processed {frame_id}: face={result.get('face_detected')}, hedonic={result.get('hedonic_score')}, valence={result.get('valence')}")
+                print(
+                    f"Processed {frame_id}: "
+                    f"face={result.get('face_detected')}, "
+                    f"hedonic={result.get('hedonic_score')}, "
+                    f"valence={result.get('valence')}"
+                )
+            except Exception as exc:
+                print(
+                    f"Failed frame at partition={msg.partition} "
+                    f"offset={msg.offset}: {exc}"
+                )
 
     finally:
         await consumer.stop()

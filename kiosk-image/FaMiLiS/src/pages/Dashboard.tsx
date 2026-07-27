@@ -22,6 +22,10 @@ import {
   getShareHostIP,
   getSocketUrl,
 } from "../apiConfig";
+import {
+  getAdminRoomContext,
+  saveAdminRoomContext,
+} from "../adminRoomContext";
 
 ChartJS.register(
   RadialLinearScale,
@@ -215,7 +219,9 @@ export default function Dashboard() {
   const [parToEdit, setParToEdit] = useState<Participant | null>(null);
 
   const [role, setRole] = useState<Role>(null);        
-  const [roomId, setRoomId] = useState<string>('');
+  const [roomId, setRoomId] = useState<string>(
+    () => getAdminRoomContext().roomId,
+  );
   const [kioskStatus, setKioskStatus] = useState<string>('Select a role to begin.');
   const [shareHostIP, setShareHostIP] = useState<string>('');
 
@@ -226,7 +232,9 @@ export default function Dashboard() {
   const [remoteStreams, setRemoteStreams] = useState<{ peerId: string; stream: MediaStream; label: string }[]>([]);
   const [activeKioskIds, setActiveKioskIds] = useState<Set<string>>(new Set());
 
-  const [kioskFoodId, setKioskFoodId] = useState<number | null>(null);
+  const [kioskFoodId, setKioskFoodId] = useState<number | null>(
+    () => getAdminRoomContext().foodId,
+  );
   const [kioskSessionId, setKioskSessionId] = useState<number | null>(null);
   const [kioskCmdLoading, setKioskCmdLoading] = useState(false);
   const [kioskCmdError, setKioskCmdError] = useState<string | null>(null);
@@ -316,35 +324,40 @@ export default function Dashboard() {
 
 
   useEffect(() => {
-    const storedUser = localStorage.getItem("user"); 
+    const storedUser =
+      localStorage.getItem("familis.user") || localStorage.getItem("user");
     const user = storedUser ? JSON.parse(storedUser) : null;
     const userRole = user?.role;
 
-    const urlParams = new URLSearchParams(window.location.search);
-    const urlRoom = urlParams.get('room');
+    const adminContext = getAdminRoomContext();
 
     if (userRole === 'admin') {
       setRole('viewer');
-      if (urlRoom) {
-        setRoomId(urlRoom);
-      } else {
-        const newRoomId = Math.random().toString(36).substring(2, 9);
-        setRoomId(newRoomId);
-      }
+      const currentRoom =
+        adminContext.roomId || Math.random().toString(36).substring(2, 9);
+      setRoomId(currentRoom);
+      setKioskFoodId(adminContext.foodId);
+      saveAdminRoomContext(currentRoom, adminContext.foodId);
     } else if (userRole === 'staff') {
       setRole('host');
-      if (urlRoom) {
-        setRoomId(urlRoom);
+      if (adminContext.roomId) {
+        setRoomId(adminContext.roomId);
       } else {
         setRoomId('default-staff-room'); 
       }
     } else {
-      if (urlRoom) {
-        setRoomId(urlRoom);
+      if (adminContext.roomId) {
+        setRoomId(adminContext.roomId);
         setRole('viewer');
       }
     }
   }, []);
+
+  useEffect(() => {
+    if (role === "viewer" && roomId) {
+      saveAdminRoomContext(roomId, kioskFoodId);
+    }
+  }, [kioskFoodId, role, roomId]);
 
   useEffect(() => {
     void getShareHostIP().then(setShareHostIP);
@@ -776,7 +789,6 @@ export default function Dashboard() {
   }, []);
 
   const ensureSessionsLoaded = async (foodId: number) => {
-    if (sessionsByFoodId[foodId]) return;
     if (sessionsLoading[foodId]) return;
     setSessionsLoading((p) => ({ ...p, [foodId]: true }));
     try {

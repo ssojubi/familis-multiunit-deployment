@@ -8,6 +8,11 @@ import {
   getShareHostIP,
   getSocketUrl,
 } from "../apiConfig";
+import {
+  getAdminDashboardPath,
+  getAdminRoomContext,
+  saveAdminRoomContext,
+} from "../adminRoomContext";
 
 type Role = "host" | "viewer" | null;
 
@@ -21,7 +26,7 @@ const WEBRTC_CONFIG: RTCConfiguration = {
 };
 
 interface ServerToClientEvents {
-  "viewer-connected": () => void;
+  "viewer-connected": (viewerId: string) => void;
   "user-disconnected": (peerId: string) => void;
   "host-disconnected": () => void;
   signal: (data: {
@@ -42,6 +47,7 @@ interface ClientToServerEvents {
   "join-room": (roomId: string, role: Role) => void;
   signal: (data: {
     room: string;
+    to?: string;
     sdp?: RTCSessionDescriptionInit;
     candidate?: RTCIceCandidateInit;
   }) => void;
@@ -66,11 +72,15 @@ export default function VideoMonitoring() {
     const user = storedUser ? JSON.parse(storedUser) : null;
     const userRole = user?.role;
     const urlRoom = searchParams.get("room");
+    const savedContext = getAdminRoomContext();
 
     if (userRole === "admin") {
       return {
         role: "viewer",
-        roomId: urlRoom || Math.random().toString(36).substring(2, 9),
+        roomId:
+          urlRoom ||
+          savedContext.roomId ||
+          Math.random().toString(36).substring(2, 9),
       };
     }
     if (userRole === "staff" || userRole === "tester") {
@@ -92,6 +102,19 @@ export default function VideoMonitoring() {
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
 
   const foodIdParam = searchParams.get("foodId");
+  const foodId = foodIdParam ? Number(foodIdParam) : null;
+  const validFoodId =
+    foodId !== null && Number.isInteger(foodId) && foodId > 0 ? foodId : null;
+  const dashboardPath = getAdminDashboardPath(
+    roomId,
+    validFoodId,
+  );
+
+  useEffect(() => {
+    if (role === "viewer" && roomId) {
+      saveAdminRoomContext(roomId, validFoodId);
+    }
+  }, [role, roomId, validFoodId]);
 
   useEffect(() => {
     void getShareHostIP().then(setShareHostIP);
@@ -128,6 +151,7 @@ export default function VideoMonitoring() {
       if (event.candidate && socketRef.current && roomId) {
         socketRef.current.emit("signal", {
           room: roomId,
+          to: peerId,
           candidate: event.candidate,
         });
       }
@@ -193,7 +217,7 @@ export default function VideoMonitoring() {
           await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
-          socket.emit("signal", { room: roomId, sdp: answer });
+          socket.emit("signal", { room: roomId, to: peerId, sdp: answer });
         }
       } else if (data.candidate) {
         try {
@@ -250,7 +274,7 @@ export default function VideoMonitoring() {
         <div className="h-[72px] px-6 flex items-center justify-between">
           <button
             type="button"
-            onClick={() => navigate("/dashboard")}
+            onClick={() => navigate(dashboardPath)}
             className="flex items-center gap-3"
             aria-label="Go to dashboard"
           >
@@ -270,11 +294,11 @@ export default function VideoMonitoring() {
       <main className="px-6 py-8 max-w-5xl mx-auto">
         <button
           type="button"
-          onClick={() => navigate("/dashboard")}
+          onClick={() => navigate(dashboardPath)}
           className="flex items-center gap-2 text-gray-600 hover:text-gray-900 mb-4 text-sm transition-colors"
         >
           <span aria-hidden="true">←</span>
-          Back to Dashboard
+          Manage Current Room
         </button>
 
         <div className="mb-6">

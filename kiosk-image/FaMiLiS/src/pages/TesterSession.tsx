@@ -9,14 +9,22 @@ import {
   getCentralWsBase,
   getSocketUrl,
 } from "../apiConfig";
+import {
+  captureTesterContext,
+  getOrCreateBrowserKioskId,
+} from "../testerContext";
 
 const SESSIONS_API_BASE = getApiBase();
 const WS_BASE = getCentralWsBase();
 const SOCKET_SERVER_URL = getSocketUrl();
+const FRAME_CAPTURE_MS = 750;
+const MAX_FRAME_WIDTH = 960;
 
 type ServerToClientEvents = {
-  "viewer-connected": () => void;
+  "viewer-connected": (viewerId: string) => void;
+  "user-disconnected": (peerId: string) => void;
   signal: (data: {
+    from?: string;
     sdp?: RTCSessionDescriptionInit;
     candidate?: RTCIceCandidateInit;
   }) => void;
@@ -26,6 +34,7 @@ type ClientToServerEvents = {
   "join-room": (roomId: string, role: "host") => void;
   signal: (data: {
     room: string;
+    to?: string;
     sdp?: RTCSessionDescriptionInit;
     candidate?: RTCIceCandidateInit;
   }) => void;
@@ -75,22 +84,21 @@ export default function TesterSession() {
     ServerToClientEvents,
     ClientToServerEvents
   > | null>(null);
-  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const viewerIdsRef = useRef<Set<string>>(new Set());
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(document.createElement("canvas"));
   const isRecordingRef = useRef(false);
   const sessionIdRef = useRef<number | null>(null);
   const lastRegistryNotifyRef = useRef(0);
+  const frameInFlightRef = useRef(false);
 
-  const urlParams = new URLSearchParams(window.location.search);
-  const roomId = (urlParams.get("room") || "default-tester-room").trim();
-  const foodId = urlParams.get("foodId");
-  const kioskId =
-    (
-      urlParams.get("kiosk_id") ||
-      localStorage.getItem("kiosk_id") ||
-      "kiosk-01"
-    ).trim();
+  const [testerContext] = useState(() =>
+    captureTesterContext(window.location.search),
+  );
+  const roomId = testerContext.roomId || "default-tester-room";
+  const foodId = testerContext.foodId;
+  const kioskId = getOrCreateBrowserKioskId(testerContext.kioskId);
 
   useEffect(() => {
     let disposed = false;
@@ -148,13 +156,18 @@ export default function TesterSession() {
       socket.emit("join-room", roomId, "host");
     });
 
-    socket.on("viewer-connected", () => {
-      void publishCameraStream();
+    socket.on("viewer-connected", (viewerId) => {
+      viewerIdsRef.current.add(viewerId);
+      if (isRecordingRef.current) {
+        void publishCameraStream(viewerId);
+      }
     });
 
     socket.on("signal", async (data) => {
       if (disposed) return;
-      const pc = peerConnectionRef.current;
+      const peerId = data.from;
+      if (!peerId) return;
+      const pc = peerConnectionsRef.current.get(peerId);
       if (!pc) return;
 
       if (data.sdp?.type === "answer" && pc.signalingState === "have-local-offer") {
@@ -168,6 +181,11 @@ export default function TesterSession() {
       }
     });
 
+    socket.on("user-disconnected", (peerId) => {
+      viewerIdsRef.current.delete(peerId);
+      cleanupPeerConnection(peerId);
+    });
+
     return () => {
       disposed = true;
       ws.close();
@@ -179,13 +197,17 @@ export default function TesterSession() {
     };
   }, []);
 
-  const ensureCameraStream = async (): Promise<MediaStream> => {
+  async function ensureCameraStream(): Promise<MediaStream> {
     if (streamRef.current?.active) {
       return streamRef.current;
     }
 
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: true,
+      video: {
+        width: { ideal: 640, max: 960 },
+        height: { ideal: 480, max: 720 },
+        frameRate: { ideal: 12, max: 15 },
+      },
       audio: false,
     });
     streamRef.current = stream;
@@ -196,18 +218,20 @@ export default function TesterSession() {
     }
 
     return stream;
-  };
+  }
 
-  const createPeerConnection = (): RTCPeerConnection => {
-    if (peerConnectionRef.current) return peerConnectionRef.current;
+  function createPeerConnection(viewerId: string): RTCPeerConnection {
+    const existing = peerConnectionsRef.current.get(viewerId);
+    if (existing) return existing;
 
     const pc = new RTCPeerConnection(WEBRTC_CONFIG);
-    peerConnectionRef.current = pc;
+    peerConnectionsRef.current.set(viewerId, pc);
 
     pc.onicecandidate = (event) => {
       if (event.candidate && socketRef.current && roomId) {
         socketRef.current.emit("signal", {
           room: roomId,
+          to: viewerId,
           candidate: event.candidate,
         });
       }
@@ -222,33 +246,36 @@ export default function TesterSession() {
     };
 
     return pc;
-  };
+  }
 
-  const publishCameraStream = async () => {
+  async function publishCameraStream(viewerId: string) {
     const socket = socketRef.current;
     if (!socket) return;
 
     const stream = await ensureCameraStream();
-    cleanupPeerConnection();
-    const pc = createPeerConnection();
+    cleanupPeerConnection(viewerId);
+    const pc = createPeerConnection(viewerId);
     stream.getTracks().forEach((track) => {
       pc.addTrack(track, stream);
     });
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    socket.emit("signal", { room: roomId, sdp: offer });
-    console.log("[TesterSession] Sent WebRTC offer", { roomId });
-  };
+    socket.emit("signal", { room: roomId, to: viewerId, sdp: offer });
+    console.log("[TesterSession] Sent WebRTC offer", { roomId, viewerId });
+  }
 
-  const cleanupPeerConnection = () => {
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
+  function cleanupPeerConnection(peerId?: string) {
+    if (peerId) {
+      peerConnectionsRef.current.get(peerId)?.close();
+      peerConnectionsRef.current.delete(peerId);
+      return;
     }
-  };
+    peerConnectionsRef.current.forEach((pc) => pc.close());
+    peerConnectionsRef.current.clear();
+  }
 
-  const notifyCentralSessionStarted = (sid: string | number) => {
+  function notifyCentralSessionStarted(sid: string | number) {
     if (wsRef.current?.readyState !== WebSocket.OPEN) return false;
 
     wsRef.current.send(
@@ -263,20 +290,20 @@ export default function TesterSession() {
       sessionId: String(sid),
     });
     return true;
-  };
+  }
 
-  const broadcastStatus = (
+  function broadcastStatus(
     statusValue: "recording" | "completed",
     sid?: number,
     fName?: string,
-  ) => {
+  ) {
     socketRef.current?.emit("tester-session-status", {
       room: roomId,
       status: statusValue,
       sessionId: sid,
       foodName: fName,
     });
-  };
+  }
 
   const handleStartSession = async () => {
     if (isRecording || isStarting) return;
@@ -337,12 +364,17 @@ export default function TesterSession() {
 
       broadcastStatus("recording", newSessionId, newFoodName);
 
-      void publishCameraStream();
+      viewerIdsRef.current.forEach((viewerId) => {
+        void publishCameraStream(viewerId);
+      });
 
-      intervalRef.current = setInterval(sendFrame, 33);
-    } catch (err: any) {
+      void sendFrame();
+      intervalRef.current = setInterval(sendFrame, FRAME_CAPTURE_MS);
+    } catch (err: unknown) {
       console.error("Failed to start session:", err);
-      setStartError(err.message || "Failed to start session.");
+      setStartError(
+        err instanceof Error ? err.message : "Failed to start session.",
+      );
     } finally {
       setIsStarting(false);
     }
@@ -392,55 +424,57 @@ export default function TesterSession() {
 
   const sendFrame = async () => {
     if (
+      frameInFlightRef.current ||
       !isRecordingRef.current ||
       !sessionIdRef.current ||
       !videoRef.current ||
       !videoRef.current.videoWidth
     ) return;
 
+    frameInFlightRef.current = true;
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    const scale = Math.min(1, MAX_FRAME_WIDTH / video.videoWidth);
+    canvas.width = Math.round(video.videoWidth * scale);
+    canvas.height = Math.round(video.videoHeight * scale);
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    try {
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
 
-    ctx.save();
-    ctx.scale(-1, 1);
-    ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
-    ctx.restore();
+      ctx.save();
+      ctx.scale(-1, 1);
+      ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
+      ctx.restore();
 
-    canvas.toBlob(
-      async (blob) => {
-        if (!blob) return;
-        const sid = sessionIdRef.current;
-        if (!sid) return;
+      const blob = await new Promise<Blob | null>((resolve) => {
+        canvas.toBlob(resolve, "image/jpeg", 0.7);
+      });
+      const sid = sessionIdRef.current;
+      if (!blob || !sid || !isRecordingRef.current) return;
 
-        const fd = new FormData();
-        fd.append("frame", blob, "frame.jpg");
+      const fd = new FormData();
+      fd.append("frame", blob, "frame.jpg");
+      fd.append("kiosk_id", kioskId);
 
-        try {
-          const res = await fetch(`/api/sessions/${sid}/frames`, {
-            method: "POST",
-            body: fd,
-          });
-          if (res.status === 409) {
-            const now = Date.now();
-            if (now - lastRegistryNotifyRef.current > 1000) {
-              notifyCentralSessionStarted(String(sid));
-            }
-            return;
-          }
-          if (!res.ok) throw new Error(`Frame upload HTTP ${res.status}`);
-          setFrameCount((prev) => prev + 1);
-        } catch (err) {
-          console.error("Frame upload failed:", err);
+      const res = await fetch(`/api/sessions/${sid}/frames`, {
+        method: "POST",
+        body: fd,
+      });
+      if (res.status === 409) {
+        const now = Date.now();
+        if (now - lastRegistryNotifyRef.current > 1000) {
+          notifyCentralSessionStarted(String(sid));
         }
-      },
-      "image/jpeg",
-      0.7,
-    );
+        return;
+      }
+      if (!res.ok) throw new Error(`Frame upload HTTP ${res.status}`);
+      setFrameCount((prev) => prev + 1);
+    } catch (err) {
+      console.error("Frame upload failed:", err);
+    } finally {
+      frameInFlightRef.current = false;
+    }
   };
 
   return (

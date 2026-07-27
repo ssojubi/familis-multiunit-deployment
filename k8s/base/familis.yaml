@@ -28,15 +28,16 @@ spec:
               containerPort: 5173
             - name: api
               containerPort: 8080
-            - name: emotion
-              containerPort: 8765
           env:
             - name: DATABASE_URL
               value: mysql://root:root@mysql:3306/familis_central
-            - name: EMOTION_SERVICE_URL
-              value: http://localhost:8765
             - name: CENTRAL_SERVER_URL
               value: http://central-api:8000
+            - name: INTERNAL_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: internal-api-secret
+                  key: token
             - name: DEFAULT_KIOSK_ID
               value: kiosk-01
             - name: WEB_KIOSK_MODE
@@ -62,6 +63,15 @@ spec:
               scheme: HTTPS
             initialDelaySeconds: 30
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
       volumes:
         - name: familis-tls
           secret:
@@ -111,6 +121,3 @@ spec:
     - name: api
       port: 8080
       targetPort: 8080
-    - name: emotion
-      port: 8765
-      targetPort: 8765

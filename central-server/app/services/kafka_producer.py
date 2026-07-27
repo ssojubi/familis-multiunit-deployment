@@ -23,15 +23,16 @@ class KafkaProducerService:
         bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
         self.producer = AIOKafkaProducer(
             bootstrap_servers=bootstrap_servers,
-            value_serializer=lambda v: json.dumps(v).encode()
+            value_serializer=lambda v: json.dumps(v).encode(),
+            key_serializer=lambda v: v.encode(),
         )
         await self.producer.start()
         self.ready = True
 
-    async def send(self, topic: str, value: dict):
+    async def send(self, topic: str, value: dict, key: str | None = None):
         if not self.ready:
             raise Exception("Kafka producer not ready")
-        await self.producer.send(topic, value)
+        await self.producer.send_and_wait(topic, value, key=key)
 
     async def stop(self):
         if self.producer:

@@ -31,6 +31,11 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
       },
+      '/uploads': {
+        target: localApiTarget,
+        changeOrigin: true,
+        secure: false,
+      },
       '/socket.io': {
         target: localApiTarget,
         changeOrigin: true,

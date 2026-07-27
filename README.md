@@ -1,171 +1,468 @@
 # FaMiLiS Multi-Unit Deployment
 
-## Overview
+FaMiLiS is a browser-based food testing system with live kiosk monitoring,
+facial valence processing, surveys, and centralized reporting.
 
-FaMiLiS is a browser-based product testing system with facial valence processing, survey collection, session monitoring, and centralized reporting.
+The Kubernetes deployment contains:
 
-The system runs on Kubernetes and consists of:
-
-- `familis`: React/Vite browser app, Express API, Socket.IO, and local emotion service
-- `central-api`: FastAPI API, WebSocket kiosk registry, and Kafka producer
-- `fer-worker`: scalable Kafka consumer for FER video-frame processing
-- `kafka` and `zookeeper`: queue layer for frame load balancing
-- `mysql`: central database initialized from `server_database/schema.sql`
-- `traefik`: ingress router for HTTPS traffic
-
-The active kiosk flow is handled by the FaMiLiS web app in the browser. The old native `client-agent` workflow is deprecated.
-
-## File Structure
+- `familis`: React/Vite web application, Express API, and Socket.IO
+- `central-api`: FastAPI frame ingestion and kiosk registry
+- `kafka` and `zookeeper`: frame queue
+- `fer-worker`: autoscaled FER processing workers
+- `mysql`: application database
+- `traefik`: HTTPS ingress
 
 ```text
-familis-multiunit-deployment/
-  central-server/
-    app/                     FastAPI service, Kafka producer/consumer, dashboard APIs
-    models/                  FER model files for central processing
-    Dockerfile
-    docker-compose.yaml      Legacy/local Docker Compose stack
-    requirements.txt
-    .dockerignore
-
-  certs/
-    cert.pem                 HTTPS certificate used for local testing
-    key.pem                  HTTPS key used for local testing
-
-  k8s/
-    base/                    Kubernetes manifests and kustomization
-
-  kiosk-image/
-    Dockerfile               FaMiLiS app container image
-    start.sh                 Starts frontend, Express API, and emotion service
-    .dockerignore
-    FaMiLiS/
-      backend/               Python emotion service and model files
-      server/                Express API and Socket.IO server
-      server_database/       MySQL schema
-      src/                   React frontend
-      package.json
-      package-lock.json
-
-  README.md
+Kiosk -> Express API -> Central API -> Kafka -> FER workers
+      -> MySQL and shared frame storage -> Dashboard
 ```
 
-## Kubernetes Deployment
+## Requirements
 
-### 1. Build Images
+- Windows 10/11 or macOS
+- Docker Desktop with Kubernetes enabled
+- Git
+- `kubectl`
+- Helm
+- OpenSSL 3
 
-From the repository root:
+Run all commands from the repository root.
+
+### macOS Tools
+
+```bash
+brew install git kubectl helm openssl@3
+brew install --cask docker
+```
+
+On an Apple Silicon Mac, enable Docker Desktop's Rosetta support for
+`x86_64/amd64` emulation:
+
+```bash
+softwareupdate --install-rosetta --agree-to-license
+```
+
+In Docker Desktop, select the Apple Virtualization Framework and enable
+**Use Rosetta for x86_64/amd64 emulation**.
+
+## 1. Verify Docker and Kubernetes
+
+Start Docker Desktop and wait for Kubernetes to become ready.
+
+**Windows PowerShell**
 
 ```powershell
-docker build -t familis-central-server:latest .\central-server
-docker build -t familis-app:k8s .\kiosk-image
+docker info
+kubectl config use-context docker-desktop
+kubectl get nodes
 ```
 
-Confirm that the images were created:
+**macOS Terminal**
+
+```bash
+docker info
+kubectl config use-context docker-desktop
+kubectl get nodes
+```
+
+The node status must be `Ready`.
+
+## 2. Install Traefik
+
+**Windows PowerShell**
 
 ```powershell
-docker images
+helm repo add traefik https://traefik.github.io/charts --force-update
+helm repo update
+helm upgrade --install traefik traefik/traefik `
+  --namespace traefik `
+  --create-namespace `
+  --set service.type=ClusterIP `
+  --set providers.kubernetesIngress.enabled=true `
+  --set "additionalArguments[0]=--serversTransport.insecureSkipVerify=true" `
+  --wait `
+  --timeout 5m
 ```
 
-### 3. Create the Namespace and TLS Secret
+**macOS Terminal**
+
+```bash
+helm repo add traefik https://traefik.github.io/charts --force-update
+helm repo update
+helm upgrade --install traefik traefik/traefik \
+  --namespace traefik \
+  --create-namespace \
+  --set service.type=ClusterIP \
+  --set providers.kubernetesIngress.enabled=true \
+  --set "additionalArguments[0]=--serversTransport.insecureSkipVerify=true" \
+  --wait \
+  --timeout 5m
+```
+
+Verify Traefik:
+
+```bash
+kubectl -n traefik get pods
+kubectl get ingressclass traefik
+```
+
+## 3. Install Metrics Server
+
+Metrics Server provides CPU measurements for FER worker autoscaling.
+
+**Windows PowerShell**
+
+```powershell
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.8.1/components.yaml
+kubectl -n kube-system patch deployment metrics-server `
+  --type=json `
+  --patch-file .\k8s\metrics-server-docker-desktop-patch.json
+kubectl -n kube-system rollout status deployment/metrics-server --timeout=180s
+kubectl top nodes
+```
+
+**macOS Terminal**
+
+```bash
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.8.1/components.yaml
+kubectl -n kube-system patch deployment metrics-server \
+  --type=json \
+  --patch-file ./k8s/metrics-server-docker-desktop-patch.json
+kubectl -n kube-system rollout status deployment/metrics-server --timeout=180s
+kubectl top nodes
+```
+
+## 4. Determine the Server IP
+
+**Windows PowerShell**
+
+```powershell
+$route = Get-NetRoute -DestinationPrefix "0.0.0.0/0" |
+  Sort-Object RouteMetric |
+  Select-Object -First 1
+$lanIP = (Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $route.InterfaceIndex |
+  Where-Object { $_.IPAddress -notlike "169.254.*" } |
+  Select-Object -First 1).IPAddress
+$lanIP
+```
+
+**macOS Terminal**
+
+```bash
+interface=$(route get default | awk '/interface:/{print $2}')
+lanIP=$(ipconfig getifaddr "$interface")
+echo "$lanIP"
+```
+
+## 5. Generate the HTTPS Certificate
+
+### Windows PowerShell
+
+```powershell
+New-Item -ItemType Directory -Force .\certs
+
+openssl req -x509 -nodes -newkey rsa:3072 -sha256 -days 3650 `
+  -keyout .\certs\familis-root-ca-key.pem `
+  -out .\certs\familis-root-ca.pem `
+  -subj "/CN=FaMiLiS Local Root CA" `
+  -addext "basicConstraints=critical,CA:TRUE,pathlen:0" `
+  -addext "keyUsage=critical,keyCertSign,cRLSign"
+
+openssl req -new -nodes -newkey rsa:3072 -sha256 `
+  -keyout .\certs\key.pem `
+  -out .\certs\familis-server.csr `
+  -subj "/CN=$lanIP" `
+  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:$lanIP" `
+  -addext "basicConstraints=critical,CA:FALSE" `
+  -addext "keyUsage=critical,digitalSignature,keyEncipherment" `
+  -addext "extendedKeyUsage=serverAuth"
+
+openssl x509 -req `
+  -in .\certs\familis-server.csr `
+  -CA .\certs\familis-root-ca.pem `
+  -CAkey .\certs\familis-root-ca-key.pem `
+  -CAcreateserial `
+  -days 365 `
+  -sha256 `
+  -copy_extensions copy `
+  -out .\certs\cert.pem
+
+openssl x509 -in .\certs\familis-root-ca.pem -outform der -out .\certs\familis-ca.cer
+Remove-Item .\certs\familis-server.csr
+
+Copy-Item .\certs\cert.pem .\central-server\cert.pem -Force
+Copy-Item .\certs\key.pem .\central-server\key.pem -Force
+Copy-Item .\certs\cert.pem .\kiosk-image\FaMiLiS\cert.pem -Force
+Copy-Item .\certs\key.pem .\kiosk-image\FaMiLiS\key.pem -Force
+```
+
+Trust the root certificate on the Windows server:
+
+```powershell
+certutil -addstore -f Root .\certs\familis-ca.cer
+```
+
+### macOS Terminal
+
+```bash
+OPENSSL="$(brew --prefix openssl@3)/bin/openssl"
+mkdir -p ./certs
+
+"$OPENSSL" req -x509 -nodes -newkey rsa:3072 -sha256 -days 3650 \
+  -keyout ./certs/familis-root-ca-key.pem \
+  -out ./certs/familis-root-ca.pem \
+  -subj "/CN=FaMiLiS Local Root CA" \
+  -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign"
+
+"$OPENSSL" req -new -nodes -newkey rsa:3072 -sha256 \
+  -keyout ./certs/key.pem \
+  -out ./certs/familis-server.csr \
+  -subj "/CN=$lanIP" \
+  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:$lanIP" \
+  -addext "basicConstraints=critical,CA:FALSE" \
+  -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+  -addext "extendedKeyUsage=serverAuth"
+
+"$OPENSSL" x509 -req \
+  -in ./certs/familis-server.csr \
+  -CA ./certs/familis-root-ca.pem \
+  -CAkey ./certs/familis-root-ca-key.pem \
+  -CAcreateserial \
+  -days 365 \
+  -sha256 \
+  -copy_extensions copy \
+  -out ./certs/cert.pem
+
+"$OPENSSL" x509 \
+  -in ./certs/familis-root-ca.pem \
+  -outform der \
+  -out ./certs/familis-ca.cer
+
+rm ./certs/familis-server.csr
+cp ./certs/cert.pem ./central-server/cert.pem
+cp ./certs/key.pem ./central-server/key.pem
+cp ./certs/cert.pem ./kiosk-image/FaMiLiS/cert.pem
+cp ./certs/key.pem ./kiosk-image/FaMiLiS/key.pem
+```
+
+Trust the root certificate on the Mac server:
+
+```bash
+sudo security add-trusted-cert \
+  -d \
+  -r trustRoot \
+  -k /Library/Keychains/System.keychain \
+  ./certs/familis-root-ca.pem
+```
+
+Install `certs/familis-ca.cer` on other LAN devices that access FaMiLiS.
+
+## 6. Build the Container Images
+
+### Windows PowerShell
+
+```powershell
+$version = "local-" + (Get-Date -Format "yyyyMMddHHmmss")
+docker build -t "familis-central-server:$version" .\central-server
+docker build -t "familis-app:$version" .\kiosk-image
+```
+
+### macOS Terminal
+
+Intel Mac:
+
+```bash
+version="local-$(date +%Y%m%d%H%M%S)"
+docker build -t "familis-central-server:$version" ./central-server
+docker build -t "familis-app:$version" ./kiosk-image
+```
+
+Apple Silicon Mac:
+
+```bash
+version="local-$(date +%Y%m%d%H%M%S)"
+docker build --platform linux/amd64 -t "familis-central-server:$version" ./central-server
+docker build --platform linux/amd64 -t "familis-app:$version" ./kiosk-image
+```
+
+## 7. Load the Images into Kubernetes
+
+### Windows PowerShell
+
+```powershell
+$node = kubectl get nodes -o jsonpath='{.items[0].metadata.name}'
+docker save -o .\familis-images.tar `
+  "familis-central-server:$version" `
+  "familis-app:$version"
+
+docker cp .\familis-images.tar "${node}:/tmp/familis-images.tar"
+docker exec $node ctr -n k8s.io images import /tmp/familis-images.tar
+
+docker exec $node ctr -n k8s.io images tag --force `
+  "docker.io/library/familis-central-server:$version" `
+  docker.io/library/familis-central-server:latest
+
+docker exec $node ctr -n k8s.io images tag --force `
+  "docker.io/library/familis-app:$version" `
+  docker.io/library/familis-app:k8s
+
+docker exec $node rm -f /tmp/familis-images.tar
+Remove-Item .\familis-images.tar
+```
+
+### macOS Terminal
+
+```bash
+node=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')
+docker save -o ./familis-images.tar \
+  "familis-central-server:$version" \
+  "familis-app:$version"
+
+docker cp ./familis-images.tar "$node:/tmp/familis-images.tar"
+docker exec "$node" ctr -n k8s.io images import /tmp/familis-images.tar
+
+docker exec "$node" ctr -n k8s.io images tag --force \
+  "docker.io/library/familis-central-server:$version" \
+  docker.io/library/familis-central-server:latest
+
+docker exec "$node" ctr -n k8s.io images tag --force \
+  "docker.io/library/familis-app:$version" \
+  docker.io/library/familis-app:k8s
+
+docker exec "$node" rm -f /tmp/familis-images.tar
+rm ./familis-images.tar
+```
+
+## 8. Create the Namespace and TLS Secret
+
+**Windows PowerShell**
 
 ```powershell
 kubectl apply -f .\k8s\base\namespace.yaml
-kubectl -n familis create secret tls familis-tls --cert=.\certs\cert.pem --key=.\certs\key.pem --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n familis create secret tls familis-tls `
+  --cert=.\certs\cert.pem `
+  --key=.\certs\key.pem `
+  --dry-run=client `
+  -o yaml |
+  kubectl apply -f -
 ```
 
-### 4. Deploy the Application
+**macOS Terminal**
+
+```bash
+kubectl apply -f ./k8s/base/namespace.yaml
+kubectl -n familis create secret tls familis-tls \
+  --cert=./certs/cert.pem \
+  --key=./certs/key.pem \
+  --dry-run=client \
+  -o yaml |
+  kubectl apply -f -
+```
+
+## 9. Deploy FaMiLiS
+
+**Windows PowerShell**
 
 ```powershell
 kubectl apply -k .\k8s\base --validate=false
+kubectl -n familis set env deployment/familis HOST_LAN_IP=$lanIP
+kubectl -n familis rollout restart deployment/central-api deployment/fer-worker deployment/familis
+```
+
+**macOS Terminal**
+
+```bash
+kubectl apply -k ./k8s/base --validate=false
+kubectl -n familis set env deployment/familis "HOST_LAN_IP=$lanIP"
+kubectl -n familis rollout restart deployment/central-api deployment/fer-worker deployment/familis
 ```
 
 Wait for the deployments:
 
-```powershell
+```bash
 kubectl -n familis rollout status deployment/mysql --timeout=180s
 kubectl -n familis rollout status deployment/zookeeper --timeout=180s
 kubectl -n familis rollout status deployment/kafka --timeout=180s
 kubectl -n familis rollout status deployment/central-api --timeout=180s
-kubectl -n familis rollout status deployment/fer-worker --timeout=180s
+kubectl -n familis rollout status deployment/fer-worker --timeout=300s
 kubectl -n familis rollout status deployment/familis --timeout=180s
 ```
 
-Check the pods:
+## 10. Verify the Deployment
 
-```powershell
+```bash
 kubectl -n familis get pods
+kubectl -n familis get services
+kubectl -n familis get ingress
+kubectl -n familis get hpa fer-worker
+kubectl top pods -n familis
 ```
 
-Application pods must show `Running`. The `kafka-init` pod shows `Completed`.
+Expected state:
 
-### 5. Open Local Access
+- Application pods show `Running`.
+- `kafka-init` shows `Completed`.
+- The FER HPA shows a minimum of `1` and maximum of `6`.
+- Idle FER workers scale down.
+- FER workers scale up when processing CPU exceeds the target.
+
+Start the processing-health port-forward:
+
+```bash
+kubectl -n familis port-forward svc/familis-api 8080:8080
+```
+
+Run the health request in another terminal.
+
+**Windows PowerShell**
 
 ```powershell
-kubectl -n familis port-forward svc/familis-web 5173:443
+curl.exe -k https://localhost:8080/api/emotion/health
 ```
 
-Keep the terminal open and visit:
+**macOS Terminal**
+
+```bash
+curl -k https://localhost:8080/api/emotion/health
+```
+
+The response must include:
+
+```json
+{
+  "ok": true,
+  "processing": "kubernetes-fer-workers"
+}
+```
+
+Stop the health port-forward with `Ctrl+C`.
+
+## 11. Open the Website
+
+**Windows PowerShell or macOS Terminal**
+
+```bash
+kubectl -n traefik port-forward --address 0.0.0.0 svc/traefik 5173:443
+```
+
+Keep the terminal open.
+
+Server computer:
 
 ```text
 https://localhost:5173
 ```
 
-### 6. Open LAN Access
-
-Use this command instead of the local-only port-forward:
-
-```powershell
-kubectl -n familis port-forward --address 0.0.0.0 svc/familis-web 5173:443
-```
-
-Find the server computer's IPv4 address:
-
-```powershell
-ipconfig
-```
-
-Open the following address on a device connected to the same network:
+Other devices on the same network:
 
 ```text
 https://<SERVER-IP>:5173
 ```
 
-## Temporary Public Access
-
-Keep the LAN access command running in one terminal:
-
-```powershell
-kubectl -n familis port-forward --address 0.0.0.0 svc/familis-web 5173:443
-```
-
-Download `cloudflared` once:
-
-```powershell
-New-Item -ItemType Directory -Force .\.familis\tools
-Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile ".\.familis\tools\cloudflared.exe"
-```
-
-Open another terminal and start the public tunnel:
-
-```powershell
-.\.familis\tools\cloudflared.exe tunnel --no-autoupdate --url https://127.0.0.1:5173 --no-tls-verify
-```
-
-Open the `https://...trycloudflare.com` address printed in the terminal. Press `Ctrl+C` to stop the tunnel.
-
-Tester accounts are created from the participant management page.
-
-## Check Services
-
-```powershell
-kubectl -n familis get pods
-kubectl -n familis get services
-kubectl -n familis get ingress
-```
-
 ## View Logs
 
-```powershell
+```bash
 kubectl -n familis logs deployment/familis --tail=120
 kubectl -n familis logs deployment/central-api --tail=120
 kubectl -n familis logs deployment/fer-worker --tail=120
@@ -173,33 +470,16 @@ kubectl -n familis logs deployment/kafka --tail=120
 kubectl -n familis logs deployment/mysql --tail=120
 ```
 
-## Restart a Service
+## Restart the Application
 
-```powershell
-kubectl -n familis rollout restart deployment/familis
-kubectl -n familis rollout status deployment/familis
+```bash
+kubectl -n familis rollout restart deployment/central-api deployment/fer-worker deployment/familis
+kubectl -n familis rollout status deployment/central-api --timeout=180s
+kubectl -n familis rollout status deployment/fer-worker --timeout=300s
+kubectl -n familis rollout status deployment/familis --timeout=180s
 ```
 
-Restart the FER workers:
+## Stop the Website
 
-```powershell
-kubectl -n familis rollout restart deployment/fer-worker
-kubectl -n familis rollout status deployment/fer-worker
-```
-
-## Back Up the Database
-
-```powershell
-$mysqlPod = kubectl -n familis get pod -l app=mysql -o jsonpath='{.items[0].metadata.name}'
-kubectl -n familis exec $mysqlPod -- mysqldump -uroot -proot familis_central > familis-backup.sql
-```
-
-## Stop the System
-
-Press `Ctrl+C` in the port-forward terminal.
-
-Delete the Kubernetes deployment:
-
-```powershell
-kubectl delete namespace familis
-```
+Press `Ctrl+C` in the Traefik port-forward terminal. The Kubernetes services
+remain running.
