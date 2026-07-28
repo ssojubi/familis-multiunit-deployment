@@ -159,17 +159,12 @@ export async function initDb() {
     MODIFY role ENUM('tester', 'admin') NOT NULL DEFAULT 'tester'
   `);
 
-  const initialAdminPassword = process.env.INITIAL_ADMIN_PASSWORD;
+  const initialAdminPassword = "admin123";
   const [[admin]] = await pool.query(
-    "SELECT user_id, password_hash FROM users WHERE email = ? LIMIT 1",
+    "SELECT user_id, password_hash, role FROM users WHERE email = ? LIMIT 1",
     ["admin@familis.com"],
   );
   if (!admin) {
-    if (!initialAdminPassword || initialAdminPassword.length < 12) {
-      throw new Error(
-        "INITIAL_ADMIN_PASSWORD must contain at least 12 characters on a fresh installation.",
-      );
-    }
     const adminPasswordHash = await bcrypt.hash(initialAdminPassword, 10);
     await pool.query(
       `
@@ -178,50 +173,52 @@ export async function initDb() {
       `,
       ["admin", "admin@familis.com", adminPasswordHash],
     );
-  } else if (
-    initialAdminPassword &&
-    initialAdminPassword !== "admin123" &&
-    (await bcrypt.compare("admin123", admin.password_hash))
-  ) {
+  } else if (!(await bcrypt.compare(initialAdminPassword, admin.password_hash))) {
     const replacementHash = await bcrypt.hash(initialAdminPassword, 10);
     await pool.query(
       "UPDATE users SET password_hash = ?, role = 'admin' WHERE user_id = ?",
       [replacementHash, admin.user_id],
     );
-    console.log("Replaced the legacy default administrator password.");
+    console.log("Restored the default administrator password.");
+  } else if (admin.role !== "admin") {
+    await pool.query("UPDATE users SET role = 'admin' WHERE user_id = ?", [
+      admin.user_id,
+    ]);
   }
 
-  const initialTesterPassword = process.env.INITIAL_TESTER_PASSWORD;
-  if (initialTesterPassword && initialTesterPassword.length >= 12) {
-    const testerPasswordHash = await bcrypt.hash(initialTesterPassword, 10);
-    for (let number = 1; number <= 10; number += 1) {
-      const suffix = String(number).padStart(2, "0");
-      const username = `Tester ${suffix}`;
-      const email = `tester${suffix}@familis.com`;
-      const [[tester]] = await pool.query(
-        "SELECT user_id, password_hash FROM users WHERE email = ? LIMIT 1",
-        [email],
-      );
-      if (!tester) {
-        await pool.query(
-          "INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, 'tester')",
-          [username, email, testerPasswordHash],
-        );
-      } else if (await bcrypt.compare("Tester123!", tester.password_hash)) {
-        await pool.query(
-          "UPDATE users SET password_hash = ?, role = 'tester' WHERE user_id = ?",
-          [testerPasswordHash, tester.user_id],
-        );
-      }
+  const initialTesterPassword = "Tester123!";
+  const testerPasswordHash = await bcrypt.hash(initialTesterPassword, 10);
+  for (let number = 1; number <= 10; number += 1) {
+    const suffix = String(number).padStart(2, "0");
+    const username = `Tester ${suffix}`;
+    const email = `tester${suffix}@familis.com`;
+    const [[tester]] = await pool.query(
+      "SELECT user_id, password_hash, role FROM users WHERE email = ? LIMIT 1",
+      [email],
+    );
+    if (!tester) {
       await pool.query(
-        `INSERT INTO participants (name, email, tester_label)
-         SELECT ?, ?, ?
-         WHERE NOT EXISTS (
-           SELECT 1 FROM participants WHERE LOWER(email) = LOWER(?)
-         )`,
-        [username, email, `T-${suffix}`, email],
+        "INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, 'tester')",
+        [username, email, testerPasswordHash],
       );
+    } else if (!(await bcrypt.compare(initialTesterPassword, tester.password_hash))) {
+      await pool.query(
+        "UPDATE users SET password_hash = ?, role = 'tester' WHERE user_id = ?",
+        [testerPasswordHash, tester.user_id],
+      );
+    } else if (tester.role !== "tester") {
+      await pool.query("UPDATE users SET role = 'tester' WHERE user_id = ?", [
+        tester.user_id,
+      ]);
     }
+    await pool.query(
+      `INSERT INTO participants (name, email, tester_label)
+       SELECT ?, ?, ?
+       WHERE NOT EXISTS (
+         SELECT 1 FROM participants WHERE LOWER(email) = LOWER(?)
+       )`,
+      [username, email, `T-${suffix}`, email],
+    );
   }
 
   await pool.query(

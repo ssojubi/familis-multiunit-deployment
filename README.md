@@ -350,21 +350,13 @@ $internalToken = ([BitConverter]::ToString($bytes)).Replace("-", "").ToLower()
 $rng.GetBytes($bytes)
 $authSecret = ([BitConverter]::ToString($bytes)).Replace("-", "").ToLower()
 $rng.Dispose()
-$adminPassword = Read-Host "Initial administrator password (minimum 12 characters)"
-$testerPassword = Read-Host "Initial tester password (minimum 12 characters)"
-if ($adminPassword.Length -lt 12 -or $testerPassword.Length -lt 12) {
-  throw "Passwords must contain at least 12 characters."
-}
-
 kubectl -n familis create secret generic mysql-secret `
   --from-literal="root-password=$mysqlPassword" `
   --from-literal="database=familis_central"
 kubectl -n familis create secret generic internal-api-secret `
   --from-literal="token=$internalToken"
 kubectl -n familis create secret generic familis-auth-secret `
-  --from-literal="auth-token-secret=$authSecret" `
-  --from-literal="initial-admin-password=$adminPassword" `
-  --from-literal="initial-tester-password=$testerPassword"
+  --from-literal="auth-token-secret=$authSecret"
 
 kubectl -n familis create secret tls familis-tls `
   --cert=.\certs\cert.pem `
@@ -381,22 +373,13 @@ kubectl apply -f ./k8s/base/namespace.yaml
 mysql_password="$(openssl rand -hex 24)"
 internal_token="$(openssl rand -hex 32)"
 auth_secret="$(openssl rand -hex 32)"
-read -rsp "Initial administrator password (minimum 12 characters): " admin_password
-echo
-read -rsp "Initial tester password (minimum 12 characters): " tester_password
-echo
-test "${#admin_password}" -ge 12
-test "${#tester_password}" -ge 12
-
 kubectl -n familis create secret generic mysql-secret \
   --from-literal="root-password=$mysql_password" \
   --from-literal="database=familis_central"
 kubectl -n familis create secret generic internal-api-secret \
   --from-literal="token=$internal_token"
 kubectl -n familis create secret generic familis-auth-secret \
-  --from-literal="auth-token-secret=$auth_secret" \
-  --from-literal="initial-admin-password=$admin_password" \
-  --from-literal="initial-tester-password=$tester_password"
+  --from-literal="auth-token-secret=$auth_secret"
 
 kubectl -n familis create secret tls familis-tls \
   --cert=./certs/cert.pem \

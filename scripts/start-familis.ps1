@@ -235,37 +235,23 @@ try {
     }
   }
 
-  $adminPassword = Get-KubernetesSecretValue "familis-auth-secret" "initial-admin-password"
   $authTokenSecret = Get-KubernetesSecretValue "familis-auth-secret" "auth-token-secret"
-  $testerPassword = Get-KubernetesSecretValue "familis-auth-secret" "initial-tester-password"
-  $newAdminCredentials = -not $adminPassword
-  $newTesterCredentials = -not $testerPassword
-  if (-not $adminPassword) { $adminPassword = New-RandomHex 12 }
   if (-not $authTokenSecret) { $authTokenSecret = New-RandomHex 32 }
-  if (-not $testerPassword) { $testerPassword = New-RandomHex 12 }
-  if ($newAdminCredentials -or $newTesterCredentials) {
+  if (-not (Get-KubernetesSecretValue "familis-auth-secret" "auth-token-secret")) {
     Apply-GenericSecret "familis-auth-secret" @{
       "auth-token-secret" = $authTokenSecret
-      "initial-admin-password" = $adminPassword
-      "initial-tester-password" = $testerPassword
     }
   }
-  if ($newAdminCredentials) {
-    $credentialFile = Join-Path $RuntimeDir "admin-credentials.txt"
-    @(
-      "Email: admin@familis.com"
-      "Password: $adminPassword"
-    ) | Set-Content -Path $credentialFile
-    Write-Host "Initial administrator credentials: $credentialFile"
-  }
-  if ($newTesterCredentials) {
-    $testerCredentialFile = Join-Path $RuntimeDir "tester-credentials.txt"
-    @(
-      (1..10 | ForEach-Object { "tester$($_.ToString('00'))@familis.com" })
-      "Password: $testerPassword"
-    ) | Set-Content -Path $testerCredentialFile
-    Write-Host "Initial tester credentials: $testerCredentialFile"
-  }
+  $credentialFile = Join-Path $RuntimeDir "admin-credentials.txt"
+  @(
+    "Email: admin@familis.com"
+    "Password: admin123"
+  ) | Set-Content -Path $credentialFile
+  $testerCredentialFile = Join-Path $RuntimeDir "tester-credentials.txt"
+  @(
+    (1..10 | ForEach-Object { "tester$($_.ToString('00'))@familis.com" })
+    "Password: Tester123!"
+  ) | Set-Content -Path $testerCredentialFile
 
   Write-Host "Updating the TLS certificate secret..."
   kubectl -n familis create secret tls familis-tls `

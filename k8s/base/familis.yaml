@@ -57,16 +57,6 @@ spec:
                 secretKeyRef:
                   name: familis-auth-secret
                   key: auth-token-secret
-            - name: INITIAL_ADMIN_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: familis-auth-secret
-                  key: initial-admin-password
-            - name: INITIAL_TESTER_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: familis-auth-secret
-                  key: initial-tester-password
             - name: DEFAULT_KIOSK_ID
               value: kiosk-01
             - name: WEB_KIOSK_MODE
