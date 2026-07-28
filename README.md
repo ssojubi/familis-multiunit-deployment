@@ -25,6 +25,7 @@ Kiosk -> Express API -> Central API -> Kafka -> FER workers
 - `kubectl`
 - Helm
 - OpenSSL 3
+- Cloudflare Tunnel client (`cloudflared`) for optional public mobile access
 
 Run all commands from the repository root.
 
@@ -292,12 +293,16 @@ docker build --platform linux/amd64 -t "familis-app:$version" ./kiosk-image
 
 ```powershell
 $node = kubectl get nodes -o jsonpath='{.items[0].metadata.name}'
-docker save -o .\familis-images.tar `
+$archiveName = "familis-images-$version.tar"
+$imageArchive = ".\$archiveName"
+$nodeImageArchive = "/root/$archiveName"
+
+docker save -o $imageArchive `
   "familis-central-server:$version" `
   "familis-app:$version"
 
-docker cp .\familis-images.tar "${node}:/tmp/familis-images.tar"
-docker exec $node ctr -n k8s.io images import /tmp/familis-images.tar
+docker cp $imageArchive "${node}:$nodeImageArchive"
+docker exec $node ctr -n k8s.io images import --all-platforms $nodeImageArchive
 
 docker exec $node ctr -n k8s.io images tag --force `
   "docker.io/library/familis-central-server:$version" `
@@ -307,20 +312,24 @@ docker exec $node ctr -n k8s.io images tag --force `
   "docker.io/library/familis-app:$version" `
   docker.io/library/familis-app:k8s
 
-docker exec $node rm -f /tmp/familis-images.tar
-Remove-Item .\familis-images.tar
+docker exec $node rm -f $nodeImageArchive
+Remove-Item $imageArchive
 ```
 
 ### macOS Terminal
 
 ```bash
 node=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')
-docker save -o ./familis-images.tar \
+archive_name="familis-images-$version.tar"
+image_archive="./$archive_name"
+node_image_archive="/root/$archive_name"
+
+docker save -o "$image_archive" \
   "familis-central-server:$version" \
   "familis-app:$version"
 
-docker cp ./familis-images.tar "$node:/tmp/familis-images.tar"
-docker exec "$node" ctr -n k8s.io images import /tmp/familis-images.tar
+docker cp "$image_archive" "$node:$node_image_archive"
+docker exec "$node" ctr -n k8s.io images import --all-platforms "$node_image_archive"
 
 docker exec "$node" ctr -n k8s.io images tag --force \
   "docker.io/library/familis-central-server:$version" \
@@ -330,8 +339,8 @@ docker exec "$node" ctr -n k8s.io images tag --force \
   "docker.io/library/familis-app:$version" \
   docker.io/library/familis-app:k8s
 
-docker exec "$node" rm -f /tmp/familis-images.tar
-rm ./familis-images.tar
+docker exec "$node" rm -f "$node_image_archive"
+rm "$image_archive"
 ```
 
 ## 8. Create the Namespace and TLS Secret
@@ -366,7 +375,7 @@ kubectl -n familis create secret tls familis-tls \
 
 ```powershell
 kubectl apply -k .\k8s\base --validate=false
-kubectl -n familis set env deployment/familis HOST_LAN_IP=$lanIP
+kubectl -n familis set env deployment/familis --containers=familis HOST_LAN_IP=$lanIP
 kubectl -n familis rollout restart deployment/central-api deployment/fer-worker deployment/familis
 ```
 
@@ -374,7 +383,7 @@ kubectl -n familis rollout restart deployment/central-api deployment/fer-worker 
 
 ```bash
 kubectl apply -k ./k8s/base --validate=false
-kubectl -n familis set env deployment/familis "HOST_LAN_IP=$lanIP"
+kubectl -n familis set env deployment/familis --containers=familis "HOST_LAN_IP=$lanIP"
 kubectl -n familis rollout restart deployment/central-api deployment/fer-worker deployment/familis
 ```
 
@@ -459,6 +468,58 @@ Other devices on the same network:
 ```text
 https://<SERVER-IP>:5173
 ```
+
+## Public Mobile Access
+
+Keep the Traefik port-forward running. Start a temporary Cloudflare tunnel in
+another terminal:
+
+```bash
+cloudflared tunnel --no-autoupdate --url https://127.0.0.1:5173 --no-tls-verify
+```
+
+Copy the generated `https://<random-name>.trycloudflare.com` address.
+
+**Windows PowerShell**
+
+```powershell
+$publicUrl = "https://<random-name>.trycloudflare.com"
+kubectl -n familis set env deployment/familis `
+  --containers=familis `
+  "PUBLIC_ACCESS_URL=$publicUrl"
+kubectl -n familis rollout status deployment/familis --timeout=180s
+```
+
+**macOS Terminal**
+
+```bash
+publicUrl="https://<random-name>.trycloudflare.com"
+kubectl -n familis set env deployment/familis \
+  --containers=familis \
+  "PUBLIC_ACCESS_URL=$publicUrl"
+kubectl -n familis rollout status deployment/familis --timeout=180s
+```
+
+The public address appears under **Manage Kiosks** as the mobile access URL.
+It uses publicly trusted HTTPS, so mobile devices do not need the local
+FaMiLiS certificate. The address remains valid only while the `cloudflared`
+process is running. Live monitoring still uses WebRTC and may be blocked by
+networks that restrict peer-to-peer media.
+
+## Food Testing Workflow
+
+1. The administrator opens **Food Management** and selects **Activate Testing**
+   for a food item.
+2. FaMiLiS creates one active testing room with a six-digit room code.
+3. The administrator opens **Manage Kiosks** to monitor the room. The same room
+   remains available from **Active Testing Rooms** after leaving the page.
+4. Each tester opens FaMiLiS, logs in, selects the active food test, and enters
+   the shared room code.
+5. The tester completes consent, recording, and the survey. The tester is
+   logged out after submission.
+6. Multiple testers may use the same room code. Each recording is stored as a
+   separate session.
+7. The administrator selects **End Testing** after all active recordings finish.
 
 ## View Logs
 
