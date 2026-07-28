@@ -42,6 +42,15 @@ export function testerContextSearch(context: TesterContext): string {
   return params.toString();
 }
 
+export function clearTesterContext(): void {
+  try {
+    sessionStorage.removeItem(TESTER_CONTEXT_KEY);
+    localStorage.removeItem("familis.consent");
+  } catch {
+    // Storage cleanup is best-effort during logout.
+  }
+}
+
 export function getOrCreateBrowserKioskId(explicitKioskId = ""): string {
   const requestedId = explicitKioskId.trim();
   if (requestedId) {

@@ -12,6 +12,7 @@ import Kiosk from "./pages/Kiosk";
 import VideoMonitoring from "./pages/VideoMonitoring";
 
 import TesterConsent from "./pages/TesterConsent";
+import TesterJoin from "./pages/TesterJoin";
 import TesterSession from "./pages/TesterSession";
 import TesterSurvey from "./pages/TesterSurvey";
 
@@ -35,6 +36,7 @@ export default function App() {
           <Route path="/kiosk" element={<Kiosk />} />
           <Route path="/video-monitoring" element={<VideoMonitoring />} />
           
+          <Route path="/tester-join" element={<TesterJoin />} />
           <Route path="/tester-consent" element={<TesterConsent />} />
           <Route path="/tester-session" element={<TesterSession />} />
           <Route path="/tester-survey" element={<TesterSurvey />} />

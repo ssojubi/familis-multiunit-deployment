@@ -53,6 +53,23 @@ CREATE TABLE IF NOT EXISTS food_products (
   INDEX idx_food_category (category)
 );
 
+-- ADMIN-CONTROLLED FOOD TESTING ROOMS
+CREATE TABLE IF NOT EXISTS testing_rooms (
+  testing_room_id INT AUTO_INCREMENT PRIMARY KEY,
+  room_code VARCHAR(12) NOT NULL UNIQUE,
+  food_id INT NOT NULL,
+  created_by INT NOT NULL,
+  status ENUM('active', 'completed', 'cancelled') NOT NULL DEFAULT 'active',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  ended_at TIMESTAMP NULL,
+
+  INDEX idx_testing_room_food (food_id),
+  INDEX idx_testing_room_status (status),
+
+  CONSTRAINT fk_testing_room_food FOREIGN KEY (food_id) REFERENCES food_products(food_id) ON DELETE CASCADE,
+  CONSTRAINT fk_testing_room_creator FOREIGN KEY (created_by) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
 -- SESSIONS
 CREATE TABLE IF NOT EXISTS sessions (
   session_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -60,6 +77,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   kiosk_id INT NULL,
   participant_id INT NULL,
   food_id INT NOT NULL,
+  testing_room_id INT NULL,
   start_time TIMESTAMP NULL,
   end_time TIMESTAMP NULL,
   status ENUM('pending', 'active', 'completed', 'cancelled') NOT NULL DEFAULT 'pending',
@@ -68,12 +86,14 @@ CREATE TABLE IF NOT EXISTS sessions (
   INDEX idx_session_user (user_id),
   INDEX idx_session_kiosk (kiosk_id),
   INDEX idx_session_food (food_id),
+  INDEX idx_session_testing_room (testing_room_id),
   INDEX idx_session_participant (participant_id),
 
   CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
   CONSTRAINT fk_sessions_kiosk FOREIGN KEY (kiosk_id) REFERENCES kiosk(kiosk_id) ON DELETE SET NULL,
   CONSTRAINT fk_sessions_participant FOREIGN KEY (participant_id) REFERENCES participants(participant_id) ON DELETE SET NULL,
   CONSTRAINT fk_sessions_food FOREIGN KEY (food_id) REFERENCES food_products(food_id),
+  CONSTRAINT fk_sessions_testing_room FOREIGN KEY (testing_room_id) REFERENCES testing_rooms(testing_room_id) ON DELETE SET NULL,
   CONSTRAINT chk_end_after_start CHECK (end_time IS NULL OR end_time >= start_time)
 );
 

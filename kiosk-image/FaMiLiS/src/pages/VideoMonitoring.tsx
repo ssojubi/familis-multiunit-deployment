@@ -1,13 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { io, Socket } from "socket.io-client";
 import logo from "../assets/logo.png";
 import { performLogout } from "../auth";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import {
-  buildShareLink,
-  getShareHostIP,
-  getSocketUrl,
-} from "../apiConfig";
+import { getApiBase, getSocketUrl } from "../apiConfig";
 import {
   getAdminDashboardPath,
   getAdminRoomContext,
@@ -17,6 +13,7 @@ import {
 type Role = "host" | "viewer" | null;
 
 const SOCKET_SERVER_URL = getSocketUrl();
+const API_BASE = getApiBase();
 
 const WEBRTC_CONFIG: RTCConfiguration = {
   iceServers: [
@@ -88,7 +85,7 @@ export default function VideoMonitoring() {
     }
     return { role: urlRoom ? "viewer" : null, roomId: urlRoom || "" };
   });
-  const [shareHostIP, setShareHostIP] = useState<string>("");
+  const [publicAccessUrl, setPublicAccessUrl] = useState<string>("");
 
   const [remoteKiosks, setRemoteKiosks] = useState<RemoteKiosk[]>([]);
   const remoteKiosksRef = useRef<RemoteKiosk[]>([]);
@@ -117,27 +114,31 @@ export default function VideoMonitoring() {
   }, [role, roomId, validFoodId]);
 
   useEffect(() => {
-    void getShareHostIP().then(setShareHostIP);
+    async function loadPublicAccessUrl() {
+      try {
+        const response = await fetch(`${API_BASE}/api/public-access`);
+        const payload = await response.json();
+        if (response.ok && payload?.ok && payload?.enabled && payload?.url) {
+          setPublicAccessUrl(String(payload.url));
+        }
+      } catch {
+        setPublicAccessUrl("");
+      }
+    }
+
+    void loadPublicAccessUrl();
   }, []);
 
-  const shareUrl = useMemo(
-    () =>
-      roomId && shareHostIP
-        ? buildShareLink(shareHostIP, roomId, null, foodIdParam)
-        : "",
-    [foodIdParam, roomId, shareHostIP],
-  );
-
-  const copyLinkToClipboard = () => {
-    if (!shareUrl) return;
-    navigator.clipboard.writeText(shareUrl);
-    alert("Share link copied! Open it on the kiosk/remote device. The tester starts and stops their own recording.");
+  const copyPublicAccessUrl = () => {
+    if (!publicAccessUrl) return;
+    navigator.clipboard.writeText(publicAccessUrl);
+    alert("Public mobile access URL copied.");
   };
 
-  const copyRoomIdToClipboard = () => {
+  const copyRoomCodeToClipboard = () => {
     if (!roomId) return;
     navigator.clipboard.writeText(roomId);
-    alert("Room ID copied!");
+    alert("Room code copied.");
   };
 
   const createPeerConnectionFor = (peerId: string): RTCPeerConnection => {
@@ -322,19 +323,19 @@ export default function VideoMonitoring() {
             <div className="inline-flex items-center gap-2">
               <button
                 type="button"
-                onClick={copyLinkToClipboard}
-                disabled={!shareUrl}
+                onClick={copyPublicAccessUrl}
+                disabled={!publicAccessUrl}
                 className="inline-flex items-center gap-2 bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200 px-3 py-2 rounded-md text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                🔗 Copy Kiosk Share Link
+                Copy Mobile Access URL
               </button>
               <button
                 type="button"
-                onClick={copyRoomIdToClipboard}
+                onClick={copyRoomCodeToClipboard}
                 disabled={!roomId}
                 className="inline-flex items-center gap-2 bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200 px-3 py-2 rounded-md text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                🔗 Copy Room ID
+                Copy Room Code
               </button>
             </div>
           </div>
@@ -357,14 +358,18 @@ export default function VideoMonitoring() {
               )}
             </div>
 
-            {shareUrl && (
+            {publicAccessUrl ? (
               <div className="text-[12px] text-gray-500 bg-gray-50 border border-gray-100 rounded-md px-3 py-2 break-all">
-                <span className="font-semibold text-gray-700">Active Channel Node Link: </span>
-                <span className="text-gray-600">{shareUrl}</span>
+                <span className="font-semibold text-gray-700">Mobile Access URL: </span>
+                <span className="text-gray-600">{publicAccessUrl}</span>
                 <p className="text-[11px] text-gray-400 mt-1">
-                  Open this link on each kiosk device's browser. Every kiosk that
-                  joins this room automatically appears above.
+                  Testers open this address, log in, select the active food test,
+                  and enter room {roomId}.
                 </p>
+              </div>
+            ) : (
+              <div className="text-[12px] text-gray-500 bg-gray-50 border border-gray-100 rounded-md px-3 py-2">
+                Public mobile access is not running.
               </div>
             )}
           </div>

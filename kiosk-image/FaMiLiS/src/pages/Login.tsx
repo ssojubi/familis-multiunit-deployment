@@ -166,14 +166,14 @@ export default function Login() {
       const role = data.user?.role;
       const requestedRoute = (location.state as { returnTo?: unknown } | null)
         ?.returnTo;
-      if (
+      if (role === "tester") {
+        navigate("/tester-join");
+      } else if (
         typeof requestedRoute === "string" &&
         requestedRoute.startsWith("/") &&
         !requestedRoute.startsWith("//")
       ) {
         navigate(requestedRoute, { replace: true });
-      } else if (role === "tester") {
-        navigate("/tester-consent");
       } else {
         navigate("/dashboard");
       }

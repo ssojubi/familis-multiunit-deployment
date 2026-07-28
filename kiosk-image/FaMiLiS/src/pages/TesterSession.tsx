@@ -332,6 +332,7 @@ export default function TesterSession() {
           userId: uId,
           foodId: fId,
           browserKioskId: kioskId,
+          roomCode: roomId,
         }),
       });
       const json = await res.json();

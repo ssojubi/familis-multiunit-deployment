@@ -17,9 +17,7 @@ import { Line, Radar } from "react-chartjs-2";
 import React from "react";
 import { io, Socket } from 'socket.io-client';
 import {
-  buildShareLink,
   getApiBase,
-  getShareHostIP,
   getSocketUrl,
 } from "../apiConfig";
 import {
@@ -61,6 +59,21 @@ type Food = {
   sessionsTotal: number;
   sessionsActive: number;
   avgDurationMin: number | null;
+};
+
+type TestingRoom = {
+  id: number;
+  roomCode: string;
+  foodId: number;
+  foodName: string;
+  foodCategory: string;
+  foodImageUrl: string | null;
+  status: "active" | "completed" | "cancelled";
+  createdBy: number;
+  createdAt: string | null;
+  endedAt: string | null;
+  sessionsTotal: number;
+  sessionsActive: number;
 };
 
 type Analytics = {
@@ -191,6 +204,10 @@ export default function Dashboard() {
   const [foodToDelete, setFoodToDelete] = useState<Food | null>(null);
   const [deletingFoodId, setDeletingFoodId] = useState<number | null>(null);
   const [deleteFoodError, setDeleteFoodError] = useState<string | null>(null);
+  const [activeTestingRooms, setActiveTestingRooms] = useState<TestingRoom[]>([]);
+  const [testingRoomsLoading, setTestingRoomsLoading] = useState(true);
+  const [testingRoomBusyKey, setTestingRoomBusyKey] = useState<string | null>(null);
+  const [testingRoomError, setTestingRoomError] = useState<string | null>(null);
   const foodsAbortRef = useRef<AbortController | null>(null);
   const [parRefreshKey, setParRefreshKey] = useState(0);
 
@@ -223,7 +240,6 @@ export default function Dashboard() {
     () => getAdminRoomContext().roomId,
   );
   const [kioskStatus, setKioskStatus] = useState<string>('Select a role to begin.');
-  const [shareHostIP, setShareHostIP] = useState<string>('');
 
   const socketRef = useRef<Socket<ServerToClientEvents, ClientToServerEvents> | null>(null);
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
@@ -238,14 +254,6 @@ export default function Dashboard() {
   const [kioskSessionId, setKioskSessionId] = useState<number | null>(null);
   const [kioskCmdLoading, setKioskCmdLoading] = useState(false);
   const [kioskCmdError, setKioskCmdError] = useState<string | null>(null);
-
-  const shareUrl = useMemo(
-    () =>
-      roomId && shareHostIP
-        ? buildShareLink(shareHostIP, roomId, null, kioskFoodId)
-        : '',
-    [kioskFoodId, roomId, shareHostIP],
-  );
 
   useEffect(() => {
     foodsAbortRef.current?.abort();
@@ -277,6 +285,27 @@ export default function Dashboard() {
 
     void loadFoods();
     return () => ac.abort();
+  }, []);
+
+  async function loadActiveTestingRooms() {
+    setTestingRoomsLoading(true);
+    setTestingRoomError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/testing-rooms?status=active`);
+      const json = await res.json();
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || "Failed to load active testing rooms.");
+      }
+      setActiveTestingRooms(json.rooms ?? []);
+    } catch (err: any) {
+      setTestingRoomError(err?.message || "Failed to load active testing rooms.");
+    } finally {
+      setTestingRoomsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadActiveTestingRooms();
   }, []);
 
   useEffect(() => {
@@ -333,11 +362,12 @@ export default function Dashboard() {
 
     if (userRole === 'admin') {
       setRole('viewer');
-      const currentRoom =
-        adminContext.roomId || Math.random().toString(36).substring(2, 9);
+      const currentRoom = adminContext.roomId;
       setRoomId(currentRoom);
       setKioskFoodId(adminContext.foodId);
-      saveAdminRoomContext(currentRoom, adminContext.foodId);
+      if (currentRoom) {
+        saveAdminRoomContext(currentRoom, adminContext.foodId);
+      }
     } else if (userRole === 'staff') {
       setRole('host');
       if (adminContext.roomId) {
@@ -358,10 +388,6 @@ export default function Dashboard() {
       saveAdminRoomContext(roomId, kioskFoodId);
     }
   }, [kioskFoodId, role, roomId]);
-
-  useEffect(() => {
-    void getShareHostIP().then(setShareHostIP);
-  }, []);
 
   useEffect(() => {
     if (!roomId || !role) return;
@@ -517,18 +543,6 @@ export default function Dashboard() {
     });
   };
 
-  const copyLinkToClipboard = () => {
-    if (!shareUrl) return;
-    navigator.clipboard.writeText(shareUrl);
-    alert('Share link copied! Open it on the kiosk/remote device. The tester will start and stop their own recording.');
-  };
-
-  const copyRoomIdToClipboard = () => {
-    if (!shareUrl) return;
-    navigator.clipboard.writeText(roomId);
-    alert('Room ID copied!');
-  };
-
   const cleanupPeerConnection = (peerId?: string) => {
     if (peerId) {
       peerConnectionsRef.current.get(peerId)?.close();
@@ -548,9 +562,81 @@ export default function Dashboard() {
     }
   };
 
+  const openTestingRoom = (room: TestingRoom) => {
+    saveAdminRoomContext(room.roomCode, room.foodId);
+    setRoomId(room.roomCode);
+    setKioskFoodId(room.foodId);
+    navigate(
+      `/video-monitoring?foodId=${encodeURIComponent(String(room.foodId))}&room=${encodeURIComponent(room.roomCode)}`,
+    );
+  };
+
+  const getCurrentUserId = () => {
+    try {
+      const raw =
+        localStorage.getItem("familis.user") || localStorage.getItem("user");
+      const user = raw ? JSON.parse(raw) : null;
+      const id = Number(user?.id ?? user?.userId ?? user?.user_id);
+      return Number.isFinite(id) ? id : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const activateFoodTesting = async (food: Food) => {
+    const createdBy = getCurrentUserId();
+    if (createdBy == null) {
+      setTestingRoomError("Your admin account could not be identified. Log in again.");
+      return;
+    }
+
+    setTestingRoomBusyKey(`activate-${food.id}`);
+    setTestingRoomError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/testing-rooms`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ foodId: food.id, createdBy }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.ok || !json?.room) {
+        throw new Error(json?.error || "Failed to activate this food test.");
+      }
+      const room = json.room as TestingRoom;
+      saveAdminRoomContext(room.roomCode, room.foodId);
+      setRoomId(room.roomCode);
+      setKioskFoodId(room.foodId);
+      await loadActiveTestingRooms();
+    } catch (err: any) {
+      setTestingRoomError(err?.message || "Failed to activate this food test.");
+    } finally {
+      setTestingRoomBusyKey(null);
+    }
+  };
+
+  const completeFoodTesting = async (room: TestingRoom) => {
+    setTestingRoomBusyKey(`complete-${room.id}`);
+    setTestingRoomError(null);
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/testing-rooms/${room.id}/complete`,
+        { method: "POST" },
+      );
+      const json = await res.json();
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || "Failed to end this food test.");
+      }
+      await loadActiveTestingRooms();
+    } catch (err: any) {
+      setTestingRoomError(err?.message || "Failed to end this food test.");
+    } finally {
+      setTestingRoomBusyKey(null);
+    }
+  };
+
 
   const totalFoods = foods.length;
-  const activeFoods = foods.filter((f) => f.sessionsActive > 0).length;
+  const activeFoods = activeTestingRooms.length;
   const categories = new Set(foods.map((f) => f.category)).size;
 
   const selectedFood = useMemo(() => {
@@ -1053,6 +1139,45 @@ export default function Dashboard() {
             <StatCard icon="🏷️" label="Categories" value={categories} />
           </div>
 
+          {activeTestingRooms.length > 0 && (
+            <section className="bg-white border border-green-200 rounded-lg mb-5">
+              <div className="px-4 py-3 border-b border-green-100">
+                <h2 className="text-[14px] font-bold text-gray-900">Active Testing Rooms</h2>
+              </div>
+              <div className="divide-y divide-gray-100">
+                {activeTestingRooms.map((room) => (
+                  <div
+                    key={room.id}
+                    className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"
+                  >
+                    <div>
+                      <p className="text-[13px] font-semibold text-gray-900">
+                        {room.foodName}: Room {room.roomCode}
+                      </p>
+                      <p className="text-[12px] text-gray-500 mt-0.5">
+                        {room.sessionsActive} recording now, {room.sessionsTotal} total session
+                        {room.sessionsTotal === 1 ? "" : "s"}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => openTestingRoom(room)}
+                      className="bg-[#e8174a] hover:bg-[#c9143f] text-white px-4 py-2 rounded-md text-[12px] font-semibold transition-colors"
+                    >
+                      Manage Kiosks
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {testingRoomError && (
+            <p className="mb-5 text-[12px] text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+              {testingRoomError}
+            </p>
+          )}
+
           {/* Tabs */}
           <div className="flex rounded-md overflow-hidden border border-gray-200 bg-white mb-5">
             <TabButton active={tab === "food"} onClick={() => setTab("food")}>
@@ -1091,6 +1216,9 @@ export default function Dashboard() {
                   {foods.map((food) => {
                     const isExpanded = expandedFoodId === food.id;
                     const sessions = sessionsByFoodId[food.id] ?? [];
+                    const activeRoom = activeTestingRooms.find(
+                      (room) => room.foodId === food.id,
+                    );
                     return (
                       <div key={food.id} className="py-4 first:pt-0 last:pb-0">
                         <div className="flex items-start justify-between gap-4">
@@ -1114,12 +1242,12 @@ export default function Dashboard() {
                               </p>
                               <Badge
                                 className={
-                                  food.sessionsActive > 0
+                                  activeRoom
                                     ? "bg-green-50 text-green-700"
                                     : "bg-gray-100 text-gray-600"
                                 }
                               >
-                                {food.sessionsActive > 0 ? "Active session" : "No active sessions"}
+                                {activeRoom ? `Active: Room ${activeRoom.roomCode}` : "Not active for testing"}
                               </Badge>
                               <Badge className="bg-blue-50 text-blue-700">
                                 {food.sessionsTotal} session{food.sessionsTotal === 1 ? "" : "s"}
@@ -1141,11 +1269,44 @@ export default function Dashboard() {
                               </p>
                             </div>
 
-                            <div className="flex items-center gap-4 mt-3">
+                            <div className="flex items-center gap-4 mt-3 flex-wrap">
+                              {activeRoom ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => openTestingRoom(activeRoom)}
+                                    className="text-[12px] font-semibold text-[#e8174a] hover:text-[#c9143f] transition-colors"
+                                  >
+                                    Manage Kiosks
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={testingRoomBusyKey === `complete-${activeRoom.id}`}
+                                    onClick={() => void completeFoodTesting(activeRoom)}
+                                    className="text-[12px] font-semibold text-gray-600 hover:text-gray-900 disabled:opacity-50 transition-colors"
+                                  >
+                                    {testingRoomBusyKey === `complete-${activeRoom.id}`
+                                      ? "Ending..."
+                                      : "End Testing"}
+                                  </button>
+                                </>
+                              ) : (
+                                <button
+                                  type="button"
+                                  disabled={testingRoomBusyKey === `activate-${food.id}`}
+                                  onClick={() => void activateFoodTesting(food)}
+                                  className="text-[12px] font-semibold text-green-700 hover:text-green-800 disabled:opacity-50 transition-colors"
+                                >
+                                  {testingRoomBusyKey === `activate-${food.id}`
+                                    ? "Activating..."
+                                    : "Activate Testing"}
+                                </button>
+                              )}
                               <button
                                 type="button"
+                                disabled={Boolean(activeRoom)}
                                 onClick={() => setFoodToDelete(food)}
-                                className="text-[12px] font-semibold text-[#e8174a] hover:text-[#c9143f] transition-colors inline-flex items-center gap-1"
+                                className="text-[12px] font-semibold text-[#e8174a] hover:text-[#c9143f] disabled:text-gray-300 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-1"
                               >
                                 <span aria-hidden="true">🗑️</span>
                                 Delete
@@ -1492,8 +1653,61 @@ export default function Dashboard() {
               </div>
 
 
-              {/* select food */}
-              <div className="mb-5">
+              {testingRoomsLoading ? (
+                <p className="text-[12px] text-gray-500">Loading active testing rooms...</p>
+              ) : activeTestingRooms.length === 0 ? (
+                <div className="border border-dashed border-gray-300 rounded-md px-4 py-8 text-center">
+                  <p className="text-[13px] text-gray-700 font-semibold">
+                    No food tests are active.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setTab("food")}
+                    className="mt-3 text-[12px] font-semibold text-[#e8174a] hover:text-[#c9143f]"
+                  >
+                    Open Food Management
+                  </button>
+                </div>
+              ) : (
+                <div className="divide-y divide-gray-100 border border-gray-200 rounded-md">
+                  {activeTestingRooms.map((room) => (
+                    <div
+                      key={room.id}
+                      className="flex flex-wrap items-center justify-between gap-4 px-4 py-4"
+                    >
+                      <div>
+                        <p className="text-[14px] font-semibold text-gray-900">
+                          {room.foodName}
+                        </p>
+                        <p className="text-[12px] text-gray-500 mt-1">
+                          Room {room.roomCode}, {room.sessionsActive} recording now,{" "}
+                          {room.sessionsTotal} total session
+                          {room.sessionsTotal === 1 ? "" : "s"}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <button
+                          type="button"
+                          disabled={testingRoomBusyKey === `complete-${room.id}`}
+                          onClick={() => void completeFoodTesting(room)}
+                          className="border border-gray-200 text-gray-700 hover:bg-gray-50 disabled:opacity-50 px-3 py-2 rounded-md text-[12px] font-semibold"
+                        >
+                          End Testing
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openTestingRoom(room)}
+                          className="bg-[#e8174a] hover:bg-[#c9143f] text-white px-4 py-2 rounded-md text-[12px] font-semibold"
+                        >
+                          Manage Kiosks
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="hidden">
                 <label className="block text-[13px] font-semibold text-gray-700 mb-2">
                   Food being tested
                 </label>
@@ -1536,8 +1750,7 @@ export default function Dashboard() {
                 )}
               </div>
 
-              {/* admin control */}
-              <div className="space-y-4">
+              <div className="hidden">
                 <div className="flex gap-3">
                   <button
                     type="button"

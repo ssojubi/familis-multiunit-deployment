@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { performLogout } from "../auth";
 import logo from "../assets/logo.png";
@@ -23,9 +23,15 @@ export default function TesterConsent() {
 
   const allChecked = consent.recording && consent.dataUsage && consent.participant;
 
+  useEffect(() => {
+    if (!testerContext.roomId || !testerContext.foodId) {
+      navigate("/tester-join", { replace: true });
+    }
+  }, [navigate, testerContext.foodId, testerContext.roomId]);
+
   const handleAccept = () => {
-    if (!consent) {
-      setError("You must agree to continue.");
+    if (!allChecked) {
+      setError("Complete the consent checklist to continue.");
       return;
     }
     localStorage.setItem("familis.consent", "true");
@@ -68,6 +74,12 @@ export default function TesterConsent() {
             </div>
 
             <div className="p-6 space-y-6">
+              <div className="flex items-center justify-between gap-4 bg-gray-50 border border-gray-200 rounded-md px-4 py-3 text-sm">
+                <span className="text-gray-600">Testing room</span>
+                <span className="font-bold text-gray-900">
+                  {testerContext.roomId}
+                </span>
+              </div>
               <div className="space-y-4 text-gray-700 text-sm">
                 <p>
                   Thank you for participating in this food product testing

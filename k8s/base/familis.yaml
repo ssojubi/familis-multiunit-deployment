@@ -44,6 +44,8 @@ spec:
               value: "true"
             - name: HOST_LAN_IP
               value: ""
+            - name: PUBLIC_ACCESS_URL
+              value: ""
             - name: USE_HTTPS
               value: "true"
             - name: SSL_KEY_FILE

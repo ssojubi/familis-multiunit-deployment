@@ -81,6 +81,7 @@ function getLocalIP() {
 
 const localIP = getLocalIP();
 const hostLanIP = process.env.HOST_LAN_IP?.trim() || "";
+const publicAccessUrl = process.env.PUBLIC_ACCESS_URL?.trim() || "";
 console.log('Using IO:', localIP);
 app.use(express.static(__dirname));
 
@@ -382,6 +383,25 @@ async function start() {
       console.error("Health check failed:", err);
       res.status(500).json({ ok: false, error: "DB error" });
     }
+  });
+
+  app.get("/api/public-access", (req, res) => {
+    const forwardedHost = String(req.headers["x-forwarded-host"] ?? "")
+      .split(",")[0]
+      .trim();
+    const forwardedProtocol = String(req.headers["x-forwarded-proto"] ?? "")
+      .split(",")[0]
+      .trim();
+    const requestTunnelUrl = forwardedHost.endsWith(".trycloudflare.com")
+      ? `${forwardedProtocol || "https"}://${forwardedHost}`
+      : "";
+    const url = publicAccessUrl || requestTunnelUrl;
+
+    return res.json({
+      ok: true,
+      enabled: Boolean(url),
+      url: url || null,
+    });
   });
 
   app.post("/api/login", async (req, res) => {
@@ -1498,9 +1518,284 @@ async function start() {
     }
   });
 
+  function serializeTestingRoom(row, includeCode = true) {
+    return {
+      id: Number(row.testing_room_id),
+      ...(includeCode ? { roomCode: String(row.room_code) } : {}),
+      foodId: Number(row.food_id),
+      foodName: String(row.food_name),
+      foodCategory: String(row.food_category ?? ""),
+      foodImageUrl: row.food_image_url == null ? null : String(row.food_image_url),
+      status: String(row.status),
+      createdBy: Number(row.created_by),
+      createdAt: toIsoOrNull(row.created_at),
+      endedAt: toIsoOrNull(row.ended_at),
+      sessionsTotal: Number(row.sessions_total ?? 0),
+      sessionsActive: Number(row.sessions_active ?? 0),
+    };
+  }
+
+  async function listTestingRooms(status = null) {
+    const params = [];
+    const statusClause = status ? "WHERE tr.status = ?" : "";
+    if (status) params.push(status);
+    const [rows] = await pool.query(
+      `
+      SELECT
+        tr.testing_room_id,
+        tr.room_code,
+        tr.food_id,
+        tr.created_by,
+        tr.status,
+        tr.created_at,
+        tr.ended_at,
+        fp.name AS food_name,
+        fp.category AS food_category,
+        fp.image_url AS food_image_url,
+        COUNT(s.session_id) AS sessions_total,
+        SUM(CASE WHEN s.status = 'active' THEN 1 ELSE 0 END) AS sessions_active
+      FROM testing_rooms tr
+      JOIN food_products fp ON fp.food_id = tr.food_id
+      LEFT JOIN sessions s ON s.testing_room_id = tr.testing_room_id
+      ${statusClause}
+      GROUP BY
+        tr.testing_room_id,
+        tr.room_code,
+        tr.food_id,
+        tr.created_by,
+        tr.status,
+        tr.created_at,
+        tr.ended_at,
+        fp.name,
+        fp.category,
+        fp.image_url
+      ORDER BY tr.created_at DESC, tr.testing_room_id DESC
+      `,
+      params,
+    );
+    return rows;
+  }
+
+  app.get("/api/testing-rooms", async (req, res) => {
+    const requestedStatus =
+      typeof req.query?.status === "string" ? req.query.status : null;
+    const status = ["active", "completed", "cancelled"].includes(requestedStatus)
+      ? requestedStatus
+      : null;
+    try {
+      const rows = await listTestingRooms(status);
+      return res.json({
+        ok: true,
+        rooms: rows.map((row) => serializeTestingRoom(row, true)),
+      });
+    } catch (err) {
+      console.error("GET /api/testing-rooms error:", err);
+      return res.status(500).json({ ok: false, error: "Server error." });
+    }
+  });
+
+  app.get("/api/testing-rooms/active", async (_req, res) => {
+    try {
+      const rows = await listTestingRooms("active");
+      return res.json({
+        ok: true,
+        rooms: rows.map((row) => serializeTestingRoom(row, false)),
+      });
+    } catch (err) {
+      console.error("GET /api/testing-rooms/active error:", err);
+      return res.status(500).json({ ok: false, error: "Server error." });
+    }
+  });
+
+  app.post("/api/testing-rooms/validate", async (req, res) => {
+    const foodId = Number.parseInt(String(req.body?.foodId ?? ""), 10);
+    const roomCode = String(req.body?.roomCode ?? "").trim();
+    if (!Number.isFinite(foodId) || !/^\d{6}$/.test(roomCode)) {
+      return res.status(400).json({
+        ok: false,
+        error: "Select an active food test and enter its six-digit room code.",
+      });
+    }
+
+    try {
+      const [rows] = await pool.query(
+        `
+        SELECT
+          tr.testing_room_id,
+          tr.room_code,
+          tr.food_id,
+          tr.created_by,
+          tr.status,
+          tr.created_at,
+          tr.ended_at,
+          fp.name AS food_name,
+          fp.category AS food_category,
+          fp.image_url AS food_image_url,
+          0 AS sessions_total,
+          0 AS sessions_active
+        FROM testing_rooms tr
+        JOIN food_products fp ON fp.food_id = tr.food_id
+        WHERE tr.food_id = ?
+          AND tr.room_code = ?
+          AND tr.status = 'active'
+        LIMIT 1
+        `,
+        [foodId, roomCode],
+      );
+      if (rows.length === 0) {
+        return res.status(404).json({
+          ok: false,
+          error: "The room code does not match the selected active food test.",
+        });
+      }
+      return res.json({
+        ok: true,
+        room: serializeTestingRoom(rows[0], true),
+      });
+    } catch (err) {
+      console.error("POST /api/testing-rooms/validate error:", err);
+      return res.status(500).json({ ok: false, error: "Server error." });
+    }
+  });
+
+  app.post("/api/testing-rooms", async (req, res) => {
+    const foodId = Number.parseInt(String(req.body?.foodId ?? ""), 10);
+    const createdBy = Number.parseInt(String(req.body?.createdBy ?? ""), 10);
+    if (!Number.isFinite(foodId) || !Number.isFinite(createdBy)) {
+      return res.status(400).json({
+        ok: false,
+        error: "foodId and createdBy are required.",
+      });
+    }
+
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [foods] = await connection.query(
+        "SELECT food_id FROM food_products WHERE food_id = ? FOR UPDATE",
+        [foodId],
+      );
+      if (foods.length === 0) {
+        await connection.rollback();
+        return res.status(404).json({ ok: false, error: "Food not found." });
+      }
+
+      const [existing] = await connection.query(
+        `
+        SELECT testing_room_id
+        FROM testing_rooms
+        WHERE food_id = ? AND status = 'active'
+        ORDER BY created_at DESC
+        LIMIT 1
+        `,
+        [foodId],
+      );
+      let roomId;
+      let created = false;
+      if (existing.length > 0) {
+        roomId = Number(existing[0].testing_room_id);
+      } else {
+        let roomCode = "";
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          const candidate = String(
+            Math.floor(100000 + Math.random() * 900000),
+          );
+          const [matches] = await connection.query(
+            "SELECT testing_room_id FROM testing_rooms WHERE room_code = ? LIMIT 1",
+            [candidate],
+          );
+          if (matches.length === 0) {
+            roomCode = candidate;
+            break;
+          }
+        }
+        if (!roomCode) {
+          throw new Error("Could not generate a unique room code.");
+        }
+        const [result] = await connection.query(
+          `
+          INSERT INTO testing_rooms (room_code, food_id, created_by, status)
+          VALUES (?, ?, ?, 'active')
+          `,
+          [roomCode, foodId, createdBy],
+        );
+        roomId = Number(result.insertId);
+        created = true;
+      }
+      await connection.commit();
+
+      const rows = await listTestingRooms("active");
+      const room = rows.find(
+        (row) => Number(row.testing_room_id) === roomId,
+      );
+      return res.status(created ? 201 : 200).json({
+        ok: true,
+        created,
+        room: room ? serializeTestingRoom(room, true) : null,
+      });
+    } catch (err) {
+      await connection.rollback();
+      console.error("POST /api/testing-rooms error:", err);
+      return res.status(500).json({ ok: false, error: "Server error." });
+    } finally {
+      connection.release();
+    }
+  });
+
+  app.post("/api/testing-rooms/:roomId/complete", async (req, res) => {
+    const roomId = Number.parseInt(req.params.roomId, 10);
+    if (!Number.isFinite(roomId)) {
+      return res.status(400).json({ ok: false, error: "Invalid room ID." });
+    }
+
+    try {
+      const [[counts]] = await pool.query(
+        `
+        SELECT COUNT(*) AS active_count
+        FROM sessions
+        WHERE testing_room_id = ? AND status = 'active'
+        `,
+        [roomId],
+      );
+      if (Number(counts?.active_count ?? 0) > 0) {
+        return res.status(409).json({
+          ok: false,
+          error: "Complete all active tester sessions before ending this food test.",
+        });
+      }
+
+      const [result] = await pool.query(
+        `
+        UPDATE testing_rooms
+        SET status = 'completed', ended_at = NOW()
+        WHERE testing_room_id = ? AND status = 'active'
+        `,
+        [roomId],
+      );
+      if (result.affectedRows === 0) {
+        return res.status(404).json({
+          ok: false,
+          error: "Active testing room not found.",
+        });
+      }
+      return res.json({ ok: true });
+    } catch (err) {
+      console.error("POST /api/testing-rooms/:roomId/complete error:", err);
+      return res.status(500).json({ ok: false, error: "Server error." });
+    }
+  });
+
   // Start a new session for a given food/user (used by Camera Setup / Video Monitoring)
   app.post("/api/sessions/start", async (req, res) => {
-    const { userId, foodId, participantId, kioskId, browserKioskId, agentKioskId } = req.body ?? {};
+    const {
+      userId,
+      foodId,
+      participantId,
+      kioskId,
+      browserKioskId,
+      agentKioskId,
+      roomCode,
+    } = req.body ?? {};
     const uId = Number.parseInt(String(userId ?? ""), 10);
     const fId = Number.parseInt(String(foodId ?? ""), 10);
     const pId =
@@ -1514,18 +1809,52 @@ async function start() {
         : typeof agentKioskId === "string" && agentKioskId.trim()
           ? agentKioskId.trim()
           : null;
+    const normalizedRoomCode =
+      typeof roomCode === "string" ? roomCode.trim() : "";
 
     if (!Number.isFinite(uId) || !Number.isFinite(fId) || (pId != null && !Number.isFinite(pId)) || (kId != null && !Number.isFinite(kId))) {
       return res.status(400).json({ ok: false, error: "userId, foodId, and optional participantId/kioskId are required." });
     }
 
     try {
+      let testingRoomId = null;
+      if (normalizedRoomCode) {
+        const [roomRows] = await pool.query(
+          `
+          SELECT testing_room_id, food_id
+          FROM testing_rooms
+          WHERE room_code = ? AND status = 'active'
+          LIMIT 1
+          `,
+          [normalizedRoomCode],
+        );
+        if (roomRows.length === 0) {
+          return res.status(409).json({
+            ok: false,
+            error: "This food testing room is no longer active.",
+          });
+        }
+        if (Number(roomRows[0].food_id) !== fId) {
+          return res.status(409).json({
+            ok: false,
+            error: "The room code does not match the selected food.",
+          });
+        }
+        testingRoomId = Number(roomRows[0].testing_room_id);
+      } else if (browserKiosk) {
+        return res.status(400).json({
+          ok: false,
+          error: "A valid active testing room is required.",
+        });
+      }
+
       const [result] = await pool.query(
         `
-        INSERT INTO sessions (user_id, kiosk_id, participant_id, food_id, start_time, status)
-        VALUES (?, ?, ?, ?, NOW(), 'active')
+        INSERT INTO sessions
+          (user_id, kiosk_id, participant_id, food_id, testing_room_id, start_time, status)
+        VALUES (?, ?, ?, ?, ?, NOW(), 'active')
       `,
-        [uId, kId, pId, fId]
+        [uId, kId, pId, fId, testingRoomId]
       );
       const sessionId = Number(result.insertId);
 
@@ -1548,6 +1877,8 @@ async function start() {
           kioskId: kId,
           participantId: pId,
           foodId: fId,
+          testingRoomId,
+          roomCode: normalizedRoomCode || null,
           browserKioskId: browserKiosk,
           status: "active",
           startTime: new Date().toISOString(),

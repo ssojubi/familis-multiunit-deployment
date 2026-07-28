@@ -27,6 +27,50 @@ async function addColumnIfMissing(pool, tableName, columnName, definition) {
   }
 }
 
+async function addIndexIfMissing(pool, tableName, indexName, columns) {
+  const [[row]] = await pool.query(
+    `
+    SELECT COUNT(*) AS index_count
+    FROM information_schema.statistics
+    WHERE table_schema = DATABASE()
+      AND table_name = ?
+      AND index_name = ?
+    `,
+    [tableName, indexName],
+  );
+
+  if (Number(row?.index_count ?? 0) === 0) {
+    await pool.query(
+      `ALTER TABLE \`${tableName}\` ADD INDEX \`${indexName}\` (${columns})`,
+    );
+  }
+}
+
+async function addForeignKeyIfMissing(
+  pool,
+  tableName,
+  constraintName,
+  definition,
+) {
+  const [[row]] = await pool.query(
+    `
+    SELECT COUNT(*) AS constraint_count
+    FROM information_schema.table_constraints
+    WHERE constraint_schema = DATABASE()
+      AND table_name = ?
+      AND constraint_name = ?
+      AND constraint_type = 'FOREIGN KEY'
+    `,
+    [tableName, constraintName],
+  );
+
+  if (Number(row?.constraint_count ?? 0) === 0) {
+    await pool.query(
+      `ALTER TABLE \`${tableName}\` ADD CONSTRAINT \`${constraintName}\` ${definition}`,
+    );
+  }
+}
+
 function createPool() {
   // Example: mysql://user:password@localhost:3306/familis_central
   const connectionString =
@@ -82,6 +126,20 @@ export async function initDb() {
   for (const [columnName, definition] of participantColumns) {
     await addColumnIfMissing(pool, "participants", columnName, definition);
   }
+
+  await addColumnIfMissing(pool, "sessions", "testing_room_id", "INT NULL");
+  await addIndexIfMissing(
+    pool,
+    "sessions",
+    "idx_session_testing_room",
+    "`testing_room_id`",
+  );
+  await addForeignKeyIfMissing(
+    pool,
+    "sessions",
+    "fk_sessions_testing_room",
+    "FOREIGN KEY (`testing_room_id`) REFERENCES `testing_rooms` (`testing_room_id`) ON DELETE SET NULL",
+  );
 
   await pool.query(`
     ALTER TABLE users
