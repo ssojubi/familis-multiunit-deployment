@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { performLogout } from "../auth";
 import logo from "../assets/logo.png";
@@ -7,18 +7,6 @@ import { getApiBase } from "../apiConfig";
 
 const API_BASE = getApiBase();
 const RATING_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
-
-const RATING_LABELS: Record<number, string> = {
-  9: "Like Extremely",
-  8: "Like Very Much",
-  7: "Like Moderately",
-  6: "Like Slightly",
-  5: "Neither Like nor Dislike",
-  4: "Dislike Slightly",
-  3: "Dislike Moderately",
-  2: "Dislike Very Much",
-  1: "Dislike Extremely",
-};
 
 export default function TesterSurvey() {
   const location = useLocation();

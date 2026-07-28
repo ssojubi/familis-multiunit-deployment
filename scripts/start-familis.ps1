@@ -23,6 +23,42 @@ $TunnelErrorLog = Join-Path $LogDir "public-tunnel.error.log"
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
+function New-RandomHex([int]$ByteCount = 32) {
+  $bytes = New-Object byte[] $ByteCount
+  $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  try {
+    $rng.GetBytes($bytes)
+  } finally {
+    $rng.Dispose()
+  }
+  return ([BitConverter]::ToString($bytes)).Replace("-", "").ToLowerInvariant()
+}
+
+function Get-KubernetesSecretValue($Name, $Key) {
+  $encoded = kubectl -n familis get secret $Name --ignore-not-found -o "jsonpath={.data.$Key}"
+  if ($LASTEXITCODE -ne 0 -or -not $encoded) { return $null }
+  return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded))
+}
+
+function Apply-GenericSecret($Name, [hashtable]$Values) {
+  $arguments = @("-n", "familis", "create", "secret", "generic", $Name)
+  foreach ($entry in $Values.GetEnumerator()) {
+    $arguments += "--from-literal=$($entry.Key)=$($entry.Value)"
+  }
+  $arguments += @("--dry-run=client", "-o", "yaml")
+  & kubectl @arguments | kubectl apply -f -
+  if ($LASTEXITCODE -ne 0) {
+    throw "Could not create Kubernetes secret '$Name'."
+  }
+}
+
+function Wait-Deployment($Name, $Timeout = "180s") {
+  kubectl -n familis rollout status "deployment/$Name" "--timeout=$Timeout"
+  if ($LASTEXITCODE -ne 0) {
+    throw "Deployment '$Name' did not become ready within $Timeout."
+  }
+}
+
 function Require-Command($Name) {
   if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
     throw "Required command '$Name' was not found on PATH."
@@ -136,9 +172,13 @@ try {
     $centralImage = "familis-central-server:$imageVersion"
     $familisImage = "familis-app:$imageVersion"
     docker build -t $centralImage .\central-server
+    if ($LASTEXITCODE -ne 0) { throw "Failed to build the central server image." }
     docker build -t $familisImage .\kiosk-image
+    if ($LASTEXITCODE -ne 0) { throw "Failed to build the FaMiLiS image." }
     docker tag $centralImage familis-central-server:latest
+    if ($LASTEXITCODE -ne 0) { throw "Failed to tag the central server image." }
     docker tag $familisImage familis-app:k8s
+    if ($LASTEXITCODE -ne 0) { throw "Failed to tag the FaMiLiS image." }
 
     $nodeName = kubectl get nodes -o jsonpath="{.items[0].metadata.name}"
     $imageArchive = Join-Path $RuntimeDir "familis-images.tar"
@@ -162,6 +202,70 @@ try {
 
   Write-Host "Applying Kubernetes manifests..."
   kubectl apply -f .\k8s\base\namespace.yaml
+  if ($LASTEXITCODE -ne 0) { throw "Could not create the familis namespace." }
+
+  $mysqlPassword = Get-KubernetesSecretValue "mysql-secret" "root-password"
+  if (-not $mysqlPassword) {
+    $mysqlPassword = New-RandomHex 24
+    Apply-GenericSecret "mysql-secret" @{
+      "root-password" = $mysqlPassword
+      "database" = "familis_central"
+    }
+  } elseif ($mysqlPassword -eq "root") {
+    $replacementPassword = New-RandomHex 24
+    $mysqlPod = kubectl -n familis get pod -l app=mysql -o "jsonpath={.items[0].metadata.name}" 2>$null
+    if ($LASTEXITCODE -eq 0 -and $mysqlPod) {
+      Write-Host "Rotating the legacy MySQL password..."
+      kubectl -n familis exec $mysqlPod -- mysql -uroot -proot -e "ALTER USER IF EXISTS 'root'@'%' IDENTIFIED BY '$replacementPassword'; ALTER USER IF EXISTS 'root'@'localhost' IDENTIFIED BY '$replacementPassword';"
+      if ($LASTEXITCODE -ne 0) {
+        throw "Could not rotate the legacy MySQL password."
+      }
+    }
+    $mysqlPassword = $replacementPassword
+    Apply-GenericSecret "mysql-secret" @{
+      "root-password" = $mysqlPassword
+      "database" = "familis_central"
+    }
+  }
+
+  $internalToken = Get-KubernetesSecretValue "internal-api-secret" "token"
+  if (-not $internalToken -or $internalToken -eq "familis-internal-frame-ingest") {
+    Apply-GenericSecret "internal-api-secret" @{
+      "token" = (New-RandomHex 32)
+    }
+  }
+
+  $adminPassword = Get-KubernetesSecretValue "familis-auth-secret" "initial-admin-password"
+  $authTokenSecret = Get-KubernetesSecretValue "familis-auth-secret" "auth-token-secret"
+  $testerPassword = Get-KubernetesSecretValue "familis-auth-secret" "initial-tester-password"
+  $newAdminCredentials = -not $adminPassword
+  $newTesterCredentials = -not $testerPassword
+  if (-not $adminPassword) { $adminPassword = New-RandomHex 12 }
+  if (-not $authTokenSecret) { $authTokenSecret = New-RandomHex 32 }
+  if (-not $testerPassword) { $testerPassword = New-RandomHex 12 }
+  if ($newAdminCredentials -or $newTesterCredentials) {
+    Apply-GenericSecret "familis-auth-secret" @{
+      "auth-token-secret" = $authTokenSecret
+      "initial-admin-password" = $adminPassword
+      "initial-tester-password" = $testerPassword
+    }
+  }
+  if ($newAdminCredentials) {
+    $credentialFile = Join-Path $RuntimeDir "admin-credentials.txt"
+    @(
+      "Email: admin@familis.com"
+      "Password: $adminPassword"
+    ) | Set-Content -Path $credentialFile
+    Write-Host "Initial administrator credentials: $credentialFile"
+  }
+  if ($newTesterCredentials) {
+    $testerCredentialFile = Join-Path $RuntimeDir "tester-credentials.txt"
+    @(
+      (1..10 | ForEach-Object { "tester$($_.ToString('00'))@familis.com" })
+      "Password: $testerPassword"
+    ) | Set-Content -Path $testerCredentialFile
+    Write-Host "Initial tester credentials: $testerCredentialFile"
+  }
 
   Write-Host "Updating the TLS certificate secret..."
   kubectl -n familis create secret tls familis-tls `
@@ -170,17 +274,25 @@ try {
     --dry-run=client `
     -o yaml | kubectl apply -f -
 
+  kubectl -n familis delete job kafka-init --ignore-not-found | Out-Host
   kubectl apply -k .\k8s\base --validate=false
+  if ($LASTEXITCODE -ne 0) { throw "Could not apply the Kubernetes manifests." }
   kubectl -n familis set env deployment/familis --containers=familis HOST_LAN_IP=$ip | Out-Host
+  if ($LASTEXITCODE -ne 0) { throw "Could not set the LAN IP." }
   kubectl -n familis rollout restart deployment/central-api deployment/fer-worker deployment/familis | Out-Host
+  if ($LASTEXITCODE -ne 0) { throw "Could not restart the FaMiLiS deployments." }
 
   Write-Host "Waiting for deployments..."
-  kubectl -n familis rollout status deployment/mysql --timeout=180s
-  kubectl -n familis rollout status deployment/zookeeper --timeout=180s
-  kubectl -n familis rollout status deployment/kafka --timeout=180s
-  kubectl -n familis rollout status deployment/central-api --timeout=180s
-  kubectl -n familis rollout status deployment/fer-worker --timeout=180s
-  kubectl -n familis rollout status deployment/familis --timeout=180s
+  Wait-Deployment "mysql" "300s"
+  Wait-Deployment "zookeeper"
+  Wait-Deployment "kafka"
+  $partitionCount = kubectl -n familis exec deployment/kafka -- bash -c "kafka-topics --bootstrap-server kafka:9092 --describe --topic video-frames | sed -n 's/.*PartitionCount: \([0-9]*\).*/\1/p'"
+  if ([int]$partitionCount -lt 6) {
+    kubectl -n familis exec deployment/kafka -- kafka-topics --bootstrap-server kafka:9092 --alter --topic video-frames --partitions 6
+  }
+  Wait-Deployment "central-api"
+  Wait-Deployment "fer-worker" "300s"
+  Wait-Deployment "familis"
 
   if (-not $NoPortForward) {
     $portForwardReady = $false
@@ -337,7 +449,7 @@ try {
     if ($LASTEXITCODE -ne 0) {
       throw "Could not publish the public URL to the FaMiLiS application."
     }
-    kubectl -n familis rollout status deployment/familis --timeout=180s
+    Wait-Deployment "familis"
   }
 
   Write-Host ""

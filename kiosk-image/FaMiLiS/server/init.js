@@ -72,12 +72,20 @@ async function addForeignKeyIfMissing(
 }
 
 function createPool() {
-  // Example: mysql://user:password@localhost:3306/familis_central
-  const connectionString =
-    process.env.DATABASE_URL || "mysql://root:@localhost:3306/familis_central";
+  if (!process.env.DATABASE_URL) {
+    return mysql.createPool({
+      host: process.env.DB_HOST || "localhost",
+      port: Number(process.env.DB_PORT || 3306),
+      user: process.env.DB_USER || "root",
+      password: process.env.DB_PASSWORD || "",
+      database: process.env.DB_NAME || "familis_central",
+      waitForConnections: true,
+      connectionLimit: 10,
+      multipleStatements: true,
+    });
+  }
 
-  const url = new URL(connectionString);
-
+  const url = new URL(process.env.DATABASE_URL);
   return mysql.createPool({
     host: url.hostname,
     port: Number(url.port || 3306),
@@ -151,27 +159,76 @@ export async function initDb() {
     MODIFY role ENUM('tester', 'admin') NOT NULL DEFAULT 'tester'
   `);
 
-  // Seed admin user (plaintext demo password hashed with bcrypt; salt is inside the hash)
-  const adminPasswordHash = await bcrypt.hash("admin123", 10);
-  await pool.query(
-    `
-    INSERT INTO users (username, email, password_hash, role)
-    VALUES (?, ?, ?, ?)
-    ON DUPLICATE KEY UPDATE
-      username = VALUES(username),
-      password_hash = VALUES(password_hash);
-  `,
-    ["admin", "admin@familis.com", adminPasswordHash, "admin"]
+  const initialAdminPassword = process.env.INITIAL_ADMIN_PASSWORD;
+  const [[admin]] = await pool.query(
+    "SELECT user_id, password_hash FROM users WHERE email = ? LIMIT 1",
+    ["admin@familis.com"],
   );
+  if (!admin) {
+    if (!initialAdminPassword || initialAdminPassword.length < 12) {
+      throw new Error(
+        "INITIAL_ADMIN_PASSWORD must contain at least 12 characters on a fresh installation.",
+      );
+    }
+    const adminPasswordHash = await bcrypt.hash(initialAdminPassword, 10);
+    await pool.query(
+      `
+      INSERT INTO users (username, email, password_hash, role)
+      VALUES (?, ?, ?, 'admin')
+      `,
+      ["admin", "admin@familis.com", adminPasswordHash],
+    );
+  } else if (
+    initialAdminPassword &&
+    initialAdminPassword !== "admin123" &&
+    (await bcrypt.compare("admin123", admin.password_hash))
+  ) {
+    const replacementHash = await bcrypt.hash(initialAdminPassword, 10);
+    await pool.query(
+      "UPDATE users SET password_hash = ?, role = 'admin' WHERE user_id = ?",
+      [replacementHash, admin.user_id],
+    );
+    console.log("Replaced the legacy default administrator password.");
+  }
+
+  const initialTesterPassword = process.env.INITIAL_TESTER_PASSWORD;
+  if (initialTesterPassword && initialTesterPassword.length >= 12) {
+    const testerPasswordHash = await bcrypt.hash(initialTesterPassword, 10);
+    for (let number = 1; number <= 10; number += 1) {
+      const suffix = String(number).padStart(2, "0");
+      const username = `Tester ${suffix}`;
+      const email = `tester${suffix}@familis.com`;
+      const [[tester]] = await pool.query(
+        "SELECT user_id, password_hash FROM users WHERE email = ? LIMIT 1",
+        [email],
+      );
+      if (!tester) {
+        await pool.query(
+          "INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, 'tester')",
+          [username, email, testerPasswordHash],
+        );
+      } else if (await bcrypt.compare("Tester123!", tester.password_hash)) {
+        await pool.query(
+          "UPDATE users SET password_hash = ?, role = 'tester' WHERE user_id = ?",
+          [testerPasswordHash, tester.user_id],
+        );
+      }
+      await pool.query(
+        `INSERT INTO participants (name, email, tester_label)
+         SELECT ?, ?, ?
+         WHERE NOT EXISTS (
+           SELECT 1 FROM participants WHERE LOWER(email) = LOWER(?)
+         )`,
+        [username, email, `T-${suffix}`, email],
+      );
+    }
+  }
 
   await pool.query(
     `
     INSERT INTO food_products (food_id, name, category, image_url)
     VALUES (?, ?, ?, ?)
-    ON DUPLICATE KEY UPDATE
-      name = VALUES(name),
-      category = VALUES(category),
-      image_url = VALUES(image_url);
+    ON DUPLICATE KEY UPDATE food_id = food_id;
   `,
     [1, "Flavored Dip", "condiment", null]
   );

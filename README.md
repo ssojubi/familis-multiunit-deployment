@@ -6,7 +6,7 @@ facial valence processing, surveys, and centralized reporting.
 The Kubernetes deployment contains:
 
 - `familis`: React/Vite web application, Express API, and Socket.IO
-- `central-api`: FastAPI frame ingestion and kiosk registry
+- `central-api`: internal FastAPI frame ingestion
 - `kafka` and `zookeeper`: frame queue
 - `fer-worker`: autoscaled FER processing workers
 - `mysql`: application database
@@ -191,10 +191,6 @@ openssl x509 -req `
 openssl x509 -in .\certs\familis-root-ca.pem -outform der -out .\certs\familis-ca.cer
 Remove-Item .\certs\familis-server.csr
 
-Copy-Item .\certs\cert.pem .\central-server\cert.pem -Force
-Copy-Item .\certs\key.pem .\central-server\key.pem -Force
-Copy-Item .\certs\cert.pem .\kiosk-image\FaMiLiS\cert.pem -Force
-Copy-Item .\certs\key.pem .\kiosk-image\FaMiLiS\key.pem -Force
 ```
 
 Trust the root certificate on the Windows server:
@@ -241,10 +237,6 @@ mkdir -p ./certs
   -out ./certs/familis-ca.cer
 
 rm ./certs/familis-server.csr
-cp ./certs/cert.pem ./central-server/cert.pem
-cp ./certs/key.pem ./central-server/key.pem
-cp ./certs/cert.pem ./kiosk-image/FaMiLiS/cert.pem
-cp ./certs/key.pem ./kiosk-image/FaMiLiS/key.pem
 ```
 
 Trust the root certificate on the Mac server:
@@ -349,6 +341,31 @@ rm "$image_archive"
 
 ```powershell
 kubectl apply -f .\k8s\base\namespace.yaml
+$bytes = New-Object byte[] 32
+$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+$rng.GetBytes($bytes)
+$mysqlPassword = ([BitConverter]::ToString($bytes)).Replace("-", "").ToLower()
+$rng.GetBytes($bytes)
+$internalToken = ([BitConverter]::ToString($bytes)).Replace("-", "").ToLower()
+$rng.GetBytes($bytes)
+$authSecret = ([BitConverter]::ToString($bytes)).Replace("-", "").ToLower()
+$rng.Dispose()
+$adminPassword = Read-Host "Initial administrator password (minimum 12 characters)"
+$testerPassword = Read-Host "Initial tester password (minimum 12 characters)"
+if ($adminPassword.Length -lt 12 -or $testerPassword.Length -lt 12) {
+  throw "Passwords must contain at least 12 characters."
+}
+
+kubectl -n familis create secret generic mysql-secret `
+  --from-literal="root-password=$mysqlPassword" `
+  --from-literal="database=familis_central"
+kubectl -n familis create secret generic internal-api-secret `
+  --from-literal="token=$internalToken"
+kubectl -n familis create secret generic familis-auth-secret `
+  --from-literal="auth-token-secret=$authSecret" `
+  --from-literal="initial-admin-password=$adminPassword" `
+  --from-literal="initial-tester-password=$testerPassword"
+
 kubectl -n familis create secret tls familis-tls `
   --cert=.\certs\cert.pem `
   --key=.\certs\key.pem `
@@ -361,6 +378,26 @@ kubectl -n familis create secret tls familis-tls `
 
 ```bash
 kubectl apply -f ./k8s/base/namespace.yaml
+mysql_password="$(openssl rand -hex 24)"
+internal_token="$(openssl rand -hex 32)"
+auth_secret="$(openssl rand -hex 32)"
+read -rsp "Initial administrator password (minimum 12 characters): " admin_password
+echo
+read -rsp "Initial tester password (minimum 12 characters): " tester_password
+echo
+test "${#admin_password}" -ge 12
+test "${#tester_password}" -ge 12
+
+kubectl -n familis create secret generic mysql-secret \
+  --from-literal="root-password=$mysql_password" \
+  --from-literal="database=familis_central"
+kubectl -n familis create secret generic internal-api-secret \
+  --from-literal="token=$internal_token"
+kubectl -n familis create secret generic familis-auth-secret \
+  --from-literal="auth-token-secret=$auth_secret" \
+  --from-literal="initial-admin-password=$admin_password" \
+  --from-literal="initial-tester-password=$tester_password"
+
 kubectl -n familis create secret tls familis-tls \
   --cert=./certs/cert.pem \
   --key=./certs/key.pem \
@@ -416,36 +453,20 @@ Expected state:
 - Idle FER workers scale down.
 - FER workers scale up when processing CPU exceeds the target.
 
-Start the processing-health port-forward:
+After starting the Traefik port-forward in the next step, check the application:
 
 ```bash
-kubectl -n familis port-forward svc/familis-api 8080:8080
+curl -k https://localhost:5173/api/health
 ```
 
-Run the health request in another terminal.
-
-**Windows PowerShell**
-
-```powershell
-curl.exe -k https://localhost:8080/api/emotion/health
-```
-
-**macOS Terminal**
+The response must include `"ok": true`. Verify the frame topic has six
+partitions:
 
 ```bash
-curl -k https://localhost:8080/api/emotion/health
+kubectl -n familis exec deployment/kafka -- \
+  kafka-topics --bootstrap-server kafka:9092 \
+  --describe --topic video-frames
 ```
-
-The response must include:
-
-```json
-{
-  "ok": true,
-  "processing": "kubernetes-fer-workers"
-}
-```
-
-Stop the health port-forward with `Ctrl+C`.
 
 ## 11. Open the Website
 
@@ -503,8 +524,9 @@ kubectl -n familis rollout status deployment/familis --timeout=180s
 The public address appears under **Manage Kiosks** as the mobile access URL.
 It uses publicly trusted HTTPS, so mobile devices do not need the local
 FaMiLiS certificate. The address remains valid only while the `cloudflared`
-process is running. Live monitoring still uses WebRTC and may be blocked by
-networks that restrict peer-to-peer media.
+process is running. Live monitoring uses direct WebRTC between the tester and
+administrator devices. Use the same phone hotspot when the school network
+blocks peer-to-peer media.
 
 ## Food Testing Workflow
 

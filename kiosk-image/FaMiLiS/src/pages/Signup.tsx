@@ -1,9 +1,6 @@
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-nocheck
-import React, { useEffect, useId, useState } from "react";
+import React, { useId, useState } from "react";
 import type { FormEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { hasStoredUser } from "../auth";
 import logo from "../assets/logo.png";
 import loginBg from "../assets/login-bg.png";
 
@@ -140,12 +137,6 @@ export default function Signup() {
   const [loading, setLoading] = useState(false);
   const [accountCreated, setAccountCreated] = useState(false);
 
-  useEffect(() => {
-    if (hasStoredUser()) {
-      navigate("/dashboard", { replace: true });
-    }
-  }, [navigate]);
-
   const validateCurrentStep = () => {
     if (step === 0) {
       if (!displayName.trim()) {
@@ -280,6 +271,7 @@ export default function Signup() {
       const ageValue = age.trim() ? Number(age) : null;
       const res = await fetch("/api/signup", {
         method: "POST",
+        credentials: "include",
         headers: {
           "Content-Type": "application/json",
         },

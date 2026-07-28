@@ -22,4 +22,9 @@ spec:
               done
               echo "Creating Kafka topics..."
               kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic video-frames --partitions 6 --replication-factor 1
+              PARTITIONS=$(kafka-topics --bootstrap-server kafka:9092 --describe --topic video-frames | sed -n 's/.*PartitionCount: \([0-9]*\).*/\1/p')
+              if [ "$PARTITIONS" -lt 6 ]; then
+                echo "Increasing video-frames from $PARTITIONS to 6 partitions..."
+                kafka-topics --bootstrap-server kafka:9092 --alter --topic video-frames --partitions 6
+              fi
               kafka-topics --bootstrap-server kafka:9092 --describe --topic video-frames

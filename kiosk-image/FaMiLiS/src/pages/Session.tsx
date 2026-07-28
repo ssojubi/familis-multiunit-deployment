@@ -120,11 +120,11 @@ export default function Session() {
   }, []);
   const isAdmin = userRole === "admin";
 
-  const startEpochMs = useMemo(() => {
+  const startEpochMs = (() => {
     if (!session?.startTime) return null;
     const t = new Date(session.startTime).getTime();
     return Number.isNaN(t) ? null : t;
-  }, [session?.startTime]);
+  })();
 
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   useEffect(() => {
@@ -260,7 +260,6 @@ export default function Session() {
     return () => {
       cameraSessionActiveRef.current = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Release hardware before the next screen (e.g. Survey) paints.
@@ -388,7 +387,7 @@ export default function Session() {
       socketRef.current = null;
       cleanupPeerConnection();
     };
-  }, [createPeerConnection, roomId, streamRef.current]);
+  }, [createPeerConnection, roomId]);
 
   useEffect(() => {
     if (!sessionId || isAdmin) return;
@@ -407,7 +406,7 @@ export default function Session() {
     }, 1500);
 
     return () => window.clearInterval(id);
-  }, [isAdmin, navigate, sessionId]);
+  }, [isAdmin, kioskMode, navigate, sessionId]);
 
   const togglePause = () => {
     if (!isRecording) return;

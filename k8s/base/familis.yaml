@@ -29,8 +29,22 @@ spec:
             - name: api
               containerPort: 8080
           env:
-            - name: DATABASE_URL
-              value: mysql://root:root@mysql:3306/familis_central
+            - name: DB_HOST
+              value: mysql
+            - name: DB_PORT
+              value: "3306"
+            - name: DB_USER
+              value: root
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: root-password
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: database
             - name: CENTRAL_SERVER_URL
               value: http://central-api:8000
             - name: INTERNAL_API_TOKEN
@@ -38,6 +52,21 @@ spec:
                 secretKeyRef:
                   name: internal-api-secret
                   key: token
+            - name: AUTH_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: familis-auth-secret
+                  key: auth-token-secret
+            - name: INITIAL_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: familis-auth-secret
+                  key: initial-admin-password
+            - name: INITIAL_TESTER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: familis-auth-secret
+                  key: initial-tester-password
             - name: DEFAULT_KIOSK_ID
               value: kiosk-01
             - name: WEB_KIOSK_MODE

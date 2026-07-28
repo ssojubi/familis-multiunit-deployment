@@ -6,16 +6,15 @@ import logo from "../assets/logo.png";
 
 import {
   getApiBase,
-  getCentralWsBase,
   getSocketUrl,
 } from "../apiConfig";
 import {
   captureTesterContext,
   getOrCreateBrowserKioskId,
 } from "../testerContext";
+import { WEBRTC_CONFIGURATION } from "../webrtcConfig";
 
 const SESSIONS_API_BASE = getApiBase();
-const WS_BASE = getCentralWsBase();
 const SOCKET_SERVER_URL = getSocketUrl();
 const FRAME_CAPTURE_MS = 750;
 const MAX_FRAME_WIDTH = 960;
@@ -31,7 +30,7 @@ type ServerToClientEvents = {
 };
 
 type ClientToServerEvents = {
-  "join-room": (roomId: string, role: "host") => void;
+  "join-room": (roomId: string) => void;
   signal: (data: {
     room: string;
     to?: string;
@@ -44,13 +43,6 @@ type ClientToServerEvents = {
     sessionId?: number;
     foodName?: string;
   }) => void;
-};
-
-const WEBRTC_CONFIG: RTCConfiguration = {
-  iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun1.l.google.com:19302" },
-  ],
 };
 
 function getStoredUserId(): number | null {
@@ -76,10 +68,8 @@ export default function TesterSession() {
   const [frameCount, setFrameCount] = useState(0);
   const [foodName, setFoodName] = useState<string | undefined>(undefined);
   const [startError, setStartError] = useState<string | null>(null);
-
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
   const socketRef = useRef<Socket<
     ServerToClientEvents,
     ClientToServerEvents
@@ -90,7 +80,6 @@ export default function TesterSession() {
   const canvasRef = useRef<HTMLCanvasElement>(document.createElement("canvas"));
   const isRecordingRef = useRef(false);
   const sessionIdRef = useRef<number | null>(null);
-  const lastRegistryNotifyRef = useRef(0);
   const frameInFlightRef = useRef(false);
 
   const [testerContext] = useState(() =>
@@ -116,34 +105,12 @@ export default function TesterSession() {
         setMessage("Camera access denied. Please allow camera access.");
       });
 
-    const wsUrl = `${WS_BASE}/ws/kiosk/${kioskId}`;
-    console.log("Connecting to central server WS:", wsUrl);
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      if (disposed) return;
-      console.log("Central server WebSocket connected");
-      if (isRecordingRef.current && sessionIdRef.current != null) {
-        notifyCentralSessionStarted(sessionIdRef.current);
-      }
-    };
-
-    ws.onerror = (err) => {
-      if (disposed) return;
-      console.error("WebSocket error:", err);
-    };
-
-    ws.onclose = () => {
-      if (disposed) return;
-      console.log("WebSocket closed");
-    };
-
     const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io(
       SOCKET_SERVER_URL,
       {
         reconnection: true,
         transports: ["websocket", "polling"],
+        withCredentials: true,
       },
     );
     socketRef.current = socket;
@@ -153,7 +120,7 @@ export default function TesterSession() {
       console.log(
         `[TesterSession] Socket.IO connected. Joining room "${roomId}" as host`,
       );
-      socket.emit("join-room", roomId, "host");
+      socket.emit("join-room", roomId);
     });
 
     socket.on("viewer-connected", (viewerId) => {
@@ -188,13 +155,13 @@ export default function TesterSession() {
 
     return () => {
       disposed = true;
-      ws.close();
       socket.disconnect();
       cleanupPeerConnection();
       if (intervalRef.current) clearInterval(intervalRef.current);
       if (streamRef.current)
         streamRef.current.getTracks().forEach((t) => t.stop());
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function ensureCameraStream(): Promise<MediaStream> {
@@ -224,7 +191,7 @@ export default function TesterSession() {
     const existing = peerConnectionsRef.current.get(viewerId);
     if (existing) return existing;
 
-    const pc = new RTCPeerConnection(WEBRTC_CONFIG);
+    const pc = new RTCPeerConnection(WEBRTC_CONFIGURATION);
     peerConnectionsRef.current.set(viewerId, pc);
 
     pc.onicecandidate = (event) => {
@@ -273,23 +240,6 @@ export default function TesterSession() {
     }
     peerConnectionsRef.current.forEach((pc) => pc.close());
     peerConnectionsRef.current.clear();
-  }
-
-  function notifyCentralSessionStarted(sid: string | number) {
-    if (wsRef.current?.readyState !== WebSocket.OPEN) return false;
-
-    wsRef.current.send(
-      JSON.stringify({
-        type: "session_started",
-        session_id: String(sid),
-      }),
-    );
-    lastRegistryNotifyRef.current = Date.now();
-    console.log("[TesterSession] Notified central registry session_started", {
-      kioskId,
-      sessionId: String(sid),
-    });
-    return true;
   }
 
   function broadcastStatus(
@@ -352,7 +302,6 @@ export default function TesterSession() {
       sessionIdRef.current = newSessionId;
       setFoodName(newFoodName);
 
-      notifyCentralSessionStarted(newSessionId);
       setIsRecording(true);
       isRecordingRef.current = true;
       setStatus("recording");
@@ -412,10 +361,6 @@ export default function TesterSession() {
 
     broadcastStatus("completed", completedSessionId, foodName);
 
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "session_stopped" }));
-    }
-
     setTimeout(() => {
       navigate("/tester-survey", {
         state: { sessionId: completedSessionId },
@@ -462,13 +407,6 @@ export default function TesterSession() {
         method: "POST",
         body: fd,
       });
-      if (res.status === 409) {
-        const now = Date.now();
-        if (now - lastRegistryNotifyRef.current > 1000) {
-          notifyCentralSessionStarted(String(sid));
-        }
-        return;
-      }
       if (!res.ok) throw new Error(`Frame upload HTTP ${res.status}`);
       setFrameCount((prev) => prev + 1);
     } catch (err) {

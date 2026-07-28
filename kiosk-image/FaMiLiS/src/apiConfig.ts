@@ -4,11 +4,6 @@ function getPageProtocol(): "http:" | "https:" {
   return window.location.protocol === "https:" ? "https:" : "http:";
 }
 
-function getEnv(name: string): string | undefined {
-  const meta = import.meta as unknown as { env?: Record<string, string | undefined> };
-  return meta.env?.[name];
-}
-
 function shouldUseWebProxy(): boolean {
   return window.location.port === "5173" || window.location.port === "";
 }
@@ -36,26 +31,6 @@ export function getWsBase(): string {
   }
   const api = getApiBase();
   return api.replace(/^https:/, "wss:").replace(/^http:/, "ws:");
-}
-
-export function getCentralApiBase(): string {
-  if (shouldUseWebProxy()) {
-    return "/central-api";
-  }
-
-  return (
-    getEnv("VITE_CENTRAL_API_URL") ||
-    `${getPageProtocol()}//${window.location.hostname}:8000`
-  ).replace(/\/$/, "");
-}
-
-export function getCentralWsBase(): string {
-  if (shouldUseWebProxy()) {
-    const proto = getPageProtocol() === "https:" ? "wss:" : "ws:";
-    return `${proto}//${window.location.host}/central-ws`;
-  }
-
-  return getCentralApiBase().replace(/^https:/, "wss:").replace(/^http:/, "ws:");
 }
 
 export function isKioskPublicPath(pathname: string): boolean {
@@ -103,7 +78,9 @@ export async function getShareHostIP(): Promise<string> {
       const config = (await response.json()) as { serverIP?: string | null };
       return resolveShareHostIP(config.serverIP);
     }
-  } catch {}
+        } catch {
+          // Use the configured base URL when the browser rejects this candidate.
+        }
   return resolveShareHostIP();
 }
 

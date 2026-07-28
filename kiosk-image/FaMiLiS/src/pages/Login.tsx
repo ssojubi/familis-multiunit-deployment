@@ -1,5 +1,3 @@
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-nocheck
 import React, { useEffect, useId, useState } from "react";
 import type { FormEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -138,6 +136,7 @@ export default function Login() {
       setLoading(true);
       const res = await fetch(`/api/login`, {
         method: "POST",
+        credentials: "include",
         headers: {
           "Content-Type": "application/json",
         },

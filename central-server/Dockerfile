@@ -16,7 +16,12 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir --retries 10 --timeout 120 -r requirements.txt
+RUN for attempt in 1 2 3; do \
+      pip install --no-cache-dir --retries 10 --timeout 120 -r requirements.txt && exit 0; \
+      echo "pip install failed on attempt ${attempt}; retrying"; \
+      sleep 5; \
+    done; \
+    exit 1
 
 COPY . .
 

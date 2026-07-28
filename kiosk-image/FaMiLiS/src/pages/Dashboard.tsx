@@ -15,11 +15,7 @@ import {
 } from "chart.js";
 import { Line, Radar } from "react-chartjs-2";
 import React from "react";
-import { io, Socket } from 'socket.io-client';
-import {
-  getApiBase,
-  getSocketUrl,
-} from "../apiConfig";
+import { getApiBase } from "../apiConfig";
 import {
   getAdminRoomContext,
   saveAdminRoomContext,
@@ -104,30 +100,6 @@ type Participant = {
   createdAt: string | null;
 }
 
-type KioskStatus = "recording" | "paused" | "not_connected";
-
-type Kiosk = {
-  id: number;
-  status: KioskStatus;
-  elapsedSeconds: number;
-  slotName: string | null;
-};
-
-type Role = 'host' | 'viewer' | null;
-
-interface ServerToClientEvents {
-  'viewer-connected': () => void;
-  'user-disconnected': (userId: string) => void;
-  'host-disconnected': () => void;
-  'signal': (data: { from: string; sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) => void;
-  'tester-session-status': (data: { status: 'recording' | 'completed'; sessionId?: number; foodName?: string; from?: string }) => void;
-}
-
-interface ClientToServerEvents {
-  'join-room': (roomId: string, role: Role) => void;
-  'signal': (data: { room: string; sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) => void;
-}
-
 function clampPct(n: number) {
   return Math.max(0, Math.min(100, n));
 }
@@ -157,15 +129,6 @@ const toApiUrl = (url: string | null) => {
   if (!url) return null;
   if (url.startsWith("http://") || url.startsWith("https://")) return url;
   return `${API_BASE}${url}`;
-};
-
-const SOCKET_SERVER_URL = getSocketUrl();
-
-const WEBRTC_CONFIG: RTCConfiguration = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' }
-  ]
 };
 
 function formatDateTime(iso: string | null) {
@@ -215,7 +178,6 @@ export default function Dashboard() {
   const [parLoading, setParLoading] = useState(true);
   const [parError, setParError] = useState<string | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
-  const [expandedParId, setExpandedParId] = useState<number | null>(null);
   const [deletingParId, setDeletingParId] = useState<number | null>(null);
   const [deleteParError, setDeleteParError] = useState<string | null>(null);
   const [parToDelete, setParToDelete] = useState<Participant | null>(null);
@@ -235,25 +197,13 @@ export default function Dashboard() {
   const [editParError, setEditParError] = useState<string | null>(null);
   const [parToEdit, setParToEdit] = useState<Participant | null>(null);
 
-  const [role, setRole] = useState<Role>(null);        
   const [roomId, setRoomId] = useState<string>(
     () => getAdminRoomContext().roomId,
   );
-  const [kioskStatus, setKioskStatus] = useState<string>('Select a role to begin.');
-
-  const socketRef = useRef<Socket<ServerToClientEvents, ClientToServerEvents> | null>(null);
-  const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
-  const localStreamRef = useRef<MediaStream | null>(null);
-  const localVideoRef = useRef<HTMLVideoElement | null>(null); 
-  const [remoteStreams, setRemoteStreams] = useState<{ peerId: string; stream: MediaStream; label: string }[]>([]);
-  const [activeKioskIds, setActiveKioskIds] = useState<Set<string>>(new Set());
 
   const [kioskFoodId, setKioskFoodId] = useState<number | null>(
     () => getAdminRoomContext().foodId,
   );
-  const [kioskSessionId, setKioskSessionId] = useState<number | null>(null);
-  const [kioskCmdLoading, setKioskCmdLoading] = useState(false);
-  const [kioskCmdError, setKioskCmdError] = useState<string | null>(null);
 
   useEffect(() => {
     foodsAbortRef.current?.abort();
@@ -335,10 +285,6 @@ export default function Dashboard() {
           createdAt: p.createdAt ?? p.created_at ?? null,
         }));
         setParticipants(list);
-        setExpandedParId((prev) => {
-          if (prev && list.some((p) => p.id === prev)) return prev;
-          return null;
-        });
       } catch (err: any) {
         if (err?.name === "AbortError") return;
         setParError(err?.message || "Failed to load participants.");
@@ -350,217 +296,6 @@ export default function Dashboard() {
     void loadParticipants();
     return () => ac.abort();
   }, [parRefreshKey]);
-
-
-  useEffect(() => {
-    const storedUser =
-      localStorage.getItem("familis.user") || localStorage.getItem("user");
-    const user = storedUser ? JSON.parse(storedUser) : null;
-    const userRole = user?.role;
-
-    const adminContext = getAdminRoomContext();
-
-    if (userRole === 'admin') {
-      setRole('viewer');
-      const currentRoom = adminContext.roomId;
-      setRoomId(currentRoom);
-      setKioskFoodId(adminContext.foodId);
-      if (currentRoom) {
-        saveAdminRoomContext(currentRoom, adminContext.foodId);
-      }
-    } else if (userRole === 'staff') {
-      setRole('host');
-      if (adminContext.roomId) {
-        setRoomId(adminContext.roomId);
-      } else {
-        setRoomId('default-staff-room'); 
-      }
-    } else {
-      if (adminContext.roomId) {
-        setRoomId(adminContext.roomId);
-        setRole('viewer');
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    if (role === "viewer" && roomId) {
-      saveAdminRoomContext(roomId, kioskFoodId);
-    }
-  }, [kioskFoodId, role, roomId]);
-
-  useEffect(() => {
-    if (!roomId || !role) return;
-
-    const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io(SOCKET_SERVER_URL, {
-      reconnection: true,
-      transports: ['websocket', 'polling'],
-    });
-    socketRef.current = socket;
-
-    socket.on('connect', () => {
-      setKioskStatus(`Connected as ${role}. Room: ${roomId}`);
-      socket.emit('join-room', roomId, role);
-    });
-
-    socket.on('connect_error', () => {
-      setKioskStatus('Connection failed — check that server.js is running.');
-    });
-
-    socket.on('viewer-connected', async () => {
-      if (role !== 'host') return;
-      setKioskStatus('Viewer connected! Starting stream...');
-
-      if (!localStreamRef.current) await startCamera();
-
-      const pc = await createPeerConnection(socket.id ?? 'host');
-
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach(track => {
-          pc.addTrack(track, localStreamRef.current!);
-        });
-      }
-
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socket.emit('signal', { room: roomId, sdp: offer });
-    });
-
-    socket.on('signal', async (data) => {
-      const peerId = data.from;  
-      if (!peerId) return;
-
-      const pc = await createPeerConnection(peerId);
-
-      if (data.sdp) {
-        if (data.sdp.type === 'offer' && role === 'viewer') {
-          setKioskStatus('Receiving stream...');
-          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          socket.emit('signal', { room: roomId, sdp: answer });
-        } else if (data.sdp.type === 'answer' && role === 'host') {
-          if (pc.signalingState === 'have-local-offer') {
-            await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-          }
-        }
-      } else if (data.candidate) {
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-        } catch (e) {
-          console.error('ICE candidate error:', e);
-        }
-      }
-    });
-
-    socket.on('user-disconnected', (socketId) => {
-      const pc = peerConnectionsRef.current.get(socketId);
-      pc?.close();
-      peerConnectionsRef.current.delete(socketId);
-      setRemoteStreams(prev => prev.filter(s => s.peerId !== socketId));
-      setKioskStatus('A kiosk disconnected.');
-    });
-
-    socket.on('tester-session-status', (data) => {
-      if (data.status === 'recording') {
-        setKioskStatus(
-          data.foodName
-            ? `Tester started tasting: ${data.foodName} (session #${data.sessionId ?? '?'})`
-            : `Tester started their session (session #${data.sessionId ?? '?'})`,
-        );
-      } else {
-        setKioskStatus('Tester completed their session.');
-      }
-    });
-
-    return () => {
-      socket.disconnect();
-      cleanupWebRTC();
-    };
-  }, [roomId, role]);
-
-  const createPeerConnection = async (peerId: string): Promise<RTCPeerConnection> => {
-    const existing = peerConnectionsRef.current.get(peerId);
-    if (existing) return existing;
-
-    const pc = new RTCPeerConnection(WEBRTC_CONFIG);
-    peerConnectionsRef.current.set(peerId, pc);
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate && socketRef.current && roomId) {
-        socketRef.current.emit('signal', { room: roomId, candidate: event.candidate });
-      }
-    };
-
-    pc.onconnectionstatechange = () => {
-      setKioskStatus(`Kiosk ${peerId.slice(0, 6)}: ${pc.connectionState}`);
-    };
-
-    pc.ontrack = (event) => {
-      if (!event.streams[0]) return;
-      const stream = event.streams[0];
-      setRemoteStreams(prev => {
-        if (prev.find(s => s.peerId === peerId)) return prev;
-        const label = `Kiosk ${prev.length + 1}`;
-        return [...prev, { peerId, stream, label }];
-      });
-    };
-    return pc;
-  };
-  
-  const startCamera = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
-        audio: { echoCancellation: true, noiseSuppression: true },
-      });
-      localStreamRef.current = stream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-        localVideoRef.current.play().catch(() => {});
-      }
-      setKioskStatus('Camera active.');
-    } catch (err) {
-      console.error('Camera error:', err);
-      setKioskStatus('Camera permission denied or unavailable.');
-    }
-  };
-
-  const stopCamera = () => {
-    cleanupWebRTC();
-    if (localVideoRef.current) localVideoRef.current.srcObject = null;
-    setKioskStatus('Stopped.');
-  };
-
-  const stopKiosk = (peerId: string) => {
-    peerConnectionsRef.current.get(peerId)?.close();
-    peerConnectionsRef.current.delete(peerId);
-    setRemoteStreams(prev => prev.filter(s => s.peerId !== peerId));
-    setActiveKioskIds(prev => {
-      const next = new Set(prev);
-      next.delete(peerId);
-      return next;
-    });
-  };
-
-  const cleanupPeerConnection = (peerId?: string) => {
-    if (peerId) {
-      peerConnectionsRef.current.get(peerId)?.close();
-      peerConnectionsRef.current.delete(peerId);
-    } else {
-      peerConnectionsRef.current.forEach(pc => pc.close());
-      peerConnectionsRef.current.clear();
-    }
-  };
-
-  const cleanupWebRTC = () => {
-    cleanupPeerConnection();
-    setRemoteStreams([]);
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(t => t.stop());
-      localStreamRef.current = null;
-    }
-  };
 
   const openTestingRoom = (room: TestingRoom) => {
     saveAdminRoomContext(room.roomCode, room.foodId);
@@ -1720,7 +1455,6 @@ export default function Dashboard() {
                     <select
                       value={kioskFoodId ?? ""}
                       onChange={(e) => setKioskFoodId(Number(e.target.value))}
-                      disabled={!!kioskSessionId}
                       className="w-full appearance-none text-[14px] text-gray-900 border border-gray-200 rounded-lg pl-4 pr-10 py-3 bg-white disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-[#e8174a]/20 focus:border-[#e8174a]/40"
                     >
                       <option value="" disabled>
@@ -2271,79 +2005,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div>
       <label className="block text-sm text-gray-600 mb-1 font-semibold">{label}</label>
       {children}
-    </div>
-  );
-}
-
-function KioskVideoTile({
-  peerId,
-  stream,
-  label,
-  onStop,
-}: {
-  peerId: string;
-  stream: MediaStream;
-  label: string;
-  onStop: () => void;
-}) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [paused, setPaused] = useState(false);
-
-  useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.srcObject = stream;
-      videoRef.current.play().catch(() => {
-        if (videoRef.current) {
-          videoRef.current.muted = true;
-          videoRef.current.play();
-        }
-      });
-    }
-  }, [stream]);
-
-  const togglePause = () => {
-    if (!videoRef.current) return;
-    if (paused) {
-      videoRef.current.play();
-    } else {
-      videoRef.current.pause();
-    }
-    setPaused(p => !p);
-  };
-
-  return (
-    <div className="relative bg-black aspect-video rounded-lg overflow-hidden border border-gray-200 group">
-      <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
-
-      {/* Label */}
-      <span className="absolute top-2 left-2 text-[11px] text-white bg-black/50 px-2 py-0.5 rounded font-semibold">
-        {label}
-      </span>
-
-      {/* Paused overlay */}
-      {paused && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/40">
-          <span className="text-white text-sm font-semibold">Paused</span>
-        </div>
-      )}
-
-      {/* Controls — visible on hover */}
-      <div className="absolute bottom-0 left-0 right-0 flex gap-2 p-2 bg-gradient-to-t from-black/70 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
-        <button
-          type="button"
-          onClick={togglePause}
-          className="flex-1 bg-white/20 hover:bg-white/30 text-white text-[11px] font-semibold py-1 rounded transition-colors"
-        >
-          {paused ? '▶ Resume' : '⏸ Pause'}
-        </button>
-        <button
-          type="button"
-          onClick={onStop}
-          className="flex-1 bg-red-500/80 hover:bg-red-600 text-white text-[11px] font-semibold py-1 rounded transition-colors"
-        >
-          ⏹ Stop
-        </button>
-      </div>
     </div>
   );
 }

@@ -6,9 +6,12 @@ mysql-connector-python==9.1.0
 mediapipe==0.10.14
 opencv-contrib-python==4.10.0.84
 joblib==1.4.2
-numpy<2
+numpy==1.26.4
 aiohttp==3.11.11
 python-dotenv==1.0.1
-scikit-learn==1.6.0
+scikit-learn==1.8.0
+scipy==1.17.1
+matplotlib==3.11.0
+fonttools==4.63.0
 jax==0.4.35
 jaxlib==0.4.35

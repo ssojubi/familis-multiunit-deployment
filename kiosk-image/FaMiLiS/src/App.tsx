@@ -8,7 +8,6 @@ import Setup from "./pages/Setup";
 import Session from "./pages/Session";
 import SessionDetail from "./pages/SessionDetail";
 import Survey from "./pages/Survey";
-import Kiosk from "./pages/Kiosk";
 import VideoMonitoring from "./pages/VideoMonitoring";
 
 import TesterConsent from "./pages/TesterConsent";
@@ -23,17 +22,15 @@ export default function App() {
         <Route path="/" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
 
-        <Route path="/kiosk/setup" element={<Setup />} />
-        <Route path="/kiosk/session" element={<Session />} />
-        <Route path="/kiosk/survey" element={<Survey />} />
-
         <Route element={<RequireAuth />}>
+          <Route path="/kiosk/setup" element={<Setup />} />
+          <Route path="/kiosk/session" element={<Session />} />
+          <Route path="/kiosk/survey" element={<Survey />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/setup" element={<Setup />} />
           <Route path="/session" element={<Session />} />
           <Route path="/session-detail" element={<SessionDetail />} />
           <Route path="/survey" element={<Survey />} />
-          <Route path="/kiosk" element={<Kiosk />} />
           <Route path="/video-monitoring" element={<VideoMonitoring />} />
           
           <Route path="/tester-join" element={<TesterJoin />} />

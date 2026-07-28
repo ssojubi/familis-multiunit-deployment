@@ -5,4 +5,12 @@ dist/
 venv/
 .familis/
 certs/familis-root-ca-key.pem
+certs/cert.pem
+certs/key.pem
+central-server/cert.pem
+central-server/key.pem
+kiosk-image/FaMiLiS/cert.pem
+kiosk-image/FaMiLiS/key.pem
+__pycache__/
+*.py[cod]
 familis-app-k8s-hotfix.tar

@@ -6,8 +6,6 @@ namespace: familis
 resources:
   - namespace.yaml
   - mysql-init-configmap.yaml
-  - mysql-secret.yaml
-  - internal-api-secret.yaml
   - mysql.yaml
   - zookeeper.yaml
   - kafka.yaml

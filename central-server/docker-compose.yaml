@@ -17,13 +17,11 @@ services:
       # Preserve the ports that the kiosk UI and its API already use.
       - --entrypoints.familis.address=:5173
       - --entrypoints.familis-api.address=:8080
-      - --entrypoints.central-api.address=:8000
     ports:
       - "80:80"
       - "443:443"
       - "5173:5173"
       - "8080:8080"
-      - "8000:8000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik/tls.yml:/etc/traefik/dynamic/tls.yml:ro
@@ -78,7 +76,7 @@ services:
     ports:
       - "3308:3306"
     environment:
-      MYSQL_ROOT_PASSWORD: root
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: familis_central
     volumes:
       - mysql_data:/var/lib/mysql
@@ -93,21 +91,15 @@ services:
         condition: service_started
     environment:
       KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Set INTERNAL_API_TOKEN}
       DB_HOST: mysql
       DB_PORT: 3306
       DB_USER: root
-      DB_PASSWORD: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD}
       DB_NAME: familis_central
       FRAME_STORAGE_ROOT: /frames
     volumes:
       - ./frames:/frames
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.central-server.rule=PathPrefix(`/`)
-      - traefik.http.routers.central-server.entrypoints=central-api
-      - traefik.http.routers.central-server.tls=true
-      - traefik.http.services.central-server.loadbalancer.server.port=8000
-
   fer-worker:
     build: .
     depends_on:
@@ -120,11 +112,12 @@ services:
     command: ["python", "-m", "app.worker"]
     environment:
       KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Set INTERNAL_API_TOKEN}
       VIDEO_FRAMES_TOPIC: "video-frames"
       DB_HOST: mysql
       DB_PORT: 3306
       DB_USER: root
-      DB_PASSWORD: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD}
       DB_NAME: familis_central
       FRAME_STORAGE_ROOT: /frames
     volumes:
@@ -142,7 +135,14 @@ services:
         condition: service_started
     restart: unless-stopped
     environment:
-      DATABASE_URL: mysql://root:root@central-mysql:3306/familis_central
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD}
+      DB_NAME: familis_central
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Set INTERNAL_API_TOKEN}
+      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:?Set AUTH_TOKEN_SECRET}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:?Set INITIAL_ADMIN_PASSWORD}
       EMOTION_SERVICE_URL: http://localhost:8765
       CENTRAL_SERVER_URL: http://central-server:8000
       DEFAULT_KIOSK_ID: kiosk-01

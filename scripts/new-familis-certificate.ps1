@@ -79,10 +79,5 @@ Remove-Item -LiteralPath $CsrFile -Force -ErrorAction SilentlyContinue
 & openssl x509 -in $RootCertFile -outform der -out $DerFile
 if ($LASTEXITCODE -ne 0) { throw "Could not create the iPad certificate file." }
 
-Copy-Item $CertFile (Join-Path $Root "central-server\cert.pem") -Force
-Copy-Item $KeyFile (Join-Path $Root "central-server\key.pem") -Force
-Copy-Item $CertFile (Join-Path $Root "kiosk-image\FaMiLiS\cert.pem") -Force
-Copy-Item $KeyFile (Join-Path $Root "kiosk-image\FaMiLiS\key.pem") -Force
-
 Write-Host "Generated a FaMiLiS server certificate for localhost and $LanIP."
 Write-Host "Install certs\familis-ca.cer once on each iPad, then enable full trust for it."

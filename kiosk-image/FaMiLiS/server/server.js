@@ -1,15 +1,13 @@
 import express from "express";
-import cors from "cors";
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import { initDb } from "./init.js";
 import multer from "multer";
 import { mkdir } from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
-import readline from 'readline';
 
 const app = express();
-app.use(cors());
 app.use(express.json());
 
 let poolPromise = null;
@@ -25,8 +23,134 @@ await mkdir(frameLogsRoot, { recursive: true });
 await mkdir(kiosksUploadsDir, { recursive: true });
 await mkdir(participantsUploadsDir, { recursive: true });
 
+function localUploadPath(uploadUrl) {
+  if (typeof uploadUrl !== "string" || !uploadUrl.startsWith("/uploads/")) {
+    return null;
+  }
+  const candidate = path.resolve(uploadsRoot, uploadUrl.slice("/uploads/".length));
+  return candidate.startsWith(`${uploadsRoot}${path.sep}`) ? candidate : null;
+}
+
+async function removeUploadedFiles(uploadUrls) {
+  const paths = [...new Set(uploadUrls.map(localUploadPath).filter(Boolean))];
+  await Promise.all(
+    paths.map(async (filePath) => {
+      try {
+        await fs.promises.unlink(filePath);
+      } catch (err) {
+        if (err?.code !== "ENOENT") {
+          console.warn(`Could not remove upload ${filePath}:`, err?.message || err);
+        }
+      }
+    }),
+  );
+}
+
 const CENTRAL_SERVER_URL = (process.env.CENTRAL_SERVER_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "";
+const AUTH_COOKIE_NAME = "familis_session";
+const AUTH_TOKEN_SECRET =
+  process.env.AUTH_TOKEN_SECRET ||
+  crypto.randomBytes(32).toString("hex");
+const AUTH_TOKEN_TTL_SECONDS = 12 * 60 * 60;
+
+if (!process.env.AUTH_TOKEN_SECRET) {
+  console.warn("AUTH_TOKEN_SECRET is not set; login sessions will reset when the server restarts.");
+}
+
+function encodeBase64Url(value) {
+  return Buffer.from(value).toString("base64url");
+}
+
+function signAuthToken(user) {
+  const payload = encodeBase64Url(
+    JSON.stringify({
+      id: Number(user.id),
+      username: String(user.username),
+      email: String(user.email),
+      role: String(user.role),
+      exp: Math.floor(Date.now() / 1000) + AUTH_TOKEN_TTL_SECONDS,
+    }),
+  );
+  const signature = crypto
+    .createHmac("sha256", AUTH_TOKEN_SECRET)
+    .update(payload)
+    .digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+function verifyAuthToken(token) {
+  if (typeof token !== "string") return null;
+  const [payload, signature] = token.split(".");
+  if (!payload || !signature) return null;
+  const expected = crypto
+    .createHmac("sha256", AUTH_TOKEN_SECRET)
+    .update(payload)
+    .digest();
+  let provided;
+  try {
+    provided = Buffer.from(signature, "base64url");
+  } catch {
+    return null;
+  }
+  if (expected.length !== provided.length || !crypto.timingSafeEqual(expected, provided)) {
+    return null;
+  }
+  try {
+    const auth = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (
+      !Number.isFinite(Number(auth.id)) ||
+      !["admin", "tester"].includes(auth.role) ||
+      Number(auth.exp) <= Math.floor(Date.now() / 1000)
+    ) {
+      return null;
+    }
+    return auth;
+  } catch {
+    return null;
+  }
+}
+
+function authFromCookieHeader(cookieHeader) {
+  const cookies = Object.fromEntries(
+    String(cookieHeader || "")
+      .split(";")
+      .map((part) => part.trim().split("="))
+      .filter(([key, value]) => key && value)
+      .map(([key, ...value]) => [key, decodeURIComponent(value.join("="))]),
+  );
+  return verifyAuthToken(cookies[AUTH_COOKIE_NAME]);
+}
+
+function setAuthCookie(req, res, user) {
+  const forwardedProto = String(req.headers["x-forwarded-proto"] || "")
+    .split(",")[0]
+    .trim();
+  const secure = req.secure || forwardedProto === "https";
+  res.cookie(AUTH_COOKIE_NAME, signAuthToken(user), {
+    httpOnly: true,
+    secure,
+    sameSite: "lax",
+    maxAge: AUTH_TOKEN_TTL_SECONDS * 1000,
+    path: "/",
+  });
+}
+
+function requireAuth(req, res, next) {
+  const auth = authFromCookieHeader(req.headers.cookie);
+  if (!auth) {
+    return res.status(401).json({ ok: false, error: "Authentication required." });
+  }
+  req.auth = auth;
+  next();
+}
+
+function requireAdmin(req, res, next) {
+  if (req.auth?.role !== "admin") {
+    return res.status(403).json({ ok: false, error: "Administrator access required." });
+  }
+  next();
+}
 
 import { createServer as createHttpServer } from 'http';
 import { createServer as createHttpsServer } from 'https';
@@ -53,12 +177,6 @@ if (process.env.USE_HTTPS === "true") {
   console.log('Running in HTTP mode');
 }
 const io = new Server(http, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
-    transports: ["websocket", "polling"],
-    credentials: true
-  },
   pingTimeout: 60000,
   pingInterval: 25000
 });
@@ -83,14 +201,6 @@ const localIP = getLocalIP();
 const hostLanIP = process.env.HOST_LAN_IP?.trim() || "";
 const publicAccessUrl = process.env.PUBLIC_ACCESS_URL?.trim() || "";
 console.log('Using IO:', localIP);
-app.use(express.static(__dirname));
-
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', '*');
-  next();
-});
 
 app.get('/config', (req, res) => {
   res.json({ serverIP: hostLanIP || localIP, hostLanIP: hostLanIP || null });
@@ -98,21 +208,47 @@ app.get('/config', (req, res) => {
 
 const rooms = new Map();
 
+io.use((socket, next) => {
+  const auth = authFromCookieHeader(socket.request.headers.cookie);
+  if (!auth) return next(new Error("Authentication required."));
+  socket.data.auth = auth;
+  next();
+});
+
 io.on('connection', (socket) => {
   console.log(`User connected: ${socket.id}`);
 
-  socket.on('join-room', (roomId, role) => {
-    socket.join(roomId);
-    socket.data.roomId = roomId;
+  socket.on('join-room', async (roomId) => {
+    const normalizedRoomId = String(roomId || "").trim();
+    if (!normalizedRoomId) return;
+    const role = socket.data.auth.role === "admin" ? "viewer" : "host";
+    try {
+      const pool = await poolPromise;
+      const [activeRooms] = await pool.query(
+        "SELECT testing_room_id FROM testing_rooms WHERE room_code = ? AND status = 'active' LIMIT 1",
+        [normalizedRoomId],
+      );
+      if (activeRooms.length === 0) {
+        socket.emit("room-error", { error: "Testing room is not active." });
+        return;
+      }
+    } catch (err) {
+      console.error("Socket room validation failed:", err);
+      socket.emit("room-error", { error: "Could not validate the testing room." });
+      return;
+    }
+
+    socket.join(normalizedRoomId);
+    socket.data.roomId = normalizedRoomId;
     socket.data.role = role;
 
-    if (!rooms.has(roomId)) rooms.set(roomId, new Map());
-    rooms.get(roomId).set(socket.id, { role });
+    if (!rooms.has(normalizedRoomId)) rooms.set(normalizedRoomId, new Map());
+    rooms.get(normalizedRoomId).set(socket.id, { role });
 
     if (role === 'viewer') {
-      socket.to(roomId).emit('viewer-connected', socket.id);
+      socket.to(normalizedRoomId).emit('viewer-connected', socket.id);
     } else if (role === 'host') {
-      rooms.get(roomId).forEach((entry, peerId) => {
+      rooms.get(normalizedRoomId).forEach((entry, peerId) => {
         if (entry.role === 'viewer') {
           socket.emit('viewer-connected', peerId);
         }
@@ -121,52 +257,29 @@ io.on('connection', (socket) => {
   });
 
   socket.on('signal', (data) => {
-    const { room, to, ...rest } = data;
-    if (to) {
+    const { to, ...rest } = data ?? {};
+    const roomId = socket.data.roomId;
+    const destination = rooms.get(roomId)?.get(to);
+    if (roomId && to && destination) {
       io.to(to).emit('signal', { ...rest, from: socket.id });
-      return;
-    }
-    socket.to(room).emit('signal', { ...rest, from: socket.id });
-  });
-
-  socket.on('kiosk-frame-captured', async (data) => {
-    try {
-      const { room, peerId, label, frame, timestamp } = data;
-      console.log(`[Frame Capture] Room: ${room} | Node: ${label} (${peerId}) at ${timestamp}`);
-
-      socket.to(room).emit('admin-frame-received', { peerId, label, frame, timestamp });
-
-      if (frame && frame.startsWith('data:image')) {
-        const base64Data = frame.replace(/^data:image\/\w+;base64,/, "");
-        const buffer = Buffer.from(base64Data, 'base64');
-
-        const safeLabel = label.replace(/[^a-zA-Z0-9]/g, "_");
-        const filename = `frame_${room}_${safeLabel}_${Date.now()}.jpg`;
-        
-        const filePath = path.join(frameLogsRoot, filename);
-
-        await fs.promises.writeFile(filePath, buffer);
-        console.log(`Saved kiosk capture locally to: ${filePath}`);
-      }
-    } catch (error) {
-      console.error("Error processing captured kiosk frame:", error);
     }
   });
 
   socket.on('admin-start-stream', (data) => {
-    const { room, ...rest } = data;
-    socket.to(room).emit('admin-start-stream', rest);
+    if (socket.data.auth.role !== "admin" || !socket.data.roomId) return;
+    const { room: _room, ...rest } = data ?? {};
+    socket.to(socket.data.roomId).emit('admin-start-stream', rest);
   });
 
-  socket.on('admin-stop-stream', (data) => {
-    const { room } = data;
-    socket.to(room).emit('admin-stop-stream');
+  socket.on('admin-stop-stream', () => {
+    if (socket.data.auth.role !== "admin" || !socket.data.roomId) return;
+    socket.to(socket.data.roomId).emit('admin-stop-stream');
   });
 
   socket.on('tester-session-status', (data) => {
-    const { room, ...rest } = data ?? {};
-    if (!room) return;
-    socket.to(room).emit('tester-session-status', { ...rest, from: socket.id });
+    if (socket.data.auth.role !== "tester" || !socket.data.roomId) return;
+    const { room: _room, ...rest } = data ?? {};
+    socket.to(socket.data.roomId).emit('tester-session-status', { ...rest, from: socket.id });
   });
 
   socket.on('disconnect', () => {
@@ -184,55 +297,6 @@ io.on('connection', (socket) => {
     }
     console.log(`User disconnected: ${socket.id}`);
   });
-});
-
-// console commands for server management
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout
-});
-
-rl.on('line', (input) => {
-  switch(input.toLowerCase()) {
-      case 'people':
-          console.log('\n=== Current Rooms and Users ===');
-          if (rooms.size === 0) {
-              console.log('No active rooms');
-          } else {
-              rooms.forEach((users, roomId) => {
-                  console.log(`\nRoom ${roomId}:`);
-                  console.log('Users:', Array.from(users));
-                  console.log('Total users in room:', users.size);
-              });
-              console.log('\nTotal rooms:', rooms.size);
-              console.log('Total users:', Array.from(rooms.values()).reduce((acc, room) => acc + room.size, 0));
-          }
-          break;
-
-      case 'clear':
-          const totalRooms = rooms.size;
-          const totalUsers = Array.from(rooms.values()).reduce((acc, room) => acc + room.size, 0);
-          
-          // notify all users in all rooms that they're being disconnected
-          rooms.forEach((users, roomId) => {
-              io.to(roomId).emit('force-disconnect', 'Server clearing all rooms');
-          });
-          
-          // clear all rooms
-          rooms.clear();
-          console.log(`Cleared ${totalRooms} rooms and disconnected ${totalUsers} users`);
-          break;
-
-      case 'help':
-          console.log('\nAvailable commands:');
-          console.log('people - Show all rooms and users');
-          console.log('clear  - Disconnect all users and clear all rooms');
-          console.log('help   - Show this help message');
-          break;
-
-      default:
-          console.log('Unknown command. Type "help" for available commands');
-  }
 });
 
 const port = process.env.PORT || 8080;
@@ -314,7 +378,13 @@ const uploadParticipantPhoto = multer({
   },
 }).single("photo");
 
-app.use("/uploads", express.static(uploadsRoot));
+app.use("/uploads/frame_logs", requireAuth, requireAdmin, express.static(frameLogsRoot));
+app.use("/uploads/participants", requireAuth, requireAdmin, express.static(participantsUploadsDir));
+app.use("/uploads/kiosks", requireAuth, requireAdmin, express.static(kiosksUploadsDir));
+app.use("/uploads/foods", requireAuth, express.static(foodUploadsDir));
+app.use("/uploads", requireAuth, (_req, res) => {
+  return res.status(404).json({ ok: false, error: "Upload not found." });
+});
 
 async function start() {
   if (!poolPromise) {
@@ -453,15 +523,14 @@ async function start() {
         return res.status(401).json({ ok: false, error: "Invalid email or password." });
       }
 
-      return res.json({
-        ok: true,
-        user: {
-          id: user.user_id,
-          username: user.username,
-          email: user.email,
-          role: user.role,
-        },
-      });
+      const responseUser = {
+        id: Number(user.user_id),
+        username: user.username,
+        email: user.email,
+        role: user.role,
+      };
+      setAuthCookie(req, res, responseUser);
+      return res.json({ ok: true, user: responseUser });
     } catch (err) {
       console.error("Login error:", err);
       return res.status(500).json({ ok: false, error: "Server error." });
@@ -741,14 +810,16 @@ async function start() {
 
       await connection.commit();
 
+      const responseUser = {
+        id: Number(createdUser.user_id),
+        username: createdUser.username,
+        email: createdUser.email,
+        role: createdUser.role,
+      };
+      setAuthCookie(req, res, responseUser);
       return res.status(201).json({
         ok: true,
-        user: {
-          id: createdUser.user_id,
-          username: createdUser.username,
-          email: createdUser.email,
-          role: createdUser.role,
-        },
+        user: responseUser,
         participant: participantResult.participant,
       });
     } catch (err) {
@@ -770,6 +841,61 @@ async function start() {
     } finally {
       connection.release();
     }
+  });
+
+  app.use("/api", requireAuth);
+
+  app.get("/api/auth/me", (req, res) => {
+    return res.json({ ok: true, user: req.auth });
+  });
+
+  app.post("/api/logout", (req, res) => {
+    const forwardedProto = String(req.headers["x-forwarded-proto"] || "")
+      .split(",")[0]
+      .trim();
+    res.clearCookie(AUTH_COOKIE_NAME, {
+      httpOnly: true,
+      secure: req.secure || forwardedProto === "https",
+      sameSite: "lax",
+      path: "/",
+    });
+    return res.json({ ok: true });
+  });
+
+  app.use("/api", async (req, res, next) => {
+    const routePath = req.path;
+    const adminOnly =
+      routePath.startsWith("/participants") ||
+      routePath.startsWith("/foods") ||
+      routePath.startsWith("/kiosks") ||
+      routePath === "/emotion/health" ||
+      (routePath.startsWith("/testing-rooms") &&
+        routePath !== "/testing-rooms/active" &&
+        routePath !== "/testing-rooms/validate") ||
+      (/^\/sessions\/\d+\/(details|status)$/.test(routePath)) ||
+      (req.method === "DELETE" && /^\/sessions\/\d+$/.test(routePath));
+
+    if (adminOnly) return requireAdmin(req, res, next);
+
+    const sessionMatch = routePath.match(/^\/sessions\/(\d+)(?:\/(frames|stop|survey))?$/);
+    if (sessionMatch && req.auth.role !== "admin") {
+      try {
+        const [[session]] = await pool.query(
+          "SELECT user_id FROM sessions WHERE session_id = ? LIMIT 1",
+          [Number(sessionMatch[1])],
+        );
+        if (!session) {
+          return res.status(404).json({ ok: false, error: "Session not found." });
+        }
+        if (Number(session.user_id) !== Number(req.auth.id)) {
+          return res.status(403).json({ ok: false, error: "This session belongs to another tester." });
+        }
+      } catch (err) {
+        console.error("Session authorization failed:", err);
+        return res.status(500).json({ ok: false, error: "Server error." });
+      }
+    }
+    next();
   });
 
   app.get("/api/participants", async (_req, res) => {
@@ -945,7 +1071,7 @@ async function start() {
       await connection.beginTransaction();
 
       const [[participant]] = await connection.query(
-        `SELECT participant_id, email FROM participants WHERE participant_id = ? FOR UPDATE`,
+        `SELECT participant_id, email, photo_url FROM participants WHERE participant_id = ? FOR UPDATE`,
         [id],
       );
       if (!participant) {
@@ -967,6 +1093,7 @@ async function start() {
         [id]
       );
       await connection.commit();
+      await removeUploadedFiles([participant.photo_url]);
       return res.json({ ok: true, deletedTesterAccount, deletedParticipantId: id });
     } catch (err) {
       try {
@@ -989,8 +1116,20 @@ async function start() {
     if (!req.file) return res.status(400).json({ ok: false, error: "Photo file is required (field: photo)." });
     try {
       const imageUrl = `/uploads/participants/${req.file.filename}`;
+      const [[participant]] = await pool.query(
+        "SELECT photo_url FROM participants WHERE participant_id = ? LIMIT 1",
+        [id],
+      );
+      if (!participant) {
+        await removeUploadedFiles([imageUrl]);
+        return res.status(404).json({ ok: false, error: "Participant not found." });
+      }
       const [result] = await pool.query(`UPDATE participants SET photo_url = ? WHERE participant_id = ?`, [imageUrl, id]);
-      if (result.affectedRows === 0) return res.status(404).json({ ok: false, error: "Participant not found." });
+      if (result.affectedRows === 0) {
+        await removeUploadedFiles([imageUrl]);
+        return res.status(404).json({ ok: false, error: "Participant not found." });
+      }
+      await removeUploadedFiles([participant.photo_url]);
       return res.json({ ok: true, photoUrl: imageUrl });
     } catch (err) {
       console.error("POST /api/participants/:id/photo error:", err);
@@ -1175,6 +1314,14 @@ async function start() {
 
     try {
       const imageUrl = `/uploads/foods/${req.file.filename}`;
+      const [[food]] = await pool.query(
+        "SELECT image_url FROM food_products WHERE food_id = ? LIMIT 1",
+        [foodId],
+      );
+      if (!food) {
+        await removeUploadedFiles([imageUrl]);
+        return res.status(404).json({ ok: false, error: "Food not found." });
+      }
       const [result] = await pool.query(
         `
         UPDATE food_products
@@ -1184,8 +1331,10 @@ async function start() {
         [imageUrl, foodId]
       );
       if (result.affectedRows === 0) {
+        await removeUploadedFiles([imageUrl]);
         return res.status(404).json({ ok: false, error: "Food not found." });
       }
+      await removeUploadedFiles([food.image_url]);
       return res.json({ ok: true, imageUrl });
     } catch (err) {
       console.error("POST /api/foods/:foodId/image error:", err);
@@ -1225,8 +1374,20 @@ async function start() {
     if (!req.file) return res.status(400).json({ ok: false, error: "Image file is required (field: image)." });
     try {
       const imageUrl = `/uploads/kiosks/${req.file.filename}`;
+      const [[kiosk]] = await pool.query(
+        "SELECT image_url FROM kiosk WHERE kiosk_id = ? LIMIT 1",
+        [kioskId],
+      );
+      if (!kiosk) {
+        await removeUploadedFiles([imageUrl]);
+        return res.status(404).json({ ok: false, error: "Kiosk not found." });
+      }
       const [result] = await pool.query(`UPDATE kiosk SET image_url = ? WHERE kiosk_id = ?`, [imageUrl, kioskId]);
-      if (result.affectedRows === 0) return res.status(404).json({ ok: false, error: "Kiosk not found." });
+      if (result.affectedRows === 0) {
+        await removeUploadedFiles([imageUrl]);
+        return res.status(404).json({ ok: false, error: "Kiosk not found." });
+      }
+      await removeUploadedFiles([kiosk.image_url]);
       return res.json({ ok: true, imageUrl });
     } catch (err) {
       console.error("POST /api/kiosks/:kioskId/image error:", err);
@@ -1246,6 +1407,17 @@ async function start() {
       conn = await pool.getConnection();
       await conn.beginTransaction();
 
+      const [[food]] = await conn.query(
+        "SELECT image_url FROM food_products WHERE food_id = ? FOR UPDATE",
+        [foodId],
+      );
+      const [frames] = await conn.query(
+        `SELECT fl.frame_image_url
+         FROM frame_logs fl
+         JOIN sessions s ON s.session_id = fl.session_id
+         WHERE s.food_id = ?`,
+        [foodId],
+      );
       const [sessionDelete] = await conn.query(`DELETE FROM sessions WHERE food_id = ?`, [foodId]);
       const [result] = await conn.query(`DELETE FROM food_products WHERE food_id = ?`, [foodId]);
       if (result.affectedRows === 0) {
@@ -1254,6 +1426,10 @@ async function start() {
       }
 
       await conn.commit();
+      await removeUploadedFiles([
+        food?.image_url,
+        ...frames.map((frame) => frame.frame_image_url),
+      ]);
       return res.json({
         ok: true,
         deletedSessions: Number(sessionDelete?.affectedRows ?? 0),
@@ -1660,11 +1836,11 @@ async function start() {
 
   app.post("/api/testing-rooms", async (req, res) => {
     const foodId = Number.parseInt(String(req.body?.foodId ?? ""), 10);
-    const createdBy = Number.parseInt(String(req.body?.createdBy ?? ""), 10);
-    if (!Number.isFinite(foodId) || !Number.isFinite(createdBy)) {
+    const createdBy = Number(req.auth.id);
+    if (!Number.isFinite(foodId)) {
       return res.status(400).json({
         ok: false,
-        error: "foodId and createdBy are required.",
+        error: "foodId is required.",
       });
     }
 
@@ -1796,9 +1972,11 @@ async function start() {
       agentKioskId,
       roomCode,
     } = req.body ?? {};
-    const uId = Number.parseInt(String(userId ?? ""), 10);
+    const requestedUserId = Number.parseInt(String(userId ?? ""), 10);
+    const uId =
+      req.auth.role === "tester" ? Number(req.auth.id) : requestedUserId;
     const fId = Number.parseInt(String(foodId ?? ""), 10);
-    const pId =
+    let pId =
       participantId == null || participantId === ""
         ? null
         : Number.parseInt(String(participantId), 10);
@@ -1817,6 +1995,14 @@ async function start() {
     }
 
     try {
+      if (req.auth.role === "tester") {
+        const [[participant]] = await pool.query(
+          "SELECT participant_id FROM participants WHERE LOWER(email) = LOWER(?) LIMIT 1",
+          [req.auth.email],
+        );
+        pId = participant ? Number(participant.participant_id) : null;
+      }
+
       let testingRoomId = null;
       if (normalizedRoomCode) {
         const [roomRows] = await pool.query(
@@ -2321,10 +2507,15 @@ async function start() {
       return res.status(400).json({ ok: false, error: "Invalid sessionId." });
     }
     try {
+      const [frames] = await pool.query(
+        "SELECT frame_image_url FROM frame_logs WHERE session_id = ?",
+        [sessionId],
+      );
       const [result] = await pool.query(`DELETE FROM sessions WHERE session_id = ?`, [sessionId]);
       if (result.affectedRows === 0) {
         return res.status(404).json({ ok: false, error: "Session not found." });
       }
+      await removeUploadedFiles(frames.map((frame) => frame.frame_image_url));
       return res.json({ ok: true });
     } catch (err) {
       console.error("DELETE /api/sessions/:sessionId error:", err);

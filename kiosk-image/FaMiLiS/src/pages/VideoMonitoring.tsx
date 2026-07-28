@@ -9,18 +9,12 @@ import {
   getAdminRoomContext,
   saveAdminRoomContext,
 } from "../adminRoomContext";
+import { WEBRTC_CONFIGURATION } from "../webrtcConfig";
 
 type Role = "host" | "viewer" | null;
 
 const SOCKET_SERVER_URL = getSocketUrl();
 const API_BASE = getApiBase();
-
-const WEBRTC_CONFIG: RTCConfiguration = {
-  iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun1.l.google.com:19302" },
-  ],
-};
 
 interface ServerToClientEvents {
   "viewer-connected": (viewerId: string) => void;
@@ -41,7 +35,7 @@ interface ServerToClientEvents {
 }
 
 interface ClientToServerEvents {
-  "join-room": (roomId: string, role: Role) => void;
+  "join-room": (roomId: string) => void;
   signal: (data: {
     room: string;
     to?: string;
@@ -86,7 +80,6 @@ export default function VideoMonitoring() {
     return { role: urlRoom ? "viewer" : null, roomId: urlRoom || "" };
   });
   const [publicAccessUrl, setPublicAccessUrl] = useState<string>("");
-
   const [remoteKiosks, setRemoteKiosks] = useState<RemoteKiosk[]>([]);
   const remoteKiosksRef = useRef<RemoteKiosk[]>([]);
   useEffect(() => {
@@ -145,7 +138,7 @@ export default function VideoMonitoring() {
     const existing = peerConnectionsRef.current.get(peerId);
     if (existing) return existing;
 
-    const pc = new RTCPeerConnection(WEBRTC_CONFIG);
+    const pc = new RTCPeerConnection(WEBRTC_CONFIGURATION);
     peerConnectionsRef.current.set(peerId, pc);
 
     pc.onicecandidate = (event) => {
@@ -192,13 +185,17 @@ export default function VideoMonitoring() {
 
     const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io(
       SOCKET_SERVER_URL,
-      { reconnection: true, transports: ["websocket", "polling"] },
+      {
+        reconnection: true,
+        transports: ["websocket", "polling"],
+        withCredentials: true,
+      },
     );
     socketRef.current = socket;
 
     socket.on("connect", () => {
       setKioskStatus(`Connected as ${role}. Room: ${roomId}`);
-      socket.emit("join-room", roomId, role);
+      socket.emit("join-room", roomId);
     });
 
     socket.on("connect_error", () => {
@@ -267,6 +264,8 @@ export default function VideoMonitoring() {
       socket.disconnect();
       cleanupAllPeerConnections();
     };
+    // Reconnect only when the selected room or role changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId, role]);
 
   return (
