@@ -403,7 +403,7 @@ export default function TesterSession() {
       fd.append("frame", blob, "frame.jpg");
       fd.append("kiosk_id", kioskId);
 
-      const res = await fetch(`/api/sessions/${sid}/frames`, {
+      const res = await fetch(`${SESSIONS_API_BASE}/api/sessions/${sid}/frames`, {
         method: "POST",
         body: fd,
       });
