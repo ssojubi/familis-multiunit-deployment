@@ -16,6 +16,17 @@ spec:
         - name: fer-worker
           image: familis-central-server:latest
           imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 9100
+          readinessProbe:
+            exec:
+              command:
+                - test
+                - -f
+                - /tmp/familis-fer-worker-ready
+            periodSeconds: 10
+            failureThreshold: 3
           command:
             - python
             - -m

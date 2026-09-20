@@ -1,0 +1,31 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: familis-central-api
+  namespace: familis
+spec:
+  selector:
+    matchLabels:
+      app: central-api
+  namespaceSelector:
+    matchNames: [familis]
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: familis-fer-worker
+  namespace: familis
+spec:
+  selector:
+    matchLabels:
+      app: fer-worker
+  namespaceSelector:
+    matchNames: [familis]
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s

@@ -19,7 +19,11 @@ try {
   }
 
   Write-Host "Backing up MySQL from pod $pod..."
-  kubectl -n familis exec $pod -- mysqldump -uroot -proot familis_central | Set-Content -Path $backupFile -Encoding utf8
+  kubectl -n familis exec $pod -- sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump -uroot familis_central' |
+    Set-Content -Path $backupFile -Encoding utf8
+  if ($LASTEXITCODE -ne 0) {
+    throw "MySQL backup failed. Check the MySQL pod and credentials."
+  }
   Write-Host "Backup written to: $backupFile"
 } finally {
   Pop-Location

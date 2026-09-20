@@ -1,0 +1,25 @@
+# Local capstone stress-test monitoring on the kind cluster.
+alertmanager:
+  enabled: false
+
+grafana:
+  persistence:
+    enabled: true
+    size: 2Gi
+
+prometheus:
+  prometheusSpec:
+    retention: 7d
+    serviceMonitorNamespaceSelector: {}
+    serviceMonitorSelector: {}
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorNamespaceSelector: {}
+    podMonitorSelector: {}
+    podMonitorSelectorNilUsesHelmValues: false
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 8Gi

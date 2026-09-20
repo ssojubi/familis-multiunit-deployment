@@ -1,16 +1,21 @@
-from aiokafka import AIOKafkaConsumer
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 import json
 import asyncio
 from pathlib import Path
 import mysql.connector
 from mysql.connector import pooling
-from datetime import datetime
+from datetime import datetime, timezone
 import cv2
 import numpy as np
 import joblib
 import warnings
 from collections import defaultdict, deque
 import os
+import time
+
+from ..metrics import (FRAMES_PROCESSED, FRAMES_FAILED,
+                       FRAME_PROCESSING_SECONDS, FRAME_END_TO_END_SECONDS,
+                       FRAME_QUEUE_TO_RESULT_SECONDS, FRAMES_DEAD_LETTERED)
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -19,6 +24,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # ------------------------------
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 VIDEO_FRAMES_TOPIC = os.getenv("VIDEO_FRAMES_TOPIC", "video-frames")
+FAILED_FRAMES_TOPIC = os.getenv("FAILED_FRAMES_TOPIC", "video-frames-failed")
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = int(os.getenv("DB_PORT", "3308"))
 DB_USER = os.getenv("DB_USER", "root")
@@ -29,6 +35,7 @@ FRAME_STORAGE_ROOT = Path(os.getenv("FRAME_STORAGE_ROOT", "C:/frames"))
 FRAME_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 
 db_pool = None
+READY_FILE = Path("/tmp/familis-fer-worker-ready")
 
 _FACE_MESH = None
 _MODEL = None
@@ -66,9 +73,15 @@ def _ensure_db_schema():
             processed_at DATETIME NOT NULL,
             INDEX idx_emotion_results_session_id (session_id),
             INDEX idx_emotion_results_kiosk_id (kiosk_id),
-            INDEX idx_emotion_results_processed_at (processed_at)
+            INDEX idx_emotion_results_processed_at (processed_at),
+            UNIQUE KEY uq_emotion_results_frame_id (frame_id)
         )
     """)
+    cursor.execute("SHOW INDEX FROM emotion_results WHERE Key_name = 'uq_emotion_results_frame_id'")
+    if not cursor.fetchone():
+        cursor.execute(
+            "ALTER TABLE emotion_results ADD UNIQUE KEY uq_emotion_results_frame_id (frame_id)"
+        )
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS frame_logs (
             frame_log_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -221,7 +234,7 @@ async def store_frame_result(
 ):
     global db_pool
     if db_pool is None:
-        return
+        raise RuntimeError("MySQL connection pool is unavailable")
 
     conn = db_pool.get_connection()
     cursor = conn.cursor()
@@ -260,6 +273,12 @@ async def store_frame_result(
             ),
         )
         conn.commit()
+        return True
+    except mysql.connector.IntegrityError as exc:
+        conn.rollback()
+        if exc.errno == 1062:
+            return False
+        raise
     except Exception:
         conn.rollback()
         raise
@@ -277,6 +296,7 @@ async def save_frame_to_storage(session_id: str, frame_id: str, frame_bytes: byt
 
 
 async def start_fer_consumer():
+    READY_FILE.unlink(missing_ok=True)
     await wait_for_db()
     _load_models()
 
@@ -287,9 +307,12 @@ async def start_fer_consumer():
             bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
             value_deserializer=lambda v: json.loads(v.decode()),
             group_id='fer-processor-group',
+            enable_auto_commit=False,
+            max_partition_fetch_bytes=6 * 1024 * 1024,
         )
         try:
             await consumer.start()
+            READY_FILE.touch()
             print(f"Kafka consumer ready for topic {VIDEO_FRAMES_TOPIC}")
             break
         except Exception as e:
@@ -303,42 +326,84 @@ async def start_fer_consumer():
     else:
         raise RuntimeError("Kafka consumer unavailable after retrying")
 
+    failed_producer = AIOKafkaProducer(
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        value_serializer=lambda value: json.dumps(value).encode(),
+        max_request_size=6 * 1024 * 1024,
+    )
     try:
+        await failed_producer.start()
         async for msg in consumer:
-            try:
-                frame_data = msg.value
-                kiosk_id = frame_data["kiosk_id"]
-                session_id = frame_data["session_id"]
-                frame_id = frame_data["frame_id"]
-                frame_bytes = bytes.fromhex(frame_data["frame_bytes"])
-                captured_at = datetime.fromisoformat(
-                    frame_data["timestamp"].replace("Z", "+00:00")
-                ).replace(tzinfo=None)
+            for attempt in range(1, 6):
+                started = time.monotonic()
+                try:
+                    frame_data = msg.value
+                    kiosk_id = frame_data["kiosk_id"]
+                    session_id = frame_data["session_id"]
+                    frame_id = frame_data["frame_id"]
+                    frame_bytes = bytes.fromhex(frame_data["frame_bytes"])
+                    captured_at = datetime.fromisoformat(
+                        frame_data["timestamp"].replace("Z", "+00:00")
+                    )
+                    if captured_at.tzinfo is None:
+                        captured_at = captured_at.replace(tzinfo=timezone.utc)
+                    captured_at = captured_at.astimezone(timezone.utc)
 
-                result = predict_frame(session_id, frame_bytes)
-                frame_image_url = await save_frame_to_storage(
-                    session_id, frame_id, frame_bytes
-                )
-                await store_frame_result(
-                    session_id,
-                    frame_id,
-                    kiosk_id,
-                    captured_at,
-                    frame_image_url,
-                    result,
-                )
+                    result = predict_frame(session_id, frame_bytes)
+                    frame_image_url = await save_frame_to_storage(
+                        session_id, frame_id, frame_bytes
+                    )
+                    inserted = await store_frame_result(
+                        session_id,
+                        frame_id,
+                        kiosk_id,
+                        captured_at.replace(tzinfo=None),
+                        frame_image_url,
+                        result,
+                    )
+                    if inserted:
+                        FRAMES_PROCESSED.inc()
+                        FRAME_PROCESSING_SECONDS.observe(time.monotonic() - started)
+                        finished_at = datetime.now(timezone.utc)
+                        delay = (finished_at - captured_at).total_seconds()
+                        if delay >= 0:
+                            FRAME_END_TO_END_SECONDS.observe(delay)
+                        accepted_at = frame_data.get("accepted_at")
+                        if accepted_at:
+                            accepted_at = datetime.fromisoformat(accepted_at.replace("Z", "+00:00"))
+                            if accepted_at.tzinfo is None:
+                                accepted_at = accepted_at.replace(tzinfo=timezone.utc)
+                            queue_delay = (finished_at - accepted_at).total_seconds()
+                            if queue_delay >= 0:
+                                FRAME_QUEUE_TO_RESULT_SECONDS.observe(queue_delay)
 
-                print(
-                    f"Processed {frame_id}: "
-                    f"face={result.get('face_detected')}, "
-                    f"hedonic={result.get('hedonic_score')}, "
-                    f"valence={result.get('valence')}"
-                )
-            except Exception as exc:
-                print(
-                    f"Failed frame at partition={msg.partition} "
-                    f"offset={msg.offset}: {exc}"
-                )
+                    print(f"Processed {frame_id}: new_result={inserted}")
+                    break
+                except Exception as exc:
+                    FRAMES_FAILED.inc()
+                    print(
+                        f"Frame attempt {attempt}/5 failed at partition={msg.partition} "
+                        f"offset={msg.offset}: {exc}"
+                    )
+                    if attempt == 5:
+                        await failed_producer.send_and_wait(
+                            FAILED_FRAMES_TOPIC,
+                            {
+                                "frame": msg.value,
+                                "error": str(exc),
+                                "source_topic": msg.topic,
+                                "source_partition": msg.partition,
+                                "source_offset": msg.offset,
+                            },
+                            key=msg.key,
+                        )
+                        FRAMES_DEAD_LETTERED.inc()
+                    else:
+                        await asyncio.sleep(2 ** attempt)
+
+            await consumer.commit({TopicPartition(msg.topic, msg.partition): msg.offset + 1})
 
     finally:
+        READY_FILE.unlink(missing_ok=True)
+        await failed_producer.stop()
         await consumer.stop()

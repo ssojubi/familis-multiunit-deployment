@@ -17,7 +17,8 @@ spec:
           image: familis-central-server:latest
           imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 8000
+            - name: http
+              containerPort: 8000
           env:
             - name: KAFKA_BOOTSTRAP_SERVERS
               value: kafka:9092
@@ -61,6 +62,8 @@ apiVersion: v1
 kind: Service
 metadata:
   name: central-api
+  labels:
+    app: central-api
 spec:
   type: ClusterIP
   selector:

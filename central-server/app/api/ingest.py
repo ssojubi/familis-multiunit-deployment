@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, timezone
 import base64
 import binascii
 import uuid
@@ -8,6 +8,7 @@ import os
 
 from ..services.kafka_producer import get_kafka_producer
 from ..services.kiosk_registry import get_kiosk_registry
+from ..metrics import FRAMES_ACCEPTED
 
 router = APIRouter()
 
@@ -64,9 +65,11 @@ async def ingest_frame(
                 "session_id": frame_data.session_id,
                 "frame_bytes": frame_bytes.hex(),
                 "timestamp": frame_data.timestamp.isoformat(),
+                "accepted_at": datetime.now(timezone.utc).isoformat(),
             },
             key=f"{frame_data.kiosk_id}:{frame_data.session_id}",
         )
+        FRAMES_ACCEPTED.inc()
         
         return {"status": "queued", "frame_id": frame_id}
     

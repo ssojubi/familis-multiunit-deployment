@@ -1,12 +1,16 @@
 from contextlib import asynccontextmanager
 import asyncio
+import time
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from fastapi.responses import JSONResponse, Response
 
 from .api import commands, dashboard, ingest
 from .services.kafka_producer import KafkaProducerService, set_kafka_producer
 from .services.kiosk_registry import KioskRegistry, set_kiosk_registry
+from .metrics import CONNECTED_KIOSKS, INGEST_REQUESTS, INGEST_REQUEST_SECONDS
 
 
 kafka_producer = None
@@ -39,6 +43,21 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+@app.middleware("http")
+async def observe_ingest(request: Request, call_next):
+    if request.url.path != "/api/ingest/frame":
+        return await call_next(request)
+    started = time.monotonic()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        INGEST_REQUESTS.labels(status_class=f"{status // 100}xx").inc()
+        INGEST_REQUEST_SECONDS.observe(time.monotonic() - started)
 
 app.add_middleware(
     CORSMiddleware,
@@ -75,8 +94,15 @@ app.include_router(commands.router, prefix="/api/commands", tags=["commands"])
 
 @app.get("/api/health")
 async def health():
-    return {
-        "status": "ok",
+    broker_ready = await kafka_producer.check_broker() if kafka_producer else False
+    return JSONResponse(status_code=200 if broker_ready else 503, content={
+        "status": "ok" if broker_ready else "degraded",
         "kiosks_connected": kiosk_registry.count(),
-        "kafka_ready": kafka_producer.is_ready() if kafka_producer else False,
-    }
+        "kafka_ready": broker_ready,
+    })
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics():
+    CONNECTED_KIOSKS.set(kiosk_registry.count())
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
