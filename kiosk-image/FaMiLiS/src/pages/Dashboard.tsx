@@ -1,7 +1,28 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { performLogout } from "../auth";
-import logo from "../assets/logo.png";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { API_BASE, apiFetch } from "../lib/api";
+import { getStoredRole, isAdminRole } from "../RequireAuth";
+import { PageHeader } from "../components/PageHeader";
+import { ExportButton } from "../components/ExportButton";
+import { FoodCard } from "../components/dashboard";
+import {
+  ColoredRatingBar,
+  FerConfidenceCard,
+  HedonicInterpretationCard,
+  HeroHedonicCard,
+  InsightCard,
+  MeanFerHedonicCard,
+  MeanSurveyHedonicCard,
+  MetricCard,
+  SectionPill,
+  SessionTrendChart,
+  StatsCategoryRibbon,
+  type StatsCategory,
+} from "../components/analytics";
+import { RATING_LABELS, buildDemographicsInterpretation, buildFerInterpretation, buildHedonicInterpretation, buildSurveyInterpretation, hedonicColor } from "../lib/ratingLabels";
+import { InfoTip } from "../components/InfoTip";
+import type { GlossaryTerm } from "../lib/glossary";
+import { ATTRIBUTE_COLORS, getDemoColor } from "../lib/attributeColors";
 import {
   Chart as ChartJS,
   Filler,
@@ -14,12 +35,6 @@ import {
   Tooltip,
 } from "chart.js";
 import { Line, Radar } from "react-chartjs-2";
-import React from "react";
-import { getApiBase } from "../apiConfig";
-import {
-  getAdminRoomContext,
-  saveAdminRoomContext,
-} from "../adminRoomContext";
 
 ChartJS.register(
   RadialLinearScale,
@@ -32,19 +47,7 @@ ChartJS.register(
   Legend
 );
 
-type TabKey = "food" | "stats" | "kiosks" | "participants";
-type SessionStatus = "pending" | "active" | "completed" | "cancelled";
-type Gender = "male" | "female" | "other";
-
-type Session = {
-  id: number;
-  userId: number;
-  startTime: string | null;
-  endTime: string | null;
-  status: SessionStatus;
-  frames: number;
-  meanConfidence: number | null;
-};
+type TabKey = "food" | "stats";
 
 type Food = {
   id: number;
@@ -57,25 +60,32 @@ type Food = {
   avgDurationMin: number | null;
 };
 
-type TestingRoom = {
-  id: number;
-  roomCode: string;
-  foodId: number;
-  foodName: string;
-  foodCategory: string;
-  foodImageUrl: string | null;
-  status: "active" | "completed" | "cancelled";
-  createdBy: number;
-  createdAt: string | null;
-  endedAt: string | null;
-  sessionsTotal: number;
-  sessionsActive: number;
+type AspectStat = { mean: number; stdDev: number; n: number };
+
+type AspectStats = {
+  color: AspectStat;
+  flavorAroma: AspectStat;
+  saltSweet: AspectStat;
+  texture: AspectStat;
+  overall: AspectStat;
+};
+
+type SessionTrendPoint = {
+  sessionId: number;
+  sessionDate: string | null;
+  overallRating: number | null;
+  color: number | null;
+  flavorAroma: number | null;
+  saltSweet: number | null;
+  texture: number | null;
+  meanFerHedonic: number | null;
 };
 
 type Analytics = {
   meanConfidence: number;
   meanHedonic: number;
-  distribution: { label: string; value: number; color: string }[];
+  distribution: { label: string; value: number; color: string; count?: number }[];
+  reactionCounts?: { positive: number; neutral: number; negative: number };
   radar: { label: string; score: number }[];
   timeline: { label: string; score: number; sub: string }[];
   byAge: { label: string; score: number }[];
@@ -84,59 +94,74 @@ type Analytics = {
   sessionCount: number;
   frameLogCount: number;
   surveyCount: number;
+  aspectStats: AspectStats;
+  sessionTrends: SessionTrendPoint[];
 };
 
-type Participant = {
-  id: number;
-  name: string | null;
-  email?: string | null;
-  password?: string | null;
-  kioskId?: number | null;
-  contactNumber?: string | null;
-  gcashNumber?: string | null;
-  age: number;
-  gender: Gender;
-  photoUrl?: string | null;
-  createdAt: string | null;
-}
+const EMPTY_ASPECT_STAT: AspectStat = { mean: 0, stdDev: 0, n: 0 };
 
-function clampPct(n: number) {
-  return Math.max(0, Math.min(100, n));
-}
+const EMPTY_ASPECT_STATS: AspectStats = {
+  color: EMPTY_ASPECT_STAT,
+  flavorAroma: EMPTY_ASPECT_STAT,
+  saltSweet: EMPTY_ASPECT_STAT,
+  texture: EMPTY_ASPECT_STAT,
+  overall: EMPTY_ASPECT_STAT,
+};
 
-function formatStatus(status: SessionStatus) {
-  return status.charAt(0).toUpperCase() + status.slice(1);
-}
+/** Maps radar/bar labels to their aspectStats key for N / stdDev lookups. */
+const ASPECT_KEY_BY_LABEL: Record<string, keyof AspectStats> = {
+  Color: "color",
+  "Flavor/Aroma": "flavorAroma",
+  "Salt/Sweet": "saltSweet",
+  Texture: "texture",
+  Overall: "overall",
+};
 
-function statusClasses(status: SessionStatus) {
-  switch (status) {
-    case "pending":
-      return "bg-yellow-50 text-yellow-700";
-    case "active":
-      return "bg-green-50 text-green-700";
-    case "completed":
-      return "bg-gray-100 text-gray-700";
-    case "cancelled":
-      return "bg-red-50 text-red-700";
-    default:
-      return "bg-gray-100 text-gray-700";
-  }
-}
+/** Per-attribute InfoTip terms for survey sensory bars. */
+const ASPECT_INFO_BY_LABEL: Record<string, GlossaryTerm> = {
+  Color: "surveyColor",
+  "Flavor/Aroma": "surveyFlavorAroma",
+  "Salt/Sweet": "surveySaltSweet",
+  Texture: "surveyTexture",
+  Overall: "overallProfile",
+};
 
-const API_BASE = getApiBase();
+const EMPTY_ANALYTICS: Analytics = {
+  meanConfidence: 0,
+  meanHedonic: 0,
+  distribution: [
+    { label: "Positive (7-9)", value: 0, color: "#22c55e", count: 0 },
+    { label: "Neutral (5-6)", value: 0, color: "#eab308", count: 0 },
+    { label: "Negative (1-4)", value: 0, color: "#ef4444", count: 0 },
+  ],
+  reactionCounts: { positive: 0, neutral: 0, negative: 0 },
+  radar: [
+    { label: "Overall", score: 0 },
+    { label: "Color", score: 0 },
+    { label: "Flavor/Aroma", score: 0 },
+    { label: "Salt/Sweet", score: 0 },
+    { label: "Texture", score: 0 },
+  ],
+  timeline: [
+    { label: "First taste", score: 0, sub: "Early" },
+    { label: "Mid", score: 0, sub: "Middle" },
+    { label: "Aftertaste", score: 0, sub: "Late" },
+  ],
+  byAge: [],
+  byGender: [],
+  sampleSize: 0,
+  sessionCount: 0,
+  frameLogCount: 0,
+  surveyCount: 0,
+  aspectStats: EMPTY_ASPECT_STATS,
+  sessionTrends: [],
+};
 
 const toApiUrl = (url: string | null) => {
   if (!url) return null;
   if (url.startsWith("http://") || url.startsWith("https://")) return url;
   return `${API_BASE}${url}`;
 };
-
-function formatDateTime(iso: string | null) {
-  if (!iso) return "-";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "-";
-  return d.toLocaleString();
-}
 
 function formatDate(iso: string | null) {
   if (!iso) return "-";
@@ -147,63 +172,51 @@ function formatDate(iso: string | null) {
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const canExport = isAdminRole(getStoredRole());
 
-  const [tab, setTab] = useState<TabKey>("food");
+  const tabFromUrl = searchParams.get("tab") === "stats" ? "stats" : "food";
+  const [tab, setTab] = useState<TabKey>(tabFromUrl);
+  const [statsCategory, setStatsCategory] = useState<StatsCategory>("overall");
   const [foods, setFoods] = useState<Food[]>([]);
   const [expandedFoodId, setExpandedFoodId] = useState<number | null>(null);
-  const [showAddFood, setShowAddFood] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
   const [newFood, setNewFood] = useState({
     name: "",
-    category: ""
+    category: "",
   });
   const [newFoodImageFile, setNewFoodImageFile] = useState<File | null>(null);
-  const [sessionsByFoodId, setSessionsByFoodId] = useState<Record<number, Session[]>>({});
   const [analyticsByFoodId, setAnalyticsByFoodId] = useState<Record<number, Analytics>>({});
   const [foodsLoading, setFoodsLoading] = useState(true);
   const [foodsError, setFoodsError] = useState<string | null>(null);
-  const [sessionsLoading, setSessionsLoading] = useState<Record<number, boolean>>({});
   const [analyticsLoading, setAnalyticsLoading] = useState<Record<number, boolean>>({});
   const [statsError, setStatsError] = useState<string | null>(null);
   const [foodToDelete, setFoodToDelete] = useState<Food | null>(null);
   const [deletingFoodId, setDeletingFoodId] = useState<number | null>(null);
   const [deleteFoodError, setDeleteFoodError] = useState<string | null>(null);
-  const [activeTestingRooms, setActiveTestingRooms] = useState<TestingRoom[]>([]);
-  const [testingRoomsLoading, setTestingRoomsLoading] = useState(true);
-  const [testingRoomBusyKey, setTestingRoomBusyKey] = useState<string | null>(null);
-  const [testingRoomError, setTestingRoomError] = useState<string | null>(null);
+  const [sessionStatsLoadingFoodId, setSessionStatsLoadingFoodId] = useState<number | null>(null);
+  const [editingFoodImage, setEditingFoodImage] = useState<Food | null>(null);
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
+  const [imageModalError, setImageModalError] = useState<string | null>(null);
+  const [imageSaving, setImageSaving] = useState(false);
+  const [imageRemoving, setImageRemoving] = useState(false);
+
+  // Edit food modal state
+  const [editingFood, setEditingFood] = useState<Food | null>(null);
+  const [editFoodFields, setEditFoodFields] = useState({ name: "", category: "" });
+  const [editFoodImageFile, setEditFoodImageFile] = useState<File | null>(null);
+  const [editFoodImagePreview, setEditFoodImagePreview] = useState<string | null>(null);
+  const [editFoodSaving, setEditFoodSaving] = useState(false);
+  const [editFoodError, setEditFoodError] = useState<string | null>(null);
+  const editFoodImageInputRef = useRef<HTMLInputElement | null>(null);
+
   const foodsAbortRef = useRef<AbortController | null>(null);
-  const [parRefreshKey, setParRefreshKey] = useState(0);
+  const imageFileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const parAbortRef = useRef<AbortController | null>(null);
-  const [parLoading, setParLoading] = useState(true);
-  const [parError, setParError] = useState<string | null>(null);
-  const [participants, setParticipants] = useState<Participant[]>([]);
-  const [deletingParId, setDeletingParId] = useState<number | null>(null);
-  const [deleteParError, setDeleteParError] = useState<string | null>(null);
-  const [parToDelete, setParToDelete] = useState<Participant | null>(null);
-  const [newParticipant, setNewParticipant] = useState({
-    name: "",
-    email: "",
-    password: "",
-    age: "",
-    gender: "",
-    contactNumber: "",
-    gcashNumber: "",
-  });
-  const [showAddParticipant, setShowAddParticipant] = useState(false);
-  const [addingParticipant, setAddingParticipant] = useState(false);
-  const [addParError, setAddParError] = useState<string | null>(null);
-  const [editingParId, setEditingParId] = useState<number | null>(null);
-  const [editParError, setEditParError] = useState<string | null>(null);
-  const [parToEdit, setParToEdit] = useState<Participant | null>(null);
-
-  const [roomId, setRoomId] = useState<string>(
-    () => getAdminRoomContext().roomId,
-  );
-
-  const [kioskFoodId, setKioskFoodId] = useState<number | null>(
-    () => getAdminRoomContext().foodId,
-  );
+  useEffect(() => {
+    setTab(tabFromUrl);
+  }, [tabFromUrl]);
 
   useEffect(() => {
     foodsAbortRef.current?.abort();
@@ -214,7 +227,7 @@ export default function Dashboard() {
       setFoodsLoading(true);
       setFoodsError(null);
       try {
-        const res = await fetch(`${API_BASE}/api/foods`, { signal: ac.signal });
+        const res = await apiFetch(`/api/foods`, { signal: ac.signal });
         const json = await res.json();
         if (!res.ok || !json?.ok) {
           throw new Error(json?.error || "Failed to load foods.");
@@ -237,141 +250,187 @@ export default function Dashboard() {
     return () => ac.abort();
   }, []);
 
-  async function loadActiveTestingRooms() {
-    setTestingRoomsLoading(true);
-    setTestingRoomError(null);
-    try {
-      const res = await fetch(`${API_BASE}/api/testing-rooms?status=active`);
-      const json = await res.json();
-      if (!res.ok || !json?.ok) {
-        throw new Error(json?.error || "Failed to load active testing rooms.");
-      }
-      setActiveTestingRooms(json.rooms ?? []);
-    } catch (err: any) {
-      setTestingRoomError(err?.message || "Failed to load active testing rooms.");
-    } finally {
-      setTestingRoomsLoading(false);
-    }
-  }
-
   useEffect(() => {
-    void loadActiveTestingRooms();
-  }, []);
-
-  useEffect(() => {
-    parAbortRef.current?.abort();
-    const ac = new AbortController();
-    parAbortRef.current = ac;
-
-    async function loadParticipants() {
-      setParLoading(true);
-      setParError(null);
-      try {
-        const res = await fetch(`${API_BASE}/api/participants`, { signal: ac.signal });
-        const json = await res.json();
-        if (!res.ok || !json?.ok) {
-          throw new Error(json?.error || "Failed to load participants.");
-        }
-        const list: Participant[] = (json.participants ?? []).map((p: any) => ({
-          id: Number(p.id ?? p.participant_id),
-          name: p.name ?? p.testerLabel ?? p.tester_label ?? null,
-          email: p.email ?? p.participantEmail ?? p.participant_email ?? null,
-          kioskId: p.kioskId ?? p.kiosk_id ?? null,
-          contactNumber: p.contactNumber ?? p.contact_number ?? null,
-          gcashNumber: p.gcashNumber ?? p.gcash_number ?? null,
-          age: p.age ?? 0,
-          gender: (p.gender ?? "other") as Gender,
-          photoUrl: p.photoUrl ?? p.photo_url ?? null,
-          createdAt: p.createdAt ?? p.created_at ?? null,
-        }));
-        setParticipants(list);
-      } catch (err: any) {
-        if (err?.name === "AbortError") return;
-        setParError(err?.message || "Failed to load participants.");
-      } finally {
-        setParLoading(false);
-      }
-    }
-
-    void loadParticipants();
-    return () => ac.abort();
-  }, [parRefreshKey]);
-
-  const openTestingRoom = (room: TestingRoom) => {
-    saveAdminRoomContext(room.roomCode, room.foodId);
-    setRoomId(room.roomCode);
-    setKioskFoodId(room.foodId);
-    navigate(
-      `/video-monitoring?foodId=${encodeURIComponent(String(room.foodId))}&room=${encodeURIComponent(room.roomCode)}`,
-    );
-  };
-
-  const getCurrentUserId = () => {
-    try {
-      const raw =
-        localStorage.getItem("familis.user") || localStorage.getItem("user");
-      const user = raw ? JSON.parse(raw) : null;
-      const id = Number(user?.id ?? user?.userId ?? user?.user_id);
-      return Number.isFinite(id) ? id : null;
-    } catch {
-      return null;
-    }
-  };
-
-  const activateFoodTesting = async (food: Food) => {
-    const createdBy = getCurrentUserId();
-    if (createdBy == null) {
-      setTestingRoomError("Your admin account could not be identified. Log in again.");
+    if (!imageFile) {
+      setImagePreviewUrl(null);
       return;
     }
+    const url = URL.createObjectURL(imageFile);
+    setImagePreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [imageFile]);
 
-    setTestingRoomBusyKey(`activate-${food.id}`);
-    setTestingRoomError(null);
-    try {
-      const res = await fetch(`${API_BASE}/api/testing-rooms`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ foodId: food.id, createdBy }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json?.ok || !json?.room) {
-        throw new Error(json?.error || "Failed to activate this food test.");
-      }
-      const room = json.room as TestingRoom;
-      saveAdminRoomContext(room.roomCode, room.foodId);
-      setRoomId(room.roomCode);
-      setKioskFoodId(room.foodId);
-      await loadActiveTestingRooms();
-    } catch (err: any) {
-      setTestingRoomError(err?.message || "Failed to activate this food test.");
-    } finally {
-      setTestingRoomBusyKey(null);
-    }
+  const closeImageModal = () => {
+    setEditingFoodImage(null);
+    setImageFile(null);
+    setImagePreviewUrl(null);
+    setImageModalError(null);
+    setImageSaving(false);
+    setImageRemoving(false);
+    if (imageFileInputRef.current) imageFileInputRef.current.value = "";
   };
 
-  const completeFoodTesting = async (room: TestingRoom) => {
-    setTestingRoomBusyKey(`complete-${room.id}`);
-    setTestingRoomError(null);
+  const openImageModal = (food: Food) => {
+    setEditingFoodImage(food);
+    setImageFile(null);
+    setImagePreviewUrl(null);
+    setImageModalError(null);
+    if (imageFileInputRef.current) imageFileInputRef.current.value = "";
+  };
+
+  useEffect(() => {
+    if (!editFoodImageFile) {
+      setEditFoodImagePreview(null);
+      return;
+    }
+    const url = URL.createObjectURL(editFoodImageFile);
+    setEditFoodImagePreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [editFoodImageFile]);
+
+  const openEditFoodModal = (food: Food) => {
+    setEditingFood(food);
+    setEditFoodFields({ name: food.name, category: food.category });
+    setEditFoodImageFile(null);
+    setEditFoodImagePreview(null);
+    setEditFoodError(null);
+    setEditFoodSaving(false);
+    if (editFoodImageInputRef.current) editFoodImageInputRef.current.value = "";
+  };
+
+  const closeEditFoodModal = () => {
+    setEditingFood(null);
+    setEditFoodImageFile(null);
+    setEditFoodImagePreview(null);
+    setEditFoodError(null);
+    setEditFoodSaving(false);
+    if (editFoodImageInputRef.current) editFoodImageInputRef.current.value = "";
+  };
+
+  const onSaveEditFood = async () => {
+    if (!editingFood) return;
+    const name = editFoodFields.name.trim();
+    const category = editFoodFields.category.trim();
+    if (!name || !category) {
+      setEditFoodError("Name and category are required.");
+      return;
+    }
+    setEditFoodSaving(true);
+    setEditFoodError(null);
     try {
-      const res = await fetch(
-        `${API_BASE}/api/testing-rooms/${room.id}/complete`,
-        { method: "POST" },
+      // Update metadata if changed.
+      if (name !== editingFood.name || category !== editingFood.category) {
+        const res = await apiFetch(`/api/foods/${editingFood.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, category }),
+        });
+        const json = await res.json().catch(() => null);
+        if (!res.ok || !json?.ok) {
+          throw new Error(json?.error || "Failed to update food.");
+        }
+      }
+
+      // Upload new image if one was chosen.
+      let updatedImageUrl = editingFood.imageUrl;
+      if (editFoodImageFile) {
+        const fd = new FormData();
+        fd.append("image", editFoodImageFile);
+        const imgRes = await apiFetch(`/api/foods/${editingFood.id}/image`, {
+          method: "POST",
+          body: fd,
+        });
+        const imgJson = await imgRes.json().catch(() => null);
+        if (imgRes.ok && imgJson?.ok) {
+          updatedImageUrl = String(imgJson.imageUrl ?? "");
+        }
+      }
+
+      setFoods((prev) =>
+        prev.map((f) =>
+          f.id === editingFood.id ? { ...f, name, category, imageUrl: updatedImageUrl } : f
+        )
       );
-      const json = await res.json();
-      if (!res.ok || !json?.ok) {
-        throw new Error(json?.error || "Failed to end this food test.");
-      }
-      await loadActiveTestingRooms();
+      closeEditFoodModal();
     } catch (err: any) {
-      setTestingRoomError(err?.message || "Failed to end this food test.");
+      setEditFoodError(err?.message || "Failed to save changes.");
     } finally {
-      setTestingRoomBusyKey(null);
+      setEditFoodSaving(false);
     }
   };
 
+  const onRemoveEditFoodImage = async () => {
+    if (!editingFood) return;
+    setEditFoodSaving(true);
+    setEditFoodError(null);
+    try {
+      const res = await apiFetch(`/api/foods/${editingFood.id}/image`, { method: "DELETE" });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || "Failed to remove image.");
+      }
+      setFoods((prev) =>
+        prev.map((f) => (f.id === editingFood.id ? { ...f, imageUrl: null } : f))
+      );
+      setEditingFood((prev) => (prev ? { ...prev, imageUrl: null } : prev));
+    } catch (err: any) {
+      setEditFoodError(err?.message || "Failed to remove image.");
+    } finally {
+      setEditFoodSaving(false);
+    }
+  };
+
+  const updateFoodImageUrl = (foodId: number, imageUrl: string | null) => {
+    setFoods((prev) => prev.map((f) => (f.id === foodId ? { ...f, imageUrl } : f)));
+  };
+
+  const onSaveFoodImage = async () => {
+    if (!editingFoodImage || !imageFile) return;
+    setImageSaving(true);
+    setImageModalError(null);
+    try {
+      const fd = new FormData();
+      fd.append("image", imageFile);
+      const res = await apiFetch(`/api/foods/${editingFoodImage.id}/image`, {
+        method: "POST",
+        body: fd,
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || "Failed to upload image.");
+      }
+      updateFoodImageUrl(editingFoodImage.id, String(json.imageUrl ?? ""));
+      closeImageModal();
+    } catch (err: any) {
+      setImageModalError(err?.message || "Failed to upload image.");
+    } finally {
+      setImageSaving(false);
+    }
+  };
+
+  const onRemoveFoodImage = async () => {
+    if (!editingFoodImage?.imageUrl) return;
+    setImageRemoving(true);
+    setImageModalError(null);
+    try {
+      const res = await apiFetch(`/api/foods/${editingFoodImage.id}/image`, {
+        method: "DELETE",
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || "Failed to remove image.");
+      }
+      updateFoodImageUrl(editingFoodImage.id, null);
+      closeImageModal();
+    } catch (err: any) {
+      setImageModalError(err?.message || "Failed to remove image.");
+    } finally {
+      setImageRemoving(false);
+    }
+  };
 
   const totalFoods = foods.length;
-  const activeFoods = activeTestingRooms.length;
+  const activeFoods = foods.filter((f) => f.sessionsActive > 0).length;
   const categories = new Set(foods.map((f) => f.category)).size;
 
   const selectedFood = useMemo(() => {
@@ -390,7 +449,7 @@ export default function Dashboard() {
       setStatsError(null);
       setAnalyticsLoading((p) => ({ ...p, [foodId]: true }));
       try {
-        const res = await fetch(`${API_BASE}/api/foods/${foodId}/analytics`);
+        const res = await apiFetch(`/api/foods/${foodId}/analytics`);
         const json = await res.json();
         if (!res.ok || !json?.ok) {
           throw new Error(json?.error || "Failed to load analytics.");
@@ -407,64 +466,8 @@ export default function Dashboard() {
   }, [tab, selectedFood, analyticsByFoodId, analyticsLoading]);
 
   const stats = useMemo(() => {
-    if (!selectedFood) {
-      return {
-        meanConfidence: 0,
-        meanHedonic: 0,
-        distribution: [
-          { label: "Positive (7-9)", value: 0, color: "#22c55e" },
-          { label: "Neutral (5-6)", value: 0, color: "#eab308" },
-          { label: "Negative (1-4)", value: 0, color: "#ef4444" },
-        ],
-        radar: [
-          { label: "Color", score: 0 },
-          { label: "Flavor/Aroma", score: 0 },
-          { label: "Salt/Sweet", score: 0 },
-          { label: "Texture", score: 0 },
-          { label: "Overall", score: 0 },
-        ],
-        timeline: [
-          { label: "First taste", score: 0, sub: "Early" },
-          { label: "Mid", score: 0, sub: "Middle" },
-          { label: "Aftertaste", score: 0, sub: "Late" },
-        ],
-        byAge: [],
-        byGender: [],
-        sampleSize: 0,
-        sessionCount: 0,
-        frameLogCount: 0,
-        surveyCount: 0,
-      };
-    }
-    return (
-      analyticsByFoodId[selectedFood.id] ?? {
-        meanConfidence: 0,
-        meanHedonic: 0,
-        distribution: [
-          { label: "Positive (7-9)", value: 0, color: "#22c55e" },
-          { label: "Neutral (5-6)", value: 0, color: "#eab308" },
-          { label: "Negative (1-4)", value: 0, color: "#ef4444" },
-        ],
-        radar: [
-          { label: "Color", score: 0 },
-          { label: "Flavor/Aroma", score: 0 },
-          { label: "Salt/Sweet", score: 0 },
-          { label: "Texture", score: 0 },
-          { label: "Overall", score: 0 },
-        ],
-        timeline: [
-          { label: "First taste", score: 0, sub: "Early" },
-          { label: "Mid", score: 0, sub: "Middle" },
-          { label: "Aftertaste", score: 0, sub: "Late" },
-        ],
-        byAge: [],
-        byGender: [],
-        sampleSize: 0,
-        sessionCount: 0,
-        frameLogCount: 0,
-        surveyCount: 0,
-      }
-    );
+    if (!selectedFood) return EMPTY_ANALYTICS;
+    return analyticsByFoodId[selectedFood.id] ?? EMPTY_ANALYTICS;
   }, [selectedFood, analyticsByFoodId]);
 
   const analyticsIssues = useMemo(() => {
@@ -488,17 +491,96 @@ export default function Dashboard() {
     return issues;
   }, [selectedFood, stats.frameLogCount, stats.sessionCount, stats.surveyCount]);
 
+  // Hide analytics visuals only when there is no usable session/frame signal at all.
+  // Low survey counts still render so LowSampleOverlay can cover chart panes.
   const hideAnalyticsGraphs = useMemo(() => {
     if (!selectedFood) return true;
     const sessionCount = Number(stats.sessionCount ?? 0);
     const frameLogCount = Number(stats.frameLogCount ?? 0);
-    const surveyCount = Number(stats.surveyCount ?? 0);
-    return sessionCount <= 0 || frameLogCount <= 0 || surveyCount <= 0;
-  }, [selectedFood, stats.sessionCount, stats.frameLogCount, stats.surveyCount]);
+    return sessionCount <= 0 && frameLogCount <= 0;
+  }, [selectedFood, stats.sessionCount, stats.frameLogCount]);
+
+  const surveyCountN = Number(stats.surveyCount ?? 0);
+  const lowSample = surveyCountN < 5;
+
+  const ferInterpretation = useMemo(() => {
+    if (stats.frameLogCount <= 0) return null;
+    // Prefer explicit counts from the API; fall back to per-bucket counts, then
+    // derive from percentages so we never render "0, 0, and 0" beside a live pie.
+    const bucketCount = (prefix: string): number | null => {
+      const bucket = stats.distribution.find((d) => d.label.startsWith(prefix));
+      if (!bucket) return null;
+      if (typeof bucket.count === "number" && Number.isFinite(bucket.count)) return bucket.count;
+      return Math.round((bucket.value / 100) * stats.frameLogCount);
+    };
+    const rc = stats.reactionCounts;
+    const hasExplicit =
+      rc != null && rc.positive + rc.neutral + rc.negative > 0;
+    return buildFerInterpretation({
+      ferMean: stats.meanHedonic,
+      confidence: stats.meanConfidence,
+      positiveCount: hasExplicit ? rc!.positive : bucketCount("Positive") ?? 0,
+      neutralCount: hasExplicit ? rc!.neutral : bucketCount("Neutral") ?? 0,
+      negativeCount: hasExplicit ? rc!.negative : bucketCount("Negative") ?? 0,
+    });
+  }, [
+    stats.frameLogCount,
+    stats.meanHedonic,
+    stats.meanConfidence,
+    stats.distribution,
+    stats.reactionCounts,
+  ]);
+
+  const surveyInterpretation = useMemo(() => {
+    return buildSurveyInterpretation({
+      overallMean: stats.surveyCount > 0 ? stats.aspectStats.overall.mean : null,
+      surveyCount: stats.surveyCount,
+      aspectStats: stats.aspectStats,
+    });
+  }, [stats.surveyCount, stats.aspectStats]);
+
+  const demographicsInterpretation = useMemo(() => {
+    return buildDemographicsInterpretation({
+      byAge: stats.byAge,
+      byGender: stats.byGender,
+      surveyCount: stats.surveyCount,
+    });
+  }, [stats.byAge, stats.byGender, stats.surveyCount]);
+
+  const PAIR_DIFF_THRESHOLD = 1.5;
+  const PAIR_PREVIEW_COUNT = 5;
+  const [showAllPairs, setShowAllPairs] = useState(false);
+
+  // Latest-first FER vs survey pairs per valid session (sessionTrends is P1a-filtered).
+  const sessionPairs = useMemo(() => {
+    return stats.sessionTrends
+      .map((t) => {
+        const fer = t.meanFerHedonic;
+        const survey = t.overallRating;
+        const hasFer = fer != null && Number.isFinite(fer);
+        const hasSurvey = survey != null && Number.isFinite(survey);
+        const diff = hasFer && hasSurvey ? fer! - survey! : null;
+        return { ...t, hasFer, hasSurvey, diff };
+      })
+      .filter((t) => t.hasFer || t.hasSurvey)
+      .sort((a, b) => {
+        const ta = a.sessionDate ? new Date(a.sessionDate).getTime() : 0;
+        const tb = b.sessionDate ? new Date(b.sessionDate).getTime() : 0;
+        return tb - ta || b.sessionId - a.sessionId;
+      });
+  }, [stats.sessionTrends]);
+
+  const visiblePairs = showAllPairs ? sessionPairs : sessionPairs.slice(0, PAIR_PREVIEW_COUNT);
+
+  // Exclude "Overall" from the radar chart — keep only the 4 attribute axes.
+  const radarAttributes = useMemo(
+    () => stats.radar.filter((r) => r.label !== "Overall"),
+    [stats.radar]
+  );
 
   const radarChartData = useMemo(() => {
-    const labels = stats.radar.map((r) => r.label);
-    const values = stats.radar.map((r) => Number.isFinite(r.score) ? r.score : 0);
+    const labels = radarAttributes.map((r) => r.label);
+    const values = radarAttributes.map((r) => (Number.isFinite(r.score) ? r.score : 0));
     return {
       labels,
       datasets: [
@@ -516,7 +598,7 @@ export default function Dashboard() {
         },
       ],
     };
-  }, [stats.radar]);
+  }, [radarAttributes]);
 
   const radarChartOptions = useMemo(() => {
     return {
@@ -544,7 +626,7 @@ export default function Dashboard() {
           angleLines: { color: "rgba(156, 163, 175, 0.25)" },
           pointLabels: {
             color: "#6b7280",
-            font: { size: 11, weight: 600 as any },
+            font: { size: 12, weight: 600 as any },
           },
         },
       },
@@ -560,21 +642,31 @@ export default function Dashboard() {
       return t.label;
     });
 
+    const scores = stats.timeline.map((t) => (Number.isFinite(t.score) ? t.score : 0));
+
     return {
       labels,
       datasets: [
         {
           label: "FER hedonic (avg)",
-          data: stats.timeline.map((t) => (Number.isFinite(t.score) ? t.score : 0)),
-          borderColor: "rgb(232, 23, 74)",
-          backgroundColor: "rgb(232, 23, 74)",
-          pointBackgroundColor: "rgb(232, 23, 74)",
-          pointBorderColor: "rgb(232, 23, 74)",
-          pointRadius: 6,
-          pointHoverRadius: 7,
+          data: scores,
+          // Per-segment color based on the average of the two endpoint scores
+          segment: {
+            borderColor: (ctx: any) => {
+              const avg = (ctx.p0.parsed.y + ctx.p1.parsed.y) / 2;
+              return hedonicColor(avg);
+            },
+          },
+          pointBackgroundColor: scores.map((s) => hedonicColor(s)),
+          pointBorderColor: "#fff",
+          pointRadius: 7,
+          pointHoverRadius: 8,
           borderWidth: 3,
           tension: 0.35,
           fill: false,
+          // borderColor is overridden per-segment; this is a fallback
+          borderColor: "transparent",
+          backgroundColor: "transparent",
         },
       ],
     };
@@ -599,7 +691,7 @@ export default function Dashboard() {
           border: { color: "rgba(156, 163, 175, 0.35)" },
         },
         y: {
-          min: 0,
+          min: 1,
           max: 9,
           ticks: { stepSize: 1, color: "#9ca3af", font: { size: 11 } },
           grid: { color: "rgba(156, 163, 175, 0.25)" },
@@ -609,26 +701,11 @@ export default function Dashboard() {
     } as const;
   }, []);
 
-  const ensureSessionsLoaded = async (foodId: number) => {
-    if (sessionsLoading[foodId]) return;
-    setSessionsLoading((p) => ({ ...p, [foodId]: true }));
-    try {
-      const res = await fetch(`${API_BASE}/api/foods/${foodId}/sessions`);
-      const json = await res.json();
-      if (!res.ok || !json?.ok) {
-        throw new Error(json?.error || "Failed to load sessions.");
-      }
-      setSessionsByFoodId((p) => ({ ...p, [foodId]: (json.sessions ?? []) as Session[] }));
-    } finally {
-      setSessionsLoading((p) => ({ ...p, [foodId]: false }));
-    }
-  };
-
   const onDeleteFood = async (foodId: number) => {
     try {
       setDeletingFoodId(foodId);
       setDeleteFoodError(null);
-      const res = await fetch(`${API_BASE}/api/foods/${foodId}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/foods/${foodId}`, { method: "DELETE" });
       const json = await res.json().catch(() => ({}));
       if (!res.ok || !json?.ok) {
         throw new Error(json?.error || "Failed to delete food.");
@@ -653,7 +730,7 @@ export default function Dashboard() {
     if (!name || !category) return;
 
     try {
-      const res = await fetch(`${API_BASE}/api/foods`, {
+      const res = await apiFetch(`/api/foods`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, category }),
@@ -667,7 +744,7 @@ export default function Dashboard() {
       if (newFoodImageFile) {
         const fd = new FormData();
         fd.append("image", newFoodImageFile);
-        const imgRes = await fetch(`${API_BASE}/api/foods/${created.id}/image`, {
+        const imgRes = await apiFetch(`/api/foods/${created.id}/image`, {
           method: "POST",
           body: fd,
         });
@@ -688,8 +765,9 @@ export default function Dashboard() {
       };
       setFoods((prev) => [newRow, ...prev]);
       setExpandedFoodId(created.id);
-      setShowAddFood(false);
+      setShowAdd(false);
       setTab("food");
+      setSearchParams({}, { replace: true });
       setNewFood({ name: "", category: "" });
       setNewFoodImageFile(null);
     } catch (err) {
@@ -697,236 +775,61 @@ export default function Dashboard() {
     }
   };
 
-  const onDeleteParticipant = async (participantId: number) => {
-    if (!participantId) return;
+  const onOpenLatestSession = async (food: Food) => {
+    if (food.sessionsTotal === 0 || sessionStatsLoadingFoodId != null) return;
+    setSessionStatsLoadingFoodId(food.id);
     try {
-      setDeletingParId(participantId);
-      setDeleteParError(null);
-      const res = await fetch(`${API_BASE}/api/participants/${participantId}`, { method: "DELETE" });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok || !json?.ok) {
-        throw new Error(json?.error || "Failed to delete participant.");
-      }
-      setParToDelete(null);
-      setParRefreshKey((k) => k + 1);
-    } catch (err) {
-      setDeleteParError((err as any)?.message || "Failed to delete participant.");
-    } finally {
-      setDeletingParId(null);
-    }
-  };
-
-  const onAddParticipant = async () => {
-    const name = newParticipant.name.trim();
-    const email = newParticipant.email.trim();
-    const password = newParticipant.password.trim();
-    const age = newParticipant.age;
-    const gender = newParticipant.gender;
-    const contactNumber = newParticipant.contactNumber.trim();
-    const gcashNumber = newParticipant.gcashNumber.trim();
-
-    if (!name) { setAddParError("Name is required."); return; }
-    if (!email) { setAddParError("Email is required."); return; }
-    if (!age) { setAddParError("Age is required."); return; }
-    if (!gender) { setAddParError("Gender is required."); return; }
-    if (!password) { setAddParError("Password is required."); return; }
-    if (password.length < 8) { setAddParError("Password must be at least 8 characters."); return; }
-
-    setAddParError(null);
-    setAddingParticipant(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/participants`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name,
-          email,
-          password,
-          age: Number(age),
-          gender,
-          contactNumber: contactNumber || null,
-          gcashNumber: gcashNumber || null,
-        }),
-      });
+      const res = await apiFetch(`/api/foods/${food.id}/sessions`);
       const json = await res.json();
       if (!res.ok || !json?.ok) {
-        throw new Error(json?.error || "Failed to add participant.");
+        throw new Error(json?.error || "Failed to load sessions.");
       }
-      setShowAddParticipant(false);
-      setAddParError(null);
-      setTab("participants");
-      setNewParticipant({
-        name: "",
-        email: "",
-        password: "",
-        age: "",
-        gender: "",
-        contactNumber: "",
-        gcashNumber: "",
-      });
-
-      setParRefreshKey((k) => k + 1);
-    } catch (err: any) {
+      const sessions = (json.sessions ?? []) as { id: number }[];
+      const latest = sessions[0];
+      if (!latest) return;
+      navigate(`/session-detail?sessionId=${latest.id}`);
+    } catch (err) {
       console.error(err);
-      setAddParError(err?.message || "Failed to add participant.");
     } finally {
-      setAddingParticipant(false);
-    }
-  };
-
-
-  const onEditParticipant = async () => {
-    if (!parToEdit) return;
-    const name = parToEdit.name?.trim() ?? "";
-    const email = parToEdit.email?.trim() ?? "";
-    if (!name) return;
-    if (!email) return;
-    if (!parToEdit.id) return;
-
-    try {
-      setEditingParId(parToEdit.id);
-      setEditParError(null);
-      const res = await fetch(`${API_BASE}/api/participants/${parToEdit.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: name,
-          email,
-          age: parToEdit.age,
-          gender: parToEdit.gender,
-          contactNumber: parToEdit.contactNumber ?? null,
-          gcashNumber: parToEdit.gcashNumber ?? null,
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json?.ok) {
-        throw new Error(json?.error || "Failed to update participant.");
-      }
-      setParToEdit(null);
-      setParRefreshKey((k) => k + 1);
-    } catch (err) {
-      setEditParError((err as any)?.message || "Failed to update participant.");
-    } finally {
-      setEditingParId(null);
+      setSessionStatsLoadingFoodId(null);
     }
   };
 
   return (
-    <div
-      className="min-h-screen bg-[#f6f7fb]"
-      style={{ fontFamily: "'Montserrat', sans-serif" }}
-    >
-      {/* Top bar */}
-      <header className="bg-red-600 text-white">
-        <div className="h-[72px] px-6 flex items-center justify-between">
-          <button
-            type="button"
-            onClick={() => navigate("/dashboard")}
-            className="flex items-center gap-3"
-            aria-label="Go to dashboard"
-          >
-            <img src={logo} alt="FaMiLis logo" className="w-[44px] h-[44px] object-contain" />
-            <span className="text-white text-[22px] font-bold tracking-wide">FaMiLis</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => performLogout(navigate)}
-            className="bg-white/90 text-red-700 hover:bg-white transition-colors px-4 py-2 rounded-md text-sm font-semibold"
-          >
-            Log Out
-          </button>
-        </div>
-      </header>
-
+    <PageHeader variant="expanded">
       <main className="px-6 py-8">
-        <div className="max-w-3xl mx-auto">
-          {/* Title */}
-          <div className="text-center mb-6">
-            <h1 className="text-[26px] font-bold text-gray-900">Food Testing Hub</h1>
-            <p className="text-[12px] text-gray-500 mt-1">Add and Manage Food for Testing</p>
-          </div>
-
-          {/* Actions */}
-          <div className="flex items-center justify-center gap-3 mb-5">
-            <button
-              type="button"
-              onClick={() => setShowAddFood(true)}
-              className="inline-flex items-center gap-2 bg-[#e8174a] hover:bg-[#c9143f] text-white px-4 py-2.5 rounded-md text-sm font-semibold transition-colors"
-            >
-              <span aria-hidden="true">➕</span>
-              Add New Food
-            </button>
-            <button
-              type="button"
-              onClick={() => navigate("/setup")}
-              className="inline-flex items-center gap-2 bg-white hover:bg-gray-50 text-gray-700 border border-gray-200 px-4 py-2.5 rounded-md text-sm font-semibold transition-colors"
-            >
-              <span aria-hidden="true">📷</span>
-              Camera Recording
-            </button>
+        <div className="max-w-6xl mx-auto">
+          {/* Title + actions */}
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-6">
+            <div>
+              <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Dashboard</h1>
+              <p className="text-xs sm:text-sm text-gray-500 mt-1">Manage and statistically analyze food for testing.</p>
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              <button
+                type="button"
+                onClick={() => navigate("/setup")}
+                className="inline-flex items-center gap-2 bg-[#e8174a] hover:bg-[#c9143f] text-white px-4 py-2.5 rounded-md text-sm font-semibold transition-colors"
+              >
+                <span aria-hidden="true">📷</span>
+                Camera Recording
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowAdd(true)}
+                className="inline-flex items-center gap-2 bg-[#e8174a] hover:bg-[#c9143f] text-white px-4 py-2.5 rounded-md text-sm font-semibold transition-colors"
+              >
+                <span aria-hidden="true">➕</span>
+                Add New Food
+              </button>
+            </div>
           </div>
 
           {/* Stat cards */}
           <div className="grid grid-cols-3 gap-4 mb-5">
-            <StatCard icon="🍽️" label="Total Foods" value={totalFoods} />
-            <StatCard icon="✅" label="Active Foods" value={activeFoods} />
-            <StatCard icon="🏷️" label="Categories" value={categories} />
-          </div>
-
-          {activeTestingRooms.length > 0 && (
-            <section className="bg-white border border-green-200 rounded-lg mb-5">
-              <div className="px-4 py-3 border-b border-green-100">
-                <h2 className="text-[14px] font-bold text-gray-900">Active Testing Rooms</h2>
-              </div>
-              <div className="divide-y divide-gray-100">
-                {activeTestingRooms.map((room) => (
-                  <div
-                    key={room.id}
-                    className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"
-                  >
-                    <div>
-                      <p className="text-[13px] font-semibold text-gray-900">
-                        {room.foodName}: Room {room.roomCode}
-                      </p>
-                      <p className="text-[12px] text-gray-500 mt-0.5">
-                        {room.sessionsActive} recording now, {room.sessionsTotal} total session
-                        {room.sessionsTotal === 1 ? "" : "s"}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => openTestingRoom(room)}
-                      className="bg-[#e8174a] hover:bg-[#c9143f] text-white px-4 py-2 rounded-md text-[12px] font-semibold transition-colors"
-                    >
-                      Manage Kiosks
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {testingRoomError && (
-            <p className="mb-5 text-[12px] text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
-              {testingRoomError}
-            </p>
-          )}
-
-          {/* Tabs */}
-          <div className="flex rounded-md overflow-hidden border border-gray-200 bg-white mb-5">
-            <TabButton active={tab === "food"} onClick={() => setTab("food")}>
-              Food Management
-            </TabButton>
-            <TabButton active={tab === "kiosks"} onClick={() => setTab("kiosks")}>
-              Manage Kiosks
-            </TabButton>
-            <TabButton active={tab === "participants"} onClick={() => setTab("participants")}>
-              Manage Participants
-            </TabButton>
-            <TabButton active={tab === "stats"} onClick={() => setTab("stats")}>
-              Statistics &amp; Analytics
-            </TabButton>
+            <MetricCard icon="🍽️" iconBg="bg-red-50 text-[#e8174a]" title="Total Foods" value={String(totalFoods)} />
+            <MetricCard icon="✅" iconBg="bg-green-50 text-green-600" title="Active Foods" value={String(activeFoods)} />
+            <MetricCard icon="🏷️" iconBg="bg-blue-50 text-blue-600" title="Categories" value={String(categories)} />
           </div>
 
           {tab === "food" ? (
@@ -943,656 +846,525 @@ export default function Dashboard() {
                   <p className="text-xs mt-2 text-gray-400">{foodsError}</p>
                 </div>
               ) : foods.length === 0 ? (
-                <div className="text-center py-14 text-gray-500">
-                  <p className="text-sm">No foods added yet.</p>
+                <div className="text-center py-14 text-gray-400">
+                  <div className="text-4xl mb-3" aria-hidden="true">🍽️</div>
+                  <p className="text-sm font-semibold text-gray-600">No food products yet</p>
+                  <p className="text-xs mt-1">Click "Add New Food" to register your first product for testing.</p>
                 </div>
               ) : (
-                <div className="divide-y divide-gray-100">
-                  {foods.map((food) => {
-                    const isExpanded = expandedFoodId === food.id;
-                    const sessions = sessionsByFoodId[food.id] ?? [];
-                    const activeRoom = activeTestingRooms.find(
-                      (room) => room.foodId === food.id,
-                    );
-                    return (
-                      <div key={food.id} className="py-4 first:pt-0 last:pb-0">
-                        <div className="flex items-start justify-between gap-4">
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <p className="text-[14px] font-semibold text-gray-900 truncate">
-                                <span className="inline-flex items-center gap-2">
-                                  {food.imageUrl ? (
-                                    <img
-                                      src={toApiUrl(food.imageUrl) ?? undefined}
-                                      alt={food.name}
-                                      className="w-8 h-8 rounded-md border border-gray-200 object-cover"
-                                    />
-                                  ) : (
-                                    <span className="w-8 h-8 rounded-md border border-dashed border-gray-300 bg-gray-50 inline-flex items-center justify-center text-[10px] text-gray-400">
-                                      IMG
-                                    </span>
-                                  )}
-                                  <span className="truncate">{food.name}</span>
-                                </span>
-                              </p>
-                              <Badge
-                                className={
-                                  activeRoom
-                                    ? "bg-green-50 text-green-700"
-                                    : "bg-gray-100 text-gray-600"
-                                }
-                              >
-                                {activeRoom ? `Active: Room ${activeRoom.roomCode}` : "Not active for testing"}
-                              </Badge>
-                              <Badge className="bg-blue-50 text-blue-700">
-                                {food.sessionsTotal} session{food.sessionsTotal === 1 ? "" : "s"}
-                              </Badge>
-                            </div>
-
-                            <div className="mt-2 space-y-0.5 text-[12px] text-gray-500">
-                              <p>
-                                <span className="text-gray-700 font-semibold">Category:</span>{" "}
-                                {food.category}
-                              </p>
-                              <p>
-                                <span className="text-gray-700 font-semibold">Duration:</span>{" "}
-                                {food.avgDurationMin == null ? "-" : `${Math.round(food.avgDurationMin)} minutes (avg)`}
-                              </p>
-                              <p>
-                                <span className="text-gray-700 font-semibold">Created:</span>{" "}
-                                {formatDate(food.createdAt)}
-                              </p>
-                            </div>
-
-                            <div className="flex items-center gap-4 mt-3 flex-wrap">
-                              {activeRoom ? (
-                                <>
-                                  <button
-                                    type="button"
-                                    onClick={() => openTestingRoom(activeRoom)}
-                                    className="text-[12px] font-semibold text-[#e8174a] hover:text-[#c9143f] transition-colors"
-                                  >
-                                    Manage Kiosks
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={testingRoomBusyKey === `complete-${activeRoom.id}`}
-                                    onClick={() => void completeFoodTesting(activeRoom)}
-                                    className="text-[12px] font-semibold text-gray-600 hover:text-gray-900 disabled:opacity-50 transition-colors"
-                                  >
-                                    {testingRoomBusyKey === `complete-${activeRoom.id}`
-                                      ? "Ending..."
-                                      : "End Testing"}
-                                  </button>
-                                </>
-                              ) : (
-                                <button
-                                  type="button"
-                                  disabled={testingRoomBusyKey === `activate-${food.id}`}
-                                  onClick={() => void activateFoodTesting(food)}
-                                  className="text-[12px] font-semibold text-green-700 hover:text-green-800 disabled:opacity-50 transition-colors"
-                                >
-                                  {testingRoomBusyKey === `activate-${food.id}`
-                                    ? "Activating..."
-                                    : "Activate Testing"}
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                disabled={Boolean(activeRoom)}
-                                onClick={() => setFoodToDelete(food)}
-                                className="text-[12px] font-semibold text-[#e8174a] hover:text-[#c9143f] disabled:text-gray-300 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-1"
-                              >
-                                <span aria-hidden="true">🗑️</span>
-                                Delete
-                              </button>
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  const next = isExpanded ? null : food.id;
-                                  setExpandedFoodId(next);
-                                  if (next != null) await ensureSessionsLoaded(next);
-                                }}
-                                className="text-[12px] font-semibold text-gray-600 hover:text-gray-900 transition-colors inline-flex items-center gap-1"
-                              >
-                                <span aria-hidden="true">{isExpanded ? "🔼" : "🔽"}</span>
-                                {isExpanded ? "Hide Sessions" : "View Sessions"}
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-
-                        {isExpanded && (
-                          <div className="mt-4 pt-4 border-t border-gray-100">
-                            <h3 className="text-[12px] text-gray-700 font-bold mb-2">
-                              Testing Sessions
-                            </h3>
-
-                            {sessionsLoading[food.id] ? (
-                              <div className="text-[12px] text-gray-500">Loading sessions…</div>
-                            ) : sessions.length === 0 ? (
-                              <div className="text-[12px] text-gray-500">No sessions yet.</div>
-                            ) : (
-                              <div className="space-y-2">
-                                {sessions.map((s) => (
-                                  <div
-                                    key={s.id}
-                                    className="bg-gray-50 rounded-md p-3 hover:bg-gray-100 transition-colors"
-                                  >
-                                    <div className="flex items-start justify-between gap-3 mb-2">
-                                      <div className="flex items-center gap-2">
-                                        <p className="text-[12px] font-semibold text-gray-900">
-                                          S-{s.id}
-                                        </p>
-                                        <Badge className={statusClasses(s.status)}>{formatStatus(s.status)}</Badge>
-                                      </div>
-                                      <button
-                                        type="button"
-                                        onClick={() => navigate(`/session-detail?sessionId=${s.id}`)}
-                                        className="text-[12px] font-semibold text-[#e8174a] hover:text-[#c9143f] transition-colors"
-                                      >
-                                        View Details
-                                      </button>
-                                    </div>
-
-                                    <div className="grid grid-cols-2 gap-2 text-[12px] text-gray-600">
-                                      <div>
-                                        <span className="text-gray-500">Start:</span>{" "}
-                                        <span className="text-gray-700">{formatDateTime(s.startTime)}</span>
-                                      </div>
-                                      <div>
-                                        <span className="text-gray-500">End:</span>{" "}
-                                        <span className="text-gray-700">{formatDateTime(s.endTime)}</span>
-                                      </div>
-                                      <div>
-                                        <span className="text-gray-500">Frames:</span>{" "}
-                                        <span className="text-gray-700">{s.frames}</span>
-                                      </div>
-                                      <div>
-                                        <span className="text-gray-500">Confidence:</span>{" "}
-                                        <span className="text-gray-700">
-                                          {s.meanConfidence == null ? "-" : `${Math.round(s.meanConfidence * 100)}%`}
-                                        </span>
-                                      </div>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                <div className="grid grid-cols-1 lg:grid-cols-4 lg:grid-cols-3 gap-4">
+                  {foods.map((food) => (
+                    <FoodCard
+                      key={food.id}
+                      food={food}
+                      imageSrc={toApiUrl(food.imageUrl)}
+                      isSelected={expandedFoodId === food.id}
+                      formatDate={formatDate}
+                      onSelect={() => setExpandedFoodId(food.id)}
+                      onEdit={() => openEditFoodModal(food)}
+                      onImageClick={() => openImageModal(food)}
+                      onDelete={() => setFoodToDelete(food)}
+                      onStartSession={() => navigate("/setup", { state: { foodId: food.id } })}
+                      onSessionStats={() => void onOpenLatestSession(food)}
+                      sessionStatsLoading={sessionStatsLoadingFoodId === food.id}
+                    />
+                  ))}
                 </div>
               )}
             </section>
-          ) : tab === "stats" ? (
-            <section className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+          ) : (
+            <section className="bg-white rounded-xl border border-gray-100 shadow-sm">
               <div className="p-5 border-b border-gray-100">
                 <div className="flex items-center justify-between gap-4">
                   <div>
                     <h2 className="text-gray-900 font-bold">
                       {selectedFood ? selectedFood.name : "Statistics & Analytics"}
                     </h2>
-                    <p className="text-[12px] text-gray-500 mt-1">
-                      {selectedFood
-                        ? `Live analytics from DB${stats.sampleSize ? ` • ${stats.sampleSize} survey(s)` : ""}`
-                        : "Live analytics from DB"}
+                    <p className="text-s text-gray-500 mt-1">
+                      Live analytics from DB
                     </p>
                   </div>
 
-                  {foods.length > 1 && (
-                    <select
-                      value={selectedFood?.id ?? ""}
-                      onChange={(e) => setExpandedFoodId(Number(e.target.value))}
-                      className="text-[12px] border border-gray-200 rounded-md px-3 py-2 bg-white"
-                      aria-label="Select food"
-                    >
-                      {foods.map((f) => (
-                        <option key={f.id} value={f.id}>
-                          {f.name}
-                        </option>
-                      ))}
-                    </select>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {foods.length > 1 && (
+                      <select
+                        value={selectedFood?.id ?? ""}
+                        onChange={(e) => setExpandedFoodId(Number(e.target.value))}
+                        className="text-xs border border-gray-200 rounded-md px-3 py-2 bg-white"
+                        aria-label="Select food"
+                      >
+                        {foods.map((f) => (
+                          <option key={f.id} value={f.id}>
+                            {f.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {selectedFood && canExport ? <ExportButton kind="food" foodId={selectedFood.id} /> : null}
+                  </div>
                 </div>
               </div>
 
-              <div className="p-5 space-y-6">
+              <div className="p-5 space-y-5">
+                <StatsCategoryRibbon active={statsCategory} onChange={setStatsCategory} />
+
                 {selectedFood && analyticsLoading[selectedFood.id] ? (
-                  <div className="text-[12px] text-gray-500">Loading analytics…</div>
+                  <AnalyticsSkeleton />
                 ) : null}
                 {statsError ? (
-                  <div className="text-[12px] text-gray-500">
+                  <div className="text-xs text-gray-500">
                     Failed to load analytics. <span className="text-gray-400">{statsError}</span>
                   </div>
                 ) : null}
+
                 {analyticsIssues.length > 0 ? (
-                  <div className="text-[12px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                  <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-4 py-2">
                     {analyticsIssues.join(" ")}
                   </div>
                 ) : null}
 
-                {hideAnalyticsGraphs ? (
-                  <div className="text-[12px] text-gray-600 bg-gray-50 border border-gray-200 rounded-md px-3 py-2">
-                    Graphs are hidden until required analytics data is available.
-                  </div>
-                ) : (
+                {selectedFood && !analyticsLoading[selectedFood.id] && !hideAnalyticsGraphs ? (
                   <>
-                    {/* A */}
-                    <div>
-                      <h3 className="text-[13px] font-bold text-gray-900 mb-1">
-                        A. Frame-by-Frame Hedonic Score Distribution Report
-                      </h3>
-                      <p className="text-[12px] text-gray-500 mb-4">
-                        Do consumers like this product?
-                      </p>
-
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div className="space-y-3">
-                          <MetricCard title="Mean Hedonic Scale" subtitle="Out of 9">
-                            <p className="text-[44px] leading-none font-bold text-[#e8174a]">
-                              {stats.meanHedonic.toFixed(1)}
-                            </p>
-                          </MetricCard>
-
-                          <MetricCard title="Mean FER Confidence Level" subtitle="">
-                            <div className="flex items-end justify-between gap-3">
-                              <p className="text-[40px] leading-none font-bold text-gray-900">
-                                {Math.round(stats.meanConfidence * 100)}%
-                              </p>
-                              <p className="text-[12px] text-gray-500">(from frame logs)</p>
-                            </div>
-                            <div className="mt-2 h-2 bg-gray-200 rounded-full overflow-hidden">
-                              <div
-                                className="h-full bg-[#e8174a]"
-                                style={{
-                                  width: `${clampPct(stats.meanConfidence * 100)}%`,
-                                }}
-                              />
-                            </div>
-                          </MetricCard>
-                        </div>
-
+                    {statsCategory === "overall" ? (
+                      <div className="space-y-6">
                         <div>
-                          <p className="text-[12px] text-gray-600 mb-2 text-center">
-                            Reaction Distribution
+                          <SectionPill>Product Analytics</SectionPill>
+                          <p className="text-s text-gray-500 -mt-1 mb-4">
+                            How much consumers like this product
                           </p>
-                          <div className="flex items-center justify-center">
-                            <div
-                              className="w-[190px] h-[190px] rounded-full border border-gray-100 shadow-sm"
-                              style={{
-                                background:
-                                  Number(stats.frameLogCount ?? 0) <= 0
-                                    ? "conic-gradient(#e5e7eb 0% 100%)"
-                                    : `conic-gradient(${stats.distribution
-                                        .map((d, i) => {
-                                          const start =
-                                            i === 0
-                                              ? 0
-                                              : stats.distribution
-                                                  .slice(0, i)
-                                                  .reduce((a, b) => a + b.value, 0);
-                                          const end = start + d.value;
-                                          return `${d.color} ${start}% ${end}%`;
-                                        })
-                                        .join(", ")})`,
-                              }}
-                              aria-label="Pie chart"
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                            <MeanFerHedonicCard
+                              title="Mean FER Hedonic Score"
+                              score={stats.frameLogCount > 0 ? stats.meanHedonic : null}
+                              confidence={stats.frameLogCount > 0 ? stats.meanConfidence : null}
+                              emptyLabel="No frame data yet"
+                            />
+                            <MeanSurveyHedonicCard
+                              title="Mean Overall Survey Ratings"
+                              score={stats.surveyCount > 0 ? stats.aspectStats.overall.mean : null}
+                              showHedonicLabel
+                              emptyLabel="No survey data yet"
+                            />
+                          </div>
+                          <p className="text-xs text-gray-500 -mt-2 mb-4">
+                            Averages across valid sessions only (invalidated excluded).
+                          </p>
+
+                          <div className="mb-4">
+                            <HedonicInterpretationCard
+                              text={buildHedonicInterpretation({
+                                surveyOverall:
+                                  stats.surveyCount > 0 ? stats.aspectStats.overall.mean : null,
+                                ferMean: stats.frameLogCount > 0 ? stats.meanHedonic : null,
+                                confidence: stats.frameLogCount > 0 ? stats.meanConfidence : null,
+                                aspectStats: stats.aspectStats,
+                              })}
                             />
                           </div>
 
-                          <div className="mt-3 space-y-1">
-                            {stats.distribution.map((d) => (
-                              <div key={d.label} className="flex items-center gap-2 text-[12px]">
-                                <span
-                                  className="w-3 h-3 rounded-full"
-                                  style={{ backgroundColor: d.color }}
-                                  aria-hidden="true"
-                                />
-                                <span className="text-gray-600">
-                                  {d.label}: {d.value}%
-                                </span>
-                              </div>
-                            ))}
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                            <InsightCard
+                              variant="default"
+                              title="Valid Taster Responses (N)"
+                              value={String(stats.surveyCount)}
+                              infoTerm="sampleSize"
+                              sub={
+                                stats.surveyCount < 5
+                                  ? "Need at least 5 responses for reliable trends"
+                                  : undefined
+                              }
+                            />
+                            <MetricCard
+                              icon="📋"
+                              iconBg="bg-blue-50 text-blue-600"
+                              title="Testing Sessions"
+                              value={String(stats.sessionCount)}
+                              infoTerm="testingSessions"
+                            />
+                            <MetricCard
+                              icon="📷"
+                              iconBg="bg-green-50 text-green-600"
+                              title="Frames Analyzed"
+                              value={String(stats.frameLogCount)}
+                              infoTerm="framesAnalyzed"
+                            />
                           </div>
                         </div>
+
+                        <LowSampleOverlay active={lowSample} sampleSize={surveyCountN}>
+                          <div>
+                            <SectionPill infoTerm="sessionTrends">Session Survey Trends (Over Time)</SectionPill>
+                            <p className="text-s text-gray-500 -mt-1 mb-4">
+                              How survey ratings change across testing sessions for this product
+                            </p>
+                            <SessionTrendChart sessionTrends={stats.sessionTrends} />
+                          </div>
+
+                          <div>
+                            <div className="flex items-center justify-between gap-3">
+                              <SectionPill infoTerm="ferVsSurvey">Per-session pairs</SectionPill>
+                              {sessionPairs.length > PAIR_PREVIEW_COUNT ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setShowAllPairs((v) => !v)}
+                                  className="text-xs font-semibold text-[#e8174a] hover:text-[#c9143f] transition-colors whitespace-nowrap"
+                                >
+                                  {showAllPairs
+                                    ? "Show less"
+                                    : `Show all (${sessionPairs.length})`}
+                                </button>
+                              ) : null}
+                            </div>
+                            <p className="text-s text-gray-500 -mt-1 mb-4">
+                              FER hedonic vs survey overall for the latest valid sessions (invalidated excluded)
+                            </p>
+                            {sessionPairs.length === 0 ? (
+                              <p className="text-sm text-gray-500 bg-gray-50 border border-gray-100 rounded-lg px-4 py-6 text-center">
+                                No paired session data yet. Complete tasting sessions with frames and surveys to compare.
+                              </p>
+                            ) : (
+                              <div className="overflow-x-auto border border-gray-100 rounded-lg">
+                                <table className="min-w-[640px] w-full text-left">
+                                  <thead>
+                                    <tr className="text-xs text-gray-500 bg-gray-50">
+                                      <th className="px-3 py-2.5 font-semibold">Session</th>
+                                      <th className="px-3 py-2.5 font-semibold">Date</th>
+                                      <th className="px-3 py-2.5 font-semibold">FER hedonic</th>
+                                      <th className="px-3 py-2.5 font-semibold">Survey overall</th>
+                                      <th className="px-3 py-2.5 font-semibold">Δ (FER − Survey)</th>
+                                      <th className="px-3 py-2.5 font-semibold">Note</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {visiblePairs.map((row) => {
+                                      const note =
+                                        !row.hasFer
+                                          ? "Missing FER"
+                                          : !row.hasSurvey
+                                            ? "Missing survey"
+                                            : row.diff != null && Math.abs(row.diff) >= PAIR_DIFF_THRESHOLD
+                                              ? row.diff < 0
+                                                ? "FER lower"
+                                                : "FER higher"
+                                              : "Aligned";
+                                      return (
+                                        <tr key={row.sessionId} className="border-t border-gray-100 text-sm">
+                                          <td className="px-3 py-2.5 font-semibold text-gray-900">
+                                            #{row.sessionId}
+                                          </td>
+                                          <td className="px-3 py-2.5 text-gray-600 whitespace-nowrap">
+                                            {formatDate(row.sessionDate)}
+                                          </td>
+                                          <td className="px-3 py-2.5 tabular-nums text-gray-800">
+                                            {row.hasFer ? row.meanFerHedonic!.toFixed(1) : "—"}
+                                          </td>
+                                          <td className="px-3 py-2.5 tabular-nums text-gray-800">
+                                            {row.hasSurvey ? row.overallRating!.toFixed(1) : "—"}
+                                          </td>
+                                          <td className="px-3 py-2.5 tabular-nums text-gray-800">
+                                            {row.diff == null
+                                              ? "—"
+                                              : `${row.diff > 0 ? "+" : ""}${row.diff.toFixed(1)}`}
+                                          </td>
+                                          <td className="px-3 py-2.5 text-gray-600">{note}</td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+
+                          <div>
+                            <SectionPill>9-Point Hedonic Scale Reference</SectionPill>
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 mt-3">
+                              {Array.from({ length: 9 }, (_, i) => 9 - i).map((score) => {
+                                const isPositive = score >= 7;
+                                const isNegative = score <= 4;
+                                return (
+                                  <div
+                                    key={score}
+                                    className={`flex items-center gap-2 px-2 py-1.5 rounded text-xs ${
+                                      isPositive
+                                        ? "bg-green-50 text-green-800"
+                                        : isNegative
+                                          ? "bg-red-50 text-red-800"
+                                          : "bg-yellow-50 text-yellow-800"
+                                    }`}
+                                  >
+                                    <span className="font-bold w-4 text-center tabular-nums">{score}</span>
+                                    <span>{RATING_LABELS[score]}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </LowSampleOverlay>
                       </div>
-                    </div>
+                    ) : null}
 
-                    {/* B */}
-                    <div className="border-t border-gray-100 pt-6">
-                      <h3 className="text-[13px] font-bold text-gray-900 mb-1">
-                        B. Survey-Based Attribute Radar Report
-                      </h3>
-                      <p className="text-[12px] text-gray-500 mb-4">
-                        What consumers like about the product (based on session survey logs)
-                      </p>
-
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div className="bg-gray-50 rounded-lg p-4 border border-gray-100">
-                          <p className="text-[12px] text-gray-700 font-semibold mb-2">Spider chart</p>
-                          <div className="h-[240px]">
-                            <Radar data={radarChartData as any} options={radarChartOptions as any} />
+                    {statsCategory === "frames" ? (
+                      <LowSampleOverlay active={lowSample} sampleSize={surveyCountN}>
+                        <div className="mb-6">
+                          <SectionPill>Facial Emotion Recognition (FER) Results</SectionPill>
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-[1fr_1.2fr] gap-4 mt-4">
+                            <MeanFerHedonicCard
+                              title="Mean FER Hedonic Score"
+                              score={stats.frameLogCount > 0 ? stats.meanHedonic : null}
+                              emptyLabel="No frame data yet"
+                              showConfidenceBar={false}
+                            />
+                            <FerConfidenceCard meanConfidence={stats.meanConfidence} />
                           </div>
+                          {ferInterpretation ? (
+                            <div className="mt-4">
+                              <HedonicInterpretationCard text={ferInterpretation} />
+                            </div>
+                          ) : (
+                            <p className="text-xs text-gray-500 mt-4">
+                              No FER interpretation yet. Capture frames with hedonic and confidence scores to fill this summary.
+                            </p>
+                          )}
                         </div>
 
-                        <div className="space-y-3">
-                          {stats.radar.map((r) => (
-                            <div key={r.label}>
-                              <div className="flex items-center justify-between mb-1">
-                                <span className="text-[12px] text-gray-600">{r.label}</span>
-                                <span className="text-[12px] text-gray-900 font-semibold">
-                                  {r.score.toFixed(1)} / 9
-                                </span>
-                              </div>
-                              <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                        <div>
+                          <SectionPill>Reaction Distribution</SectionPill>
+                          <p className="text-s text-gray-500 -mt-1 mb-4">
+                            Do consumers like this product? (frame-by-frame FER)
+                          </p>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div className="bg-gray-50 rounded-lg border border-gray-100 p-4">
+                              <p className="text-s text-gray-600 font-semibold mb-2">
+                                Reaction distribution
+                              </p>
+                              <div className="min-h-[200px] h-[240px] flex items-center justify-center">
                                 <div
-                                  className="h-full bg-[#e8174a]"
-                                  style={{ width: `${clampPct((r.score / 9) * 100)}%` }}
+                                  className="aspect-square h-full max-h-[220px] w-auto max-w-full rounded-full border border-gray-100 shadow-sm"
+                                  style={{
+                                    background:
+                                      Number(stats.frameLogCount ?? 0) <= 0
+                                        ? "conic-gradient(#e5e7eb 0% 100%)"
+                                        : `conic-gradient(${stats.distribution
+                                            .map((d, i) => {
+                                              const start =
+                                                i === 0
+                                                  ? 0
+                                                  : stats.distribution
+                                                      .slice(0, i)
+                                                      .reduce((a, b) => a + b.value, 0);
+                                              const end = start + d.value;
+                                              return `${d.color} ${start}% ${end}%`;
+                                            })
+                                            .join(", ")})`,
+                                  }}
+                                  aria-label="Reaction distribution pie chart"
                                 />
                               </div>
                             </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* C */}
-                    <div className="border-t border-gray-100 pt-6">
-                      <h3 className="text-[13px] font-bold text-gray-900 mb-1">
-                        C. FER Timeline Report
-                      </h3>
-                      <p className="text-[12px] text-gray-500 mb-4">
-                        Emotion over time during testing
-                      </p>
-
-                      <div className="bg-gray-50 rounded-lg p-4 border border-gray-100">
-                        <div className="h-[190px]">
-                          <Line data={lineChartData as any} options={lineChartOptions as any} />
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* D */}
-                    <div className="border-t border-gray-100 pt-6">
-                      <h3 className="text-[13px] font-bold text-gray-900 mb-1">
-                        D. Demographics Report
-                      </h3>
-                      <p className="text-[12px] text-gray-500 mb-4">
-                        Consumer profile and survey-based hedonic scores
-                      </p>
-
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div>
-                          <p className="text-[12px] text-gray-700 font-semibold mb-3">
-                            Hedonic Score by Age Group
-                          </p>
-                          <div className="space-y-2">
-                            {stats.byAge.map((a) => (
-                              <div key={a.label}>
-                                <div className="flex items-center justify-between text-[12px] mb-1">
-                                  <span className="text-gray-600">{a.label}</span>
-                                  <span className="text-gray-900 font-semibold">
-                                    {a.score.toFixed(1)}
-                                  </span>
-                                </div>
-                                <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                                  <div
-                                    className="h-full bg-[#e8174a]"
-                                    style={{ width: `${clampPct((a.score / 9) * 100)}%` }}
-                                  />
-                                </div>
+                            <div className="bg-gray-50 rounded-xl border border-gray-100 p-4">
+                              <p className="text-s text-gray-600 font-semibold mb-2">Breakdown</p>
+                              <div className="min-h-[200px] h-[240px] flex flex-col justify-center">
+                                {stats.distribution.map((d) => (
+                                  <div key={d.label} className="mb-4 last:mb-0">
+                                    <div className="flex items-center justify-between mb-1.5">
+                                      <span className="text-sm text-gray-700 font-medium flex items-center gap-1.5">
+                                        <span
+                                          className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
+                                          style={{ backgroundColor: d.color }}
+                                          aria-hidden="true"
+                                        />
+                                        {d.label}
+                                      </span>
+                                      <span className="text-sm text-gray-900 font-semibold tabular-nums">
+                                        {d.value}%
+                                        {typeof d.count === "number" ? (
+                                          <span className="text-gray-500 font-normal"> ({d.count})</span>
+                                        ) : null}
+                                      </span>
+                                    </div>
+                                    <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+                                      <div
+                                        className="h-full rounded-full transition-all duration-300"
+                                        style={{ width: `${d.value}%`, backgroundColor: d.color }}
+                                      />
+                                    </div>
+                                  </div>
+                                ))}
                               </div>
-                            ))}
+                            </div>
                           </div>
                         </div>
 
                         <div>
-                          <p className="text-[12px] text-gray-700 font-semibold mb-3">
-                            Hedonic Score by Gender
+                          <SectionPill infoTerm="fer">FER Timeline (In-Session Reactions)</SectionPill>
+                          <p className="text-s text-gray-500 -mt-1 mb-4">
+                            Average hedonics over time over a single testing session
                           </p>
-                          <div className="space-y-2">
-                            {stats.byGender.map((g) => (
-                              <div key={g.label}>
-                                <div className="flex items-center justify-between text-[12px] mb-1">
-                                  <span className="text-gray-600">{g.label}</span>
-                                  <span className="text-gray-900 font-semibold">
-                                    {g.score.toFixed(1)}
-                                  </span>
-                                </div>
-                                <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                                  <div
-                                    className="h-full bg-[#e8174a]"
-                                    style={{ width: `${clampPct((g.score / 9) * 100)}%` }}
-                                  />
-                                </div>
-                              </div>
-                            ))}
+                          <div className="bg-gray-50 rounded-lg border border-gray-100 p-4">
+                            <p className="text-xs text-gray-600 font-semibold mb-2">
+                              Hedonic score over session phases
+                            </p>
+                            <div className="min-h-[180px] h-[220px]">
+                              <Line data={lineChartData as any} options={lineChartOptions as any} />
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    </div>
+
+                        <div>
+                            <SectionPill>9-Point Hedonic Scale Reference</SectionPill>
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 mt-3">
+                              {Array.from({ length: 9 }, (_, i) => 9 - i).map((score) => {
+                                const isPositive = score >= 7;
+                                const isNegative = score <= 4;
+                                return (
+                                  <div
+                                    key={score}
+                                    className={`flex items-center gap-2 px-2 py-1.5 rounded text-xs ${
+                                      isPositive
+                                        ? "bg-green-50 text-green-800"
+                                        : isNegative
+                                          ? "bg-red-50 text-red-800"
+                                          : "bg-yellow-50 text-yellow-800"
+                                    }`}
+                                  >
+                                    <span className="font-bold w-4 text-center tabular-nums">{score}</span>
+                                    <span>{RATING_LABELS[score]}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                      </LowSampleOverlay>
+                    ) : null}
+
+                    {statsCategory === "survey" ? (
+                      <LowSampleOverlay active={lowSample} sampleSize={surveyCountN}>
+                        <div>
+                          <SectionPill infoTerm="sensoryAttributes">Survey Results (with Sensory Attributes)</SectionPill>
+                          <p className="text-s text-gray-500 -mt-1 mb-4">
+                            What consumers liked about the product? (from survey results)
+                          </p>
+                          {surveyInterpretation ? (
+                            <div className="mb-4">
+                              <HedonicInterpretationCard text={surveyInterpretation} />
+                            </div>
+                          ) : (
+                            <p className="text-xs text-gray-500 mb-4">
+                              No survey interpretation yet. Collect taster survey responses to fill this summary.
+                            </p>
+                          )}
+                          {/* Figma-inspired: radar left; hero + attribute bars stacked right */}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch">
+                            <div className="bg-gray-50 rounded-lg border border-gray-100 p-4 h-full flex flex-col">
+                              <p className="text-s text-gray-600 font-semibold mb-2 shrink-0 inline-flex items-center gap-1.5">
+                                Spider chart
+                                <InfoTip term="spiderChart" align="left" />
+                              </p>
+                              <div className="relative flex-1 min-h-[280px] md:min-h-[420px] w-full">
+                                <div className="absolute inset-0">
+                                  <Radar data={radarChartData as any} options={radarChartOptions as any} />
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex flex-col gap-4">
+                              <HeroHedonicCard
+                                score={stats.surveyCount > 0 ? stats.aspectStats.overall.mean : null}
+                              />
+                              <div className="bg-gray-50 rounded-xl border border-gray-100 p-4">
+                                {radarAttributes.map((r, i) => {
+                                  const aspectKey = ASPECT_KEY_BY_LABEL[r.label];
+                                  const aspect = aspectKey ? stats.aspectStats[aspectKey] : undefined;
+                                  return (
+                                    <ColoredRatingBar
+                                      key={r.label}
+                                      label={r.label}
+                                      rating={r.score}
+                                      color={ATTRIBUTE_COLORS[r.label] ?? "#e8174a"}
+                                      n={aspect?.n}
+                                      stdDev={aspect?.stdDev}
+                                      showStatsTips={i === 0}
+                                      infoTerm={ASPECT_INFO_BY_LABEL[r.label]}
+                                    />
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </LowSampleOverlay>
+                    ) : null}
+
+                    {statsCategory === "demographics" ? (
+                      <LowSampleOverlay active={lowSample} sampleSize={surveyCountN}>
+                        <div>
+                          <SectionPill infoTerm="demographicsHedonic">Survey Demographics</SectionPill>
+                          <p className="text-s text-gray-500 -mt-1 mb-4">
+                            Consumer profile with hedonic scores from survey responses by age and gender
+                          </p>
+                          {demographicsInterpretation ? (
+                            <div className="mb-4">
+                              <HedonicInterpretationCard text={demographicsInterpretation} />
+                            </div>
+                          ) : (
+                            <p className="text-xs text-gray-500 mb-4">
+                              No demographics interpretation yet. Collect responses with age and gender on the taster profile to fill this summary.
+                            </p>
+                          )}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div className="bg-gray-50 rounded-xl border border-gray-100 p-4">
+                              <p className="text-s text-gray-700 font-semibold mb-3">
+                                Hedonic Score by Age Group
+                              </p>
+                              {stats.byAge.length === 0 ? (
+                                <p className="text-xs text-gray-500">No age data yet.</p>
+                              ) : (
+                                stats.byAge.map((a, i) => (
+                                  <ColoredRatingBar
+                                    key={a.label}
+                                    label={a.label}
+                                    rating={a.score}
+                                    color={getDemoColor(i)}
+                                  />
+                                ))
+                              )}
+                            </div>
+                            <div className="bg-gray-50 rounded-xl border border-gray-100 p-4">
+                              <p className="text-s text-gray-700 font-semibold mb-3">
+                                Hedonic Score by Gender
+                              </p>
+                              {stats.byGender.length === 0 ? (
+                                <p className="text-xs text-gray-500">No gender data yet.</p>
+                              ) : (
+                                stats.byGender.map((g, i) => (
+                                  <ColoredRatingBar
+                                    key={g.label}
+                                    label={g.label}
+                                    rating={g.score}
+                                    color={getDemoColor(i + 3)}
+                                  />
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </LowSampleOverlay>
+                    ) : null}
                   </>
-                )}
-              </div>
-            </section>
-          ) : tab === "kiosks" ? (
-            <section className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-              <div className="mb-5">
-                <h2 className="text-gray-900 font-bold">Monitor Kiosks</h2>
-                <p className="text-[12px] text-gray-500 mt-1">
-                  View the live tester feed.
-                </p>
-              </div>
-
-
-              {testingRoomsLoading ? (
-                <p className="text-[12px] text-gray-500">Loading active testing rooms...</p>
-              ) : activeTestingRooms.length === 0 ? (
-                <div className="border border-dashed border-gray-300 rounded-md px-4 py-8 text-center">
-                  <p className="text-[13px] text-gray-700 font-semibold">
-                    No food tests are active.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => setTab("food")}
-                    className="mt-3 text-[12px] font-semibold text-[#e8174a] hover:text-[#c9143f]"
-                  >
-                    Open Food Management
-                  </button>
-                </div>
-              ) : (
-                <div className="divide-y divide-gray-100 border border-gray-200 rounded-md">
-                  {activeTestingRooms.map((room) => (
-                    <div
-                      key={room.id}
-                      className="flex flex-wrap items-center justify-between gap-4 px-4 py-4"
-                    >
-                      <div>
-                        <p className="text-[14px] font-semibold text-gray-900">
-                          {room.foodName}
-                        </p>
-                        <p className="text-[12px] text-gray-500 mt-1">
-                          Room {room.roomCode}, {room.sessionsActive} recording now,{" "}
-                          {room.sessionsTotal} total session
-                          {room.sessionsTotal === 1 ? "" : "s"}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <button
-                          type="button"
-                          disabled={testingRoomBusyKey === `complete-${room.id}`}
-                          onClick={() => void completeFoodTesting(room)}
-                          className="border border-gray-200 text-gray-700 hover:bg-gray-50 disabled:opacity-50 px-3 py-2 rounded-md text-[12px] font-semibold"
-                        >
-                          End Testing
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => openTestingRoom(room)}
-                          className="bg-[#e8174a] hover:bg-[#c9143f] text-white px-4 py-2 rounded-md text-[12px] font-semibold"
-                        >
-                          Manage Kiosks
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <div className="hidden">
-                <label className="block text-[13px] font-semibold text-gray-700 mb-2">
-                  Food being tested
-                </label>
-                {foods.length === 0 ? (
-                  <p className="text-[12px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-                    No foods added yet. Add a food in Food Management first.
-                  </p>
-                ) : (
-                  <div className="relative">
-                    <select
-                      value={kioskFoodId ?? ""}
-                      onChange={(e) => setKioskFoodId(Number(e.target.value))}
-                      className="w-full appearance-none text-[14px] text-gray-900 border border-gray-200 rounded-lg pl-4 pr-10 py-3 bg-white disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-[#e8174a]/20 focus:border-[#e8174a]/40"
-                    >
-                      <option value="" disabled>
-                        Select a food…
-                      </option>
-                      {foods.map((f) => (
-                        <option key={f.id} value={f.id}>
-                          {f.name}
-                        </option>
-                      ))}
-                    </select>
-                    <svg
-                      className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
-                      viewBox="0 0 20 20"
-                      fill="none"
-                      xmlns="http://www.w3.org/2000/svg"
-                    >
-                      <path
-                        d="M5 7.5L10 12.5L15 7.5"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
+                ) : selectedFood && !analyticsLoading[selectedFood.id] && hideAnalyticsGraphs ? (
+                  <div className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-md px-4 py-2">
+                    Graphs are hidden until required analytics data is available.
                   </div>
-                )}
-              </div>
-
-              <div className="hidden">
-                <div className="flex gap-3">
-                  <button
-                    type="button"
-                    disabled={!kioskFoodId}
-                    onClick={() => {
-                      if (!kioskFoodId) return;
-                      const params = new URLSearchParams();
-                      params.set("foodId", String(kioskFoodId));
-                      if (roomId) params.set("room", roomId);
-                      navigate(`/video-monitoring?${params.toString()}`);
-                    }}
-                    className="flex-1 bg-[#e8174a] hover:bg-[#c9143f] disabled:opacity-50 disabled:cursor-not-allowed text-white py-2.5 rounded-md text-sm font-semibold transition-colors"
-                  >
-                    Monitor Food Tasting
-                  </button>
-                </div>
+                ) : null}
               </div>
             </section>
-
-          ) : tab === "participants" ? (
-            <section className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 overflow-x-auto">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-gray-900 font-bold">Participant Management</h2>
-                <button
-                  type="button"
-                  onClick={() => setShowAddParticipant(true)}
-                  className="inline-flex items-center gap-2 bg-[#e8174a] hover:bg-[#c9143f] text-white px-4 py-2.5 rounded-md text-sm font-semibold transition-colors"
-                >
-                  <span aria-hidden="true">➕</span>
-                  Add New Participant
-                </button>
-              </div>
-
-              {parLoading ? (
-                <div className="text-center py-14 text-gray-500">
-                  <p className="text-sm">Loading participants…</p>
-                </div>
-              ) : parError ? (
-                <div className="text-center py-14 text-gray-500">
-                  <p className="text-sm">Failed to load participants.</p>
-                  <p className="text-xs mt-2 text-gray-400">{parError}</p>
-                </div>
-              ) : participants.length === 0 ? (
-                <div className="text-center py-14 text-gray-500">
-                  <p className="text-sm">No participants added yet.</p>
-                </div>
-              ) : (
-                <table className="min-w-max w-full text-center text-[12px] border-separate border-spacing-x-4 gap-10">
-                  <thead>
-                    <tr>
-                      <th scope="col">Participant ID</th>
-                      <th scope="col">Session Number</th>
-                      <th scope="col">Kiosk Number</th>
-                      <th scope="col">Name</th>
-                      <th scope="col">Age</th>
-                      <th scope="col">Email</th>
-                      <th scope="col">Contact Number</th>
-                      <th scope="col">GCash Number</th>
-                      <th scope="col">Date &amp; Time</th>
-                      <th scope="col">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {participants
-                      .sort((a, b) => a.id - b.id)
-                      .map((p) => {
-                        return (
-                          <tr key={p.id}>
-                            <td>{p.id}</td>
-                            <td>-</td>
-                            <td>-</td>
-                            <td>{p.name}</td>
-                            <td>{p.age}</td>
-                            <td>{p.email ?? "-"}</td>
-                            <td>{p.contactNumber ?? "-"}</td>
-                            <td>{p.gcashNumber ?? "-"}</td>
-                            <td>{formatDateTime(p.createdAt)}</td>
-                            <td>
-                              <button
-                                type="button"
-                                onClick={() => setParToEdit(p)}
-                                className="text-[12px] font-semibold text-black hover:text-green transition-colors inline-flex items-center gap-1"
-                              >
-                                <span aria-hidden="true">✍️</span>
-                                Edit
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setParToDelete(p)}
-                                className="text-[12px] font-semibold text-[#e8174a] hover:text-[#c9143f] transition-colors inline-flex items-center gap-1"
-                              >
-                                <span aria-hidden="true">🗑️</span>
-                                Delete
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                  </tbody>
-                </table>
-              )}
-            </section>
-          ) : null}
+          )}
         </div>
       </main>
 
       {/* Add Food Modal */}
-      {showAddFood && (
+      {showAdd && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
             <h2 className="text-gray-900 font-bold mb-4">Add New Food</h2>
@@ -1631,7 +1403,7 @@ export default function Dashboard() {
             <div className="flex gap-3 mt-5">
               <button
                 type="button"
-                onClick={() => setShowAddFood(false)}
+                onClick={() => setShowAdd(false)}
                 className="flex-1 border border-gray-200 text-gray-700 hover:bg-gray-50 py-2 rounded-md text-sm font-semibold transition-colors"
               >
                 Cancel
@@ -1647,10 +1419,107 @@ export default function Dashboard() {
           </div>
         </div>
       )}
-      {foodToDelete ? (
+      {/* Edit Food Modal */}
+      {editingFood ? (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
-            <h2 className="text-gray-900 font-bold mb-2">Delete food?</h2>
+            <h2 className="text-gray-900 font-bold mb-4">Edit Food</h2>
+
+            <div className="space-y-3">
+              <Field label="Food Name *">
+                <input
+                  type="text"
+                  value={editFoodFields.name}
+                  onChange={(e) => setEditFoodFields((p) => ({ ...p, name: e.target.value }))}
+                  placeholder="e.g. Ice Cream"
+                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
+                />
+              </Field>
+
+              <Field label="Category *">
+                <input
+                  type="text"
+                  value={editFoodFields.category}
+                  onChange={(e) => setEditFoodFields((p) => ({ ...p, category: e.target.value }))}
+                  placeholder="e.g. dessert"
+                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
+                />
+              </Field>
+
+              <Field label="Replace Image (optional)">
+                {editingFood.imageUrl && !editFoodImageFile ? (
+                  <div className="mb-2 flex items-center gap-3">
+                    <img
+                      src={toApiUrl(editingFood.imageUrl) ?? undefined}
+                      alt={editingFood.name}
+                      className="h-14 w-20 object-cover rounded border border-gray-200"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void onRemoveEditFoodImage()}
+                      disabled={editFoodSaving}
+                      className="text-xs text-red-600 hover:text-red-700 font-semibold disabled:opacity-50"
+                    >
+                      Remove image
+                    </button>
+                  </div>
+                ) : null}
+                {editFoodImagePreview ? (
+                  <div className="mb-2">
+                    <img
+                      src={editFoodImagePreview}
+                      alt="Preview"
+                      className="h-14 w-20 object-cover rounded border border-gray-200"
+                    />
+                  </div>
+                ) : null}
+                <input
+                  ref={editFoodImageInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => setEditFoodImageFile(e.target.files?.[0] ?? null)}
+                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
+                />
+              </Field>
+            </div>
+
+            {editFoodError ? (
+              <p className="text-xs text-red-600 mt-3">{editFoodError}</p>
+            ) : null}
+
+            <div className="flex gap-3 mt-5">
+              <button
+                type="button"
+                onClick={closeEditFoodModal}
+                disabled={editFoodSaving}
+                className="flex-1 border border-gray-200 text-gray-700 hover:bg-gray-50 py-2 rounded-md text-sm font-semibold transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void onSaveEditFood()}
+                disabled={editFoodSaving}
+                className="flex-1 bg-[#e8174a] hover:bg-[#c9143f] text-white py-2 rounded-md text-sm font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {editFoodSaving ? "Saving…" : "Save Changes"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {foodToDelete ? (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div
+            className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="food-delete-title"
+          >
+            <h2 id="food-delete-title" className="text-gray-900 font-bold mb-2">
+              Delete food?
+            </h2>
             <p className="text-sm text-gray-600">
               This will permanently remove <span className="font-semibold">{foodToDelete.name}</span> and
               its related sessions.
@@ -1669,333 +1538,121 @@ export default function Dashboard() {
                 type="button"
                 onClick={() => onDeleteFood(foodToDelete.id)}
                 disabled={deletingFoodId === foodToDelete.id}
-                className="flex-1 bg-red-600 hover:bg-red-700 text-white py-2 rounded-md text-sm font-semibold transition-colors"
+                className="flex-1 bg-red-600 hover:bg-red-700 text-white py-2 rounded-md text-sm font-semibold transition-colors disabled:opacity-60"
               >
-                {deletingFoodId === foodToDelete.id ? "Deleting..." : "Delete"}
+                {deletingFoodId === foodToDelete.id ? "Deleting…" : "Delete"}
               </button>
             </div>
           </div>
         </div>
       ) : null}
 
-      {/* Add Participant Modal */}
-      {showAddParticipant && (
+      {editingFoodImage ? (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
-            <h2 className="text-gray-900 font-bold mb-4">Add New Participant</h2>
+            <h2 className="text-gray-900 font-bold mb-1">Food image</h2>
+            <p className="text-sm text-gray-500 mb-4">{editingFoodImage.name}</p>
 
-            <div className="space-y-3">
-              <Field label="Participant Name *">
-                <input
-                  type="text"
-                  value={newParticipant.name}
-                  onChange={(e) => setNewParticipant((p) => ({ ...p, name: e.target.value }))}
-                  placeholder="e.g. John Doe"
-                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
+            <div className="aspect-[3/2] rounded-lg overflow-hidden border border-gray-200 bg-gray-50 mb-4">
+              {imagePreviewUrl || toApiUrl(editingFoodImage.imageUrl) ? (
+                <img
+                  src={imagePreviewUrl ?? toApiUrl(editingFoodImage.imageUrl) ?? undefined}
+                  alt={editingFoodImage.name}
+                  className="w-full h-full object-cover"
                 />
-              </Field>
+              ) : (
+                <div className="w-full h-full flex flex-col items-center justify-center text-gray-400">
+                  <span className="text-3xl mb-1" aria-hidden="true">
+                    🍽️
+                  </span>
+                  <span className="text-xs font-medium">No image</span>
+                </div>
+              )}
+            </div>
 
-              <Field label="Email Address *">
-                <input
-                  type="email"
-                  value={newParticipant.email}
-                  onChange={(e) =>
-                    setNewParticipant((p) => ({ ...p, email: e.target.value }))
-                  }
-                  placeholder="e.g. john@example.com"
-                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
-                />
-              </Field>
+            <input
+              ref={imageFileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => setImageFile(e.target.files?.[0] ?? null)}
+            />
 
-              <Field label="Age *">
-                <input
-                  type="number"
-                  value={newParticipant.age}
-                  onChange={(e) => setNewParticipant((p) => ({ ...p, age: e.target.value }))}
-                  placeholder="e.g. 21"
-                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
-                />
-              </Field>
+            <button
+              type="button"
+              onClick={() => imageFileInputRef.current?.click()}
+              disabled={imageSaving || imageRemoving}
+              className="w-full border border-gray-200 text-gray-700 hover:bg-gray-50 py-2 rounded-md text-sm font-semibold transition-colors disabled:opacity-50"
+            >
+              {editingFoodImage.imageUrl || imageFile ? "Choose new image" : "Choose image"}
+            </button>
 
-              <Field label="Gender *">
-                <select
-                  value={newParticipant.gender}
-                  onChange={(e) => setNewParticipant((p) => ({ ...p, gender: e.target.value }))}
-                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
+            {imageModalError ? (
+              <p className="text-xs text-red-600 mt-3">{imageModalError}</p>
+            ) : null}
+
+            <div className="flex flex-wrap gap-3 mt-5">
+              <button
+                type="button"
+                onClick={closeImageModal}
+                disabled={imageSaving || imageRemoving}
+                className="flex-1 min-w-[100px] border border-gray-200 text-gray-700 hover:bg-gray-50 py-2 rounded-md text-sm font-semibold transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              {editingFoodImage.imageUrl ? (
+                <button
+                  type="button"
+                  onClick={() => void onRemoveFoodImage()}
+                  disabled={imageSaving || imageRemoving}
+                  className="flex-1 min-w-[100px] border border-red-200 text-red-700 hover:bg-red-50 py-2 rounded-md text-sm font-semibold transition-colors disabled:opacity-50"
                 >
-                  <option value="">Select gender…</option>
-                  <option value="male">Male</option>
-                  <option value="female">Female</option>
-                  <option value="other">Other</option>
-                </select>
-              </Field>
-
-              <Field label="Password *">
-                <input
-                  type="password"
-                  value={newParticipant.password}
-                  onChange={(e) =>
-                    setNewParticipant((p) => ({ ...p, password: e.target.value }))
-                  }
-                  placeholder="Min. 8 characters"
-                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
-                />
-              </Field>
-
-              <Field label="Contact Number">
-                <input
-                  type="tel"
-                  value={newParticipant.contactNumber}
-                  onChange={(e) =>
-                    setNewParticipant((p) => ({ ...p, contactNumber: e.target.value }))
-                  }
-                  placeholder="Optional"
-                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
-                />
-              </Field>
-
-              <Field label="GCash Number">
-                <input
-                  type="tel"
-                  value={newParticipant.gcashNumber}
-                  onChange={(e) =>
-                    setNewParticipant((p) => ({ ...p, gcashNumber: e.target.value }))
-                  }
-                  placeholder="Optional"
-                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
-                />
-              </Field>
-            </div>
-
-            {addParError && (
-              <p className="text-xs text-red-600 mt-3 font-semibold">{addParError}</p>
-            )}
-
-            <div className="flex gap-3 mt-5">
+                  {imageRemoving ? "Removing…" : "Remove image"}
+                </button>
+              ) : null}
               <button
                 type="button"
-                onClick={() => {
-                  setShowAddParticipant(false);
-                  setAddParError(null);
-                }}
-                disabled={addingParticipant}
-                className="flex-1 border border-gray-200 text-gray-700 hover:bg-gray-50 py-2 rounded-md text-sm font-semibold transition-colors"
+                onClick={() => void onSaveFoodImage()}
+                disabled={!imageFile || imageSaving || imageRemoving}
+                className="flex-1 min-w-[100px] bg-[#e8174a] hover:bg-[#c9143f] text-white py-2 rounded-md text-sm font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={onAddParticipant}
-                disabled={addingParticipant}
-                className="flex-1 bg-[#e8174a] hover:bg-[#c9143f] text-white py-2 rounded-md text-sm font-semibold transition-colors"
-              >
-                {addingParticipant ? "Adding..." : "Add Participant"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      {parToDelete ? (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
-            <h2 className="text-gray-900 font-bold mb-2">Delete participant?</h2>
-            <p className="text-sm text-gray-600">
-              This will permanently remove <span className="font-semibold">{parToDelete.name}</span>.
-              If they have a tester account, that account and its sessions will also be removed.
-            </p>
-            {deleteParError ? <p className="text-xs text-red-600 mt-2">{deleteParError}</p> : null}
-            <div className="flex gap-3 mt-5">
-              <button
-                type="button"
-                onClick={() => setParToDelete(null)}
-                disabled={deletingParId === parToDelete.id}
-                className="flex-1 border border-gray-200 text-gray-700 hover:bg-gray-50 py-2 rounded-md text-sm font-semibold transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => onDeleteParticipant(parToDelete.id)}
-                disabled={deletingParId === parToDelete.id}
-                className="flex-1 bg-red-600 hover:bg-red-700 text-white py-2 rounded-md text-sm font-semibold transition-colors"
-              >
-                {deletingParId === parToDelete.id ? "Deleting..." : "Delete"}
+                {imageSaving ? "Saving…" : "Save"}
               </button>
             </div>
           </div>
         </div>
       ) : null}
-      {parToEdit && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
-            <h2 className="text-gray-900 font-bold mb-4">Edit Participant</h2>
-
-            <div className="space-y-3">
-              <Field label="Participant Name *">
-                <input
-                  type="text"
-                  value={parToEdit.name ?? ""}
-                  onChange={(e) =>
-                    setParToEdit((p) => p ? { ...p, name: e.target.value } : p)
-                  }
-                  placeholder="e.g. John Doe"
-                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
-                />
-              </Field>
-
-              <Field label="Email Address *">
-                <input
-                  type="email"
-                  value={parToEdit.email ?? ""}
-                  onChange={(e) =>
-                    setParToEdit((p) =>
-                      p ? { ...p, email: e.target.value } : p,
-                    )
-                  }
-                  placeholder="e.g. john@example.com"
-                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
-                />
-              </Field>
-
-              <Field label="Age *">
-                <input
-                  type="number"
-                  value={parToEdit.age ?? ""}
-                  onChange={(e) => setParToEdit((p) => p ? { ...p, age: Number(e.target.value) } : p)}
-                  placeholder="e.g. 21"
-                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
-                />
-              </Field>
-
-              <Field label="Gender *">
-                <select
-                  value={parToEdit.gender ?? ""}
-                  onChange={(e) => setParToEdit((p) => p ? { ...p, gender: e.target.value as Gender } : p)}
-                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
-                >
-                  <option value="">Select gender…</option>
-                  <option value="male">Male</option>
-                  <option value="female">Female</option>
-                  <option value="other">Other</option>
-                </select>
-              </Field>
-
-              <Field label="Contact Number">
-                <input
-                  type="tel"
-                  value={parToEdit.contactNumber ?? ""}
-                  onChange={(e) =>
-                    setParToEdit((p) =>
-                      p ? { ...p, contactNumber: e.target.value } : p,
-                    )
-                  }
-                  placeholder="Optional"
-                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
-                />
-              </Field>
-
-              <Field label="GCash Number">
-                <input
-                  type="tel"
-                  value={parToEdit.gcashNumber ?? ""}
-                  onChange={(e) =>
-                    setParToEdit((p) =>
-                      p ? { ...p, gcashNumber: e.target.value } : p,
-                    )
-                  }
-                  placeholder="Optional"
-                  className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
-                />
-              </Field>
-            </div>
-
-            {editParError && (
-              <p className="text-xs text-red-600 mt-2">{editParError}</p>
-            )}
-
-            <div className="flex gap-3 mt-5">
-              <button
-                type="button"
-                onClick={() => { setParToEdit(null); setEditParError(null); }}
-                disabled={editingParId === parToEdit.id}
-                className="flex-1 border border-gray-200 text-gray-700 hover:bg-gray-50 py-2 rounded-md text-sm font-semibold transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={onEditParticipant}
-                disabled={editingParId === parToEdit.id}
-                className="flex-1 bg-[#e8174a] hover:bg-[#c9143f] text-white py-2 rounded-md text-sm font-semibold transition-colors"
-              >
-                {editingParId === parToEdit.id ? "Saving..." : "Save Changes"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div> 
+    </PageHeader>
   );
 }
 
-function StatCard({ icon, label, value }: { icon: string; label: string; value: number }) {
-  return (
-    <div className="bg-white rounded-xl border border-gray-100 p-4 flex items-center gap-3 shadow-sm">
-      <span className="text-2xl w-10 h-10 flex items-center justify-center rounded-lg bg-red-50">
-        {icon}
-      </span>
-      <div>
-        <p className="text-[12px] text-gray-500 font-semibold">{label}</p>
-        <p className="text-[26px] leading-none text-gray-900 font-bold mt-1">{value}</p>
-      </div>
-    </div>
-  );
-}
-
-function TabButton({
+function LowSampleOverlay({
   active,
-  onClick,
+  sampleSize,
   children,
 }: {
   active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
+  sampleSize: number;
+  children: ReactNode;
 }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`flex-1 py-2.5 text-[13px] font-semibold transition-colors ${
-        active ? "bg-[#e8174a] text-white" : "bg-white text-gray-600 hover:bg-gray-50"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
+  if (!active) {
+    return <div className="space-y-6">{children}</div>;
+  }
 
-function Badge({ className, children }: { className: string; children: React.ReactNode }) {
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold ${className}`}>
-      {children}
-    </span>
-  );
-}
-
-function MetricCard({
-  title,
-  subtitle,
-  children,
-}: {
-  title: string;
-  subtitle?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="bg-gray-50 rounded-lg p-4 border border-gray-100">
-      <p className="text-[12px] text-gray-500 font-semibold">{title}</p>
-      {subtitle ? <p className="text-[11px] text-gray-400 mt-0.5">{subtitle}</p> : null}
-      <div className="mt-2">{children}</div>
+    <div className="relative isolate min-h-[220px]">
+      <div className="opacity-30 pointer-events-none select-none space-y-6" aria-hidden="true">
+        {children}
+      </div>
+      <div className="absolute inset-0 z-20 flex items-center justify-center p-4">
+        <div className="bg-white/95 border border-gray-200 rounded-xl shadow-md px-5 py-4 text-center max-w-xs">
+          <p className="text-sm font-bold text-gray-800 mb-1">Low sample size</p>
+          <p className="text-xs text-gray-500">
+            Need at least 5 surveys for reliable trends.{" "}
+            <span className="font-semibold text-gray-700">Currently: {sampleSize}</span>
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2005,6 +1662,27 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div>
       <label className="block text-sm text-gray-600 mb-1 font-semibold">{label}</label>
       {children}
+    </div>
+  );
+}
+
+function AnalyticsSkeleton() {
+  return (
+    <div className="space-y-4 animate-pulse" aria-hidden="true">
+      <div className="h-6 bg-gray-100 rounded-full w-40" />
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="h-40 bg-gray-100 rounded-xl" />
+        <div className="h-40 bg-gray-100 rounded-xl" />
+      </div>
+      <div className="grid grid-cols-3 gap-3">
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="h-20 bg-gray-100 rounded-xl" />
+        ))}
+      </div>
+      <div className="h-4 bg-gray-100 rounded w-1/3" />
+      <div className="h-40 bg-gray-100 rounded-xl" />
+      <div className="h-4 bg-gray-100 rounded w-1/4" />
+      <div className="h-32 bg-gray-100 rounded-xl" />
     </div>
   );
 }

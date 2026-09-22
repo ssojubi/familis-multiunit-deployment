@@ -128,6 +128,7 @@ export async function initDb() {
     ["age", "INT NULL"],
     ["gender", "ENUM('male', 'female', 'other') NULL"],
     ["photo_url", "TEXT NULL"],
+    ["dietary_restrictions", "TEXT NULL"],
     ["created_at", "TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP"],
   ];
 
@@ -136,6 +137,7 @@ export async function initDb() {
   }
 
   await addColumnIfMissing(pool, "sessions", "testing_room_id", "INT NULL");
+  await addColumnIfMissing(pool, "users", "is_active", "TINYINT(1) NOT NULL DEFAULT 1");
   await addIndexIfMissing(
     pool,
     "sessions",
@@ -152,11 +154,6 @@ export async function initDb() {
   await pool.query(`
     ALTER TABLE users
     MODIFY role ENUM('staff', 'tester', 'admin') NOT NULL DEFAULT 'tester'
-  `);
-  await pool.query("UPDATE users SET role = 'tester' WHERE role = 'staff'");
-  await pool.query(`
-    ALTER TABLE users
-    MODIFY role ENUM('tester', 'admin') NOT NULL DEFAULT 'tester'
   `);
 
   const initialAdminPassword = "admin123";

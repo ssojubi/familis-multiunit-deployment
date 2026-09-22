@@ -1,9 +1,10 @@
-import React, { useEffect, useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { FormEvent } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
-import logo from "../assets/logo.png";
+import { useNavigate } from "react-router-dom";
+import { testerLandingPath } from "../RequireAuth";
+import { apiFetch, setToken } from "../lib/api";
+import { PageHeader } from "../components/PageHeader";
 import loginBg from "../assets/login-bg.png";
-import { captureTesterContext } from "../testerContext";
 
 function IconMail(props: { className?: string; size?: number }) {
   const size = props.size ?? 20;
@@ -93,29 +94,24 @@ function IconLogin(props: { className?: string; size?: number }) {
 
 export default function Login() {
   const navigate = useNavigate();
-  const location = useLocation();
   const emailId = useId();
   const passwordId = useId();
 
-  // Clear any stored session on login page visit — always start fresh
   useEffect(() => {
-    try {
-      localStorage.removeItem("familis.user");
-      localStorage.removeItem("user");
-      localStorage.removeItem("familis.currentSession");
-    } catch {
-      /* ignore storage errors */
-    }
-  }, []);
-
-  useEffect(() => {
-    const requestedRoute = location.state?.returnTo;
-    if (typeof requestedRoute !== "string") return;
-    const queryIndex = requestedRoute.indexOf("?");
-    if (queryIndex >= 0 && requestedRoute.startsWith("/tester-")) {
-      captureTesterContext(requestedRoute.slice(queryIndex));
-    }
-  }, [location.state]);
+    // Do not trust localStorage here: a previous tester login can otherwise
+    // bounce an administrator away from the login form before they can switch
+    // accounts. The HTTPS session cookie is the source of truth.
+    const controller = new AbortController();
+    void fetch("/api/auth/me", { credentials: "include", signal: controller.signal })
+      .then(async (response) => {
+        const data = await response.json().catch(() => null);
+        if (!response.ok || !data?.user) return;
+        localStorage.setItem("familis.user", JSON.stringify(data.user));
+        navigate(data.user.role === "tester" ? testerLandingPath() : "/dashboard", { replace: true });
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [navigate]);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -134,9 +130,8 @@ export default function Login() {
 
     try {
       setLoading(true);
-      const res = await fetch(`/api/login`, {
+      const res = await apiFetch("/api/login", {
         method: "POST",
-        credentials: "include",
         headers: {
           "Content-Type": "application/json",
         },
@@ -156,23 +151,16 @@ export default function Login() {
         if (data?.user) {
           localStorage.setItem("familis.user", JSON.stringify(data.user));
         }
+        if (typeof data?.token === "string") {
+          setToken(data.token);
+        }
       } catch {
         // ignore storage failures
       }
 
-      localStorage.setItem("user", JSON.stringify(data.user));
-
-      const role = data.user?.role;
-      const requestedRoute = (location.state as { returnTo?: unknown } | null)
-        ?.returnTo;
+      const role = data?.user?.role;
       if (role === "tester") {
-        navigate("/tester-join");
-      } else if (
-        typeof requestedRoute === "string" &&
-        requestedRoute.startsWith("/") &&
-        !requestedRoute.startsWith("//")
-      ) {
-        navigate(requestedRoute, { replace: true });
+        navigate(testerLandingPath());
       } else {
         navigate("/dashboard");
       }
@@ -185,49 +173,26 @@ export default function Login() {
   };
 
   return (
-    <div
-      className="min-h-screen bg-[#f6f7fb] relative"
-      style={{
-        fontFamily: "'Montserrat', sans-serif",
-        backgroundImage: `url(${loginBg})`,
-        backgroundSize: "cover",
-        backgroundPosition: "center",
-        backgroundRepeat: "no-repeat",
-      }}
+    <PageHeader
+      shell="minimal"
+      variant="expanded"
+      onLogoClick={() => navigate("/")}
+      logoAriaLabel="Go to home"
     >
-      <header className="bg-red-600 text-white">
-        <button
-          type="button"
-          onClick={() => navigate("/")}
-          className="h-[80px] px-8 flex items-center gap-3 text-left"
-          aria-label="Go to home"
-        >
-          <img
-            src={logo}
-            alt="FaMiLis logo"
-            className="w-[50px] h-[50px] object-contain"
-          />
-          <span className="text-white text-[24px] font-bold tracking-wide">
-            FaMiLis
-          </span>
-        </button>
-      </header>
-
-      <main
-        className="px-6 py-10"
+      <div
+        className="min-h-full relative flex items-center justify-center px-6 py-10"
         style={{
-          minHeight: "calc(100vh - 80px)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
+          backgroundImage: `url(${loginBg})`,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          backgroundRepeat: "no-repeat",
         }}
       >
         <div
           className="w-full max-w-[560px] overflow-hidden rounded-[48px] shadow-[0_20px_60px_rgba(0,0,0,0.18)]"
           style={{ backgroundColor: "#fff" }}
         >
-          <div className="bg-red-600 px-10 pt-10 pb-9 text-center">
-            <div className="flex justify-center mb-2"></div>
+          <div className="bg-[#e8174a] px-10 pt-10 pb-9 text-center">
             <h2 className="text-white text-[34px] font-bold mt-2">
               Welcome Back!
             </h2>
@@ -245,7 +210,7 @@ export default function Login() {
                   style={{ fontFamily: "'Roboto', sans-serif" }}
                 >
                   <span className="inline-flex items-center gap-3">
-                    <IconMail size={20} className="text-red-600" />
+                    <IconMail size={20} className="text-[#e8174a]" />
                     Email Address
                   </span>
                 </label>
@@ -256,8 +221,8 @@ export default function Login() {
                   autoComplete="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="Enter your email"
-                  className="w-full h-[50px] px-7 border border-[#bfbfbf] rounded-[10px] text-[16px] text-black placeholder:text-[#bdb4b4] focus:outline-none focus:border-red-400"
+                  placeholder="admin@familis.com"
+                  className="w-full h-[50px] px-7 border border-[#bfbfbf] rounded-[10px] text-[16px] text-black placeholder:text-[#bdb4b4] focus:outline-none focus:border-[#e8174a]/60"
                   style={{ fontFamily: "'Albert Sans', sans-serif" }}
                 />
               </div>
@@ -269,7 +234,7 @@ export default function Login() {
                   style={{ fontFamily: "'Roboto', sans-serif" }}
                 >
                   <span className="inline-flex items-center gap-3">
-                    <IconLock size={20} className="text-red-600" />
+                    <IconLock size={20} className="text-[#e8174a]" />
                     Password
                   </span>
                 </label>
@@ -280,7 +245,7 @@ export default function Login() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Enter your password"
-                  className="w-full h-[50px] px-7 border border-[#bfbfbf] rounded-[10px] text-[16px] text-black placeholder:text-[#bdb4b4] focus:outline-none focus:border-red-400"
+                  className="w-full h-[50px] px-7 border border-[#bfbfbf] rounded-[10px] text-[16px] text-black placeholder:text-[#bdb4b4] focus:outline-none focus:border-[#e8174a]/60"
                   style={{ fontFamily: "'Albert Sans', sans-serif" }}
                 />
               </div>
@@ -294,28 +259,15 @@ export default function Login() {
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full bg-red-600 text-white h-[60px] rounded-full text-[22px] font-semibold hover:bg-red-700 disabled:bg-red-400 disabled:cursor-not-allowed transition-colors inline-flex items-center justify-center gap-3"
+                className="w-full bg-[#e8174a] text-white h-[60px] rounded-full text-[22px] font-semibold hover:bg-[#c9143f] disabled:bg-[#e8174a]/50 disabled:cursor-not-allowed transition-colors inline-flex items-center justify-center gap-3"
               >
                 <IconLogin size={28} className="text-white" />
                 <span>{loading ? "Logging in..." : "Login"}</span>
               </button>
-
-              <div className="mt-5 text-center">
-                <p className="text-[14px] text-[#5b5b5b]">
-                  New user? Sign up here!
-                </p>
-                <button
-                  type="button"
-                  onClick={() => navigate("/signup", { state: location.state })}
-                  className="mt-2 inline-flex items-center justify-center rounded-full border border-red-200 px-5 py-2 text-[15px] font-semibold text-red-700 hover:bg-red-50 transition-colors"
-                >
-                  Create account
-                </button>
-              </div>
             </form>
           </div>
         </div>
-      </main>
-    </div>
+      </div>
+    </PageHeader>
   );
 }

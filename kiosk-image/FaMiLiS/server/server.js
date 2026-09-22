@@ -100,7 +100,7 @@ function verifyAuthToken(token) {
     const auth = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
     if (
       !Number.isFinite(Number(auth.id)) ||
-      !["admin", "tester"].includes(auth.role) ||
+      !["admin", "staff", "tester"].includes(auth.role) ||
       Number(auth.exp) <= Math.floor(Date.now() / 1000)
     ) {
       return null;
@@ -485,7 +485,7 @@ async function start() {
       await completeStaleSessions();
       const [rows] = await pool.query(
         `
-        SELECT user_id, username, email, password_hash, role
+        SELECT user_id, username, email, password_hash, role, is_active
         FROM users
         WHERE email = ?
       `,
@@ -497,6 +497,9 @@ async function start() {
       }
 
       const user = rows[0];
+      if (!user.is_active) {
+        return res.status(403).json({ ok: false, error: "This account has been deactivated." });
+      }
       const stored = user.password_hash;
 
       const isBcrypt =
@@ -529,10 +532,73 @@ async function start() {
         email: user.email,
         role: user.role,
       };
-      setAuthCookie(req, res, responseUser);
+      // Booth handoff validates credentials before it starts the session.  Do
+      // not replace the operator's cookie during that validation request.
+      if (!req.body?.validateOnly) setAuthCookie(req, res, responseUser);
       return res.json({ ok: true, user: responseUser });
     } catch (err) {
       console.error("Login error:", err);
+      return res.status(500).json({ ok: false, error: "Server error." });
+    }
+  });
+
+  // Admin-user management for the imported FaMiLis operator UI. These routes
+  // keep the deployment's cookie authentication and MySQL pool intact.
+  app.get("/api/users", requireAuth, requireAdmin, async (_req, res) => {
+    try {
+      const [rows] = await pool.query(
+        "SELECT user_id, username, email, role, is_active, created_at FROM users ORDER BY user_id DESC",
+      );
+      return res.json({ ok: true, users: rows.map((user) => ({
+        id: Number(user.user_id), username: user.username, email: user.email,
+        role: user.role, isActive: Boolean(user.is_active), createdAt: toIsoOrNull(user.created_at),
+      })) });
+    } catch (err) {
+      console.error("GET /api/users error:", err);
+      return res.status(500).json({ ok: false, error: "Server error." });
+    }
+  });
+
+  app.post("/api/users", requireAuth, requireAdmin, async (req, res) => {
+    const username = String(req.body?.username || "").trim();
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const password = String(req.body?.password || "");
+    const role = String(req.body?.role || "tester");
+    if (!username || !email || password.length < 6 || !["admin", "staff", "tester"].includes(role)) {
+      return res.status(400).json({ ok: false, error: "Username, email, password (6+ characters), and a valid role are required." });
+    }
+    try {
+      const [result] = await pool.query(
+        "INSERT INTO users (username, email, password_hash, role, is_active) VALUES (?, ?, ?, ?, 1)",
+        [username, email, await bcrypt.hash(password, 10), role],
+      );
+      return res.status(201).json({ ok: true, user: { id: Number(result.insertId), username, email, role, isActive: true } });
+    } catch (err) {
+      if (err?.code === "ER_DUP_ENTRY") return res.status(409).json({ ok: false, error: "That email is already in use." });
+      console.error("POST /api/users error:", err);
+      return res.status(500).json({ ok: false, error: "Server error." });
+    }
+  });
+
+  app.patch("/api/users/:userId", requireAuth, requireAdmin, async (req, res) => {
+    const userId = Number.parseInt(req.params.userId, 10);
+    if (!Number.isFinite(userId)) return res.status(400).json({ ok: false, error: "Invalid user id." });
+    const fields = [];
+    const values = [];
+    if (req.body?.username != null) { fields.push("username = ?"); values.push(String(req.body.username).trim()); }
+    if (req.body?.email != null) { fields.push("email = ?"); values.push(String(req.body.email).trim().toLowerCase()); }
+    if (req.body?.password != null) { fields.push("password_hash = ?"); values.push(await bcrypt.hash(String(req.body.password), 10)); }
+    if (req.body?.role != null && ["admin", "staff", "tester"].includes(req.body.role)) { fields.push("role = ?"); values.push(req.body.role); }
+    if (req.body?.isActive != null) { fields.push("is_active = ?"); values.push(req.body.isActive ? 1 : 0); }
+    if (!fields.length) return res.status(400).json({ ok: false, error: "No valid changes supplied." });
+    try {
+      values.push(userId);
+      const [result] = await pool.query(`UPDATE users SET ${fields.join(", ")} WHERE user_id = ?`, values);
+      if (!result.affectedRows) return res.status(404).json({ ok: false, error: "User not found." });
+      return res.json({ ok: true });
+    } catch (err) {
+      if (err?.code === "ER_DUP_ENTRY") return res.status(409).json({ ok: false, error: "That email is already in use." });
+      console.error("PATCH /api/users error:", err);
       return res.status(500).json({ ok: false, error: "Server error." });
     }
   });
@@ -923,9 +989,19 @@ async function start() {
 
       const [rows] = await pool.query(
         `
-        SELECT participant_id, name, email, tester_label, kiosk_id, contact_number, gcash_number, age, gender, photo_url, created_at
-        FROM participants
-        ORDER BY created_at DESC, participant_id DESC
+        SELECT
+          p.participant_id, p.name, p.email, COALESCE(p.tester_label, p.name) AS tester_label, p.kiosk_id,
+          p.contact_number, p.gcash_number, p.age, p.gender, p.photo_url,
+          p.dietary_restrictions, p.created_at,
+          COUNT(s.session_id) AS session_count,
+          MAX(s.start_time) AS last_session_at,
+          SUBSTRING_INDEX(GROUP_CONCAT(fp.name ORDER BY s.start_time DESC), ',', 1) AS last_food_name,
+          COUNT(DISTINCT s.food_id) AS foods_tasted_count
+        FROM participants p
+        LEFT JOIN sessions s ON s.participant_id = p.participant_id
+        LEFT JOIN food_products fp ON fp.food_id = s.food_id
+        GROUP BY p.participant_id
+        ORDER BY p.created_at DESC, p.participant_id DESC
       `
       );
       return res.json({
@@ -941,7 +1017,12 @@ async function start() {
           age: r.age == null ? null : Number(r.age),
           gender: r.gender == null ? null : String(r.gender),
           photoUrl: r.photo_url == null ? null : String(r.photo_url),
+          dietaryRestrictions: r.dietary_restrictions == null ? null : String(r.dietary_restrictions),
           createdAt: toIsoOrNull(r.created_at),
+          sessionCount: Number(r.session_count ?? 0),
+          lastSessionAt: toIsoOrNull(r.last_session_at),
+          lastFoodName: r.last_food_name == null ? null : String(r.last_food_name),
+          foodsTastedCount: Number(r.foods_tasted_count ?? 0),
         })),
       });
     } catch (err) {
@@ -954,9 +1035,6 @@ async function start() {
   app.post("/api/participants", async (req, res) => {
     const rawName = req.body?.name ?? req.body?.testerLabel;
     const name = typeof rawName === "string" ? rawName.trim() : "";
-    const rawEmail = req.body?.email ?? req.body?.participantEmail;
-    const email = typeof rawEmail === "string" ? rawEmail.trim() : "";
-    const rawPassword = req.body?.password;
     const kioskIdRaw = req.body?.kioskId ?? req.body?.kiosk_id;
     const ageRaw = req.body?.age;
     const genderRaw = req.body?.gender;
@@ -965,9 +1043,6 @@ async function start() {
 
     if (!name) {
       return res.status(400).json({ ok: false, error: "Name is required." });
-    }
-    if (!email) {
-      return res.status(400).json({ ok: false, error: "Email is required." });
     }
 
     const kioskId = kioskIdRaw == null || kioskIdRaw === "" ? null : Number.parseInt(String(kioskIdRaw), 10);
@@ -989,51 +1064,52 @@ async function start() {
       contactNumberRaw == null || contactNumberRaw === "" ? null : String(contactNumberRaw);
     const gcashNumber =
       gcashNumberRaw == null || gcashNumberRaw === "" ? null : String(gcashNumberRaw);
-
-    const plainPassword =
-      typeof rawPassword === "string" ? rawPassword.trim() : "";
-    if (!plainPassword) {
-      return res.status(400).json({ ok: false, error: "Password is required." });
-    }
-    if (plainPassword.length < 8) {
-      return res.status(400).json({ ok: false, error: "Password must be at least 8 characters." });
-    }
+    const dietaryRestrictions =
+      req.body?.dietaryRestrictions == null || req.body.dietaryRestrictions === ""
+        ? null
+        : String(req.body.dietaryRestrictions).trim();
 
     try {
+      // A taster profile is not necessarily an account.  Reuse the profile by
+      // its label so Quick Setup never creates duplicate profiles.
+      const [[existing]] = await pool.query(
+        `SELECT participant_id FROM participants WHERE LOWER(COALESCE(tester_label, name)) = LOWER(?) LIMIT 1`,
+        [name],
+      );
+      if (existing) {
+        await pool.query(
+          `UPDATE participants
+           SET age = COALESCE(?, age), gender = COALESCE(?, gender),
+               dietary_restrictions = COALESCE(?, dietary_restrictions)
+           WHERE participant_id = ?`,
+          [age, gender, dietaryRestrictions, Number(existing.participant_id)],
+        );
+        const [[participant]] = await pool.query(
+          `SELECT participant_id, name, email, tester_label, age, gender, dietary_restrictions, created_at
+           FROM participants WHERE participant_id = ?`,
+          [Number(existing.participant_id)],
+        );
+        return res.json({ ok: true, reused: true, participant: {
+          id: Number(participant.participant_id), name: participant.name == null ? null : String(participant.name),
+          email: participant.email == null ? null : String(participant.email),
+          testerLabel: participant.tester_label == null ? null : String(participant.tester_label),
+          age: participant.age == null ? null : Number(participant.age), gender: participant.gender == null ? null : String(participant.gender),
+          dietaryRestrictions: participant.dietary_restrictions == null ? null : String(participant.dietary_restrictions),
+          createdAt: toIsoOrNull(participant.created_at),
+        }});
+      }
       const [insertResult] = await pool.query(
-        `INSERT INTO participants (name, email, kiosk_id, contact_number, gcash_number, age, gender)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [name, email, kioskId, contactNumber, gcashNumber, age, gender],
+        `INSERT INTO participants (name, tester_label, kiosk_id, contact_number, gcash_number, age, gender, dietary_restrictions)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [name, name, kioskId, contactNumber, gcashNumber, age, gender, dietaryRestrictions],
       );
       const newParticipantId = insertResult.insertId;
 
       const [[inserted]] = await pool.query(
-        `SELECT participant_id, name, email, kiosk_id, contact_number, gcash_number, age, gender, photo_url, created_at
+        `SELECT participant_id, name, email, tester_label, kiosk_id, contact_number, gcash_number, age, gender, photo_url, dietary_restrictions, created_at
          FROM participants WHERE participant_id = ? LIMIT 1`,
         [newParticipantId],
       );
-
-      // Participant creation is independent of account creation.
-      let passwordNote = "";
-      try {
-        const [existingUsers] = await pool.query(
-          `SELECT user_id FROM users WHERE LOWER(email) = ? LIMIT 1`,
-          [email.toLowerCase()],
-        );
-        if (existingUsers.length === 0) {
-          const passwordHash = await bcrypt.hash(plainPassword, 10);
-          await pool.query(
-            `INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, 'tester')`,
-            [name, email.toLowerCase(), passwordHash],
-          );
-          passwordNote = "User account created with the provided password.";
-        } else {
-          passwordNote = "User account already exists — password unchanged.";
-        }
-      } catch (userErr) {
-        console.warn("Could not create user account for participant:", userErr?.message);
-        passwordNote = "Participant saved, but user account could not be created (email may already exist in users table).";
-      }
 
       return res.json({
         ok: true,
@@ -1041,15 +1117,16 @@ async function start() {
           id: Number(inserted.participant_id),
           name: inserted.name == null ? null : String(inserted.name),
           email: inserted.email == null ? null : String(inserted.email),
+          testerLabel: inserted.tester_label == null ? null : String(inserted.tester_label),
           kioskId: inserted.kiosk_id == null ? null : Number(inserted.kiosk_id),
           contactNumber: inserted.contact_number == null ? null : String(inserted.contact_number),
           gcashNumber: inserted.gcash_number == null ? null : String(inserted.gcash_number),
           age: inserted.age == null ? null : Number(inserted.age),
           gender: inserted.gender == null ? null : String(inserted.gender),
           photoUrl: inserted.photo_url == null ? null : String(inserted.photo_url),
+          dietaryRestrictions: inserted.dietary_restrictions == null ? null : String(inserted.dietary_restrictions),
           createdAt: toIsoOrNull(inserted.created_at),
         },
-        passwordNote,
       });
     } catch (err) {
       console.error("POST /api/participants error:", err);
@@ -1137,7 +1214,7 @@ async function start() {
     }
   });
 
-  app.put("/api/participants/:id", async (req, res) => {
+  const updateParticipant = async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) {
       return res.status(400).json({ ok: false, error: "Invalid id." });
@@ -1145,8 +1222,6 @@ async function start() {
     const rawName = req.body?.name ?? req.body?.testerLabel;
     const name = typeof rawName === "string" ? rawName.trim() : "";
     const testerLabel = typeof req.body?.testerLabel === "string" ? req.body.testerLabel.trim() : name;
-    const rawEmail = req.body?.email ?? req.body?.participantEmail;
-    const email = typeof rawEmail === "string" ? rawEmail.trim() : "";
     const kioskIdRaw = req.body?.kioskId ?? req.body?.kiosk_id;
     const ageRaw = req.body?.age;
     const genderRaw = req.body?.gender;
@@ -1155,9 +1230,6 @@ async function start() {
 
     if (!name) {
       return res.status(400).json({ ok: false, error: "name is required." });
-    }
-    if (!email) {
-      return res.status(400).json({ ok: false, error: "email is required." });
     }
 
     const kioskId = kioskIdRaw == null || kioskIdRaw === "" ? null : Number.parseInt(String(kioskIdRaw), 10);
@@ -1175,21 +1247,25 @@ async function start() {
 
     const contactNumber = contactNumberRaw == null || contactNumberRaw === "" ? null : String(contactNumberRaw);
     const gcashNumber = gcashNumberRaw == null || gcashNumberRaw === "" ? null : String(gcashNumberRaw);
+    const dietaryRestrictions =
+      req.body?.dietaryRestrictions == null || req.body.dietaryRestrictions === ""
+        ? null
+        : String(req.body.dietaryRestrictions).trim();
 
     try {
       const [result] = await pool.query(
         `UPDATE participants
-        SET name = ?, email = ?, tester_label = ?, kiosk_id = ?, contact_number = ?, gcash_number = ?, age = ?, gender = ?
+        SET name = ?, tester_label = ?, kiosk_id = ?, contact_number = ?, gcash_number = ?, age = ?, gender = ?, dietary_restrictions = ?
         WHERE participant_id = ?`,
         [
           name,
-          email,
           testerLabel,
           kioskId,
           contactNumber,
           gcashNumber,
           age,
           gender,
+          dietaryRestrictions,
           id,
         ],
       );
@@ -1198,7 +1274,7 @@ async function start() {
       }
 
       const [[updated]] = await pool.query(
-        `SELECT participant_id, name, email, tester_label, kiosk_id, contact_number, gcash_number, age, gender, photo_url, created_at
+        `SELECT participant_id, name, email, tester_label, kiosk_id, contact_number, gcash_number, age, gender, photo_url, dietary_restrictions, created_at
          FROM participants WHERE participant_id = ? LIMIT 1`,
         [id],
       );
@@ -1216,12 +1292,68 @@ async function start() {
           age: updated.age == null ? null : Number(updated.age),
           gender: updated.gender == null ? null : String(updated.gender),
           photoUrl: updated.photo_url == null ? null : String(updated.photo_url),
+          dietaryRestrictions: updated.dietary_restrictions == null ? null : String(updated.dietary_restrictions),
           createdAt: toIsoOrNull(updated.created_at),
         },
       });
     } catch (err) {
-      console.error("PUT /api/participants error:", err);
+      console.error("UPDATE /api/participants error:", err);
       return res.status(500).json({ ok: false, error: String(err?.message || "Server error.") });
+    }
+  };
+  app.put("/api/participants/:id", updateParticipant);
+  app.patch("/api/participants/:id", updateParticipant);
+
+  app.get("/api/participants/:id", async (req, res) => {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "Invalid id." });
+    try {
+      const [[row]] = await pool.query(
+        `SELECT p.participant_id, COALESCE(p.tester_label, p.name) AS tester_label, p.age, p.gender, p.dietary_restrictions, p.created_at,
+                COUNT(s.session_id) AS session_count, MAX(s.start_time) AS last_session_at
+         FROM participants p LEFT JOIN sessions s ON s.participant_id = p.participant_id
+         WHERE p.participant_id = ? GROUP BY p.participant_id`, [id],
+      );
+      if (!row) return res.status(404).json({ ok: false, error: "Taster not found." });
+      return res.json({ ok: true, participant: {
+        id: Number(row.participant_id), testerLabel: row.tester_label == null ? null : String(row.tester_label),
+        age: row.age == null ? null : Number(row.age), gender: row.gender == null ? null : String(row.gender),
+        dietaryRestrictions: row.dietary_restrictions == null ? null : String(row.dietary_restrictions),
+        createdAt: toIsoOrNull(row.created_at),
+      }, sessionCount: Number(row.session_count ?? 0), lastSessionAt: toIsoOrNull(row.last_session_at) });
+    } catch (err) {
+      console.error("GET /api/participants/:id error:", err);
+      return res.status(500).json({ ok: false, error: "Server error." });
+    }
+  });
+
+  app.get("/api/participants/:id/sessions", async (req, res) => {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "Invalid id." });
+    try {
+      const [rows] = await pool.query(
+        `SELECT s.session_id, s.food_id, fp.name AS food_name, fp.category AS food_category, fp.image_url AS food_image_url,
+                s.start_time, s.end_time, s.status, COUNT(fl.frame_log_id) AS frame_count,
+                AVG(fl.confidence_score) AS mean_confidence, sr.final_overall_rating
+         FROM sessions s LEFT JOIN food_products fp ON fp.food_id = s.food_id
+         LEFT JOIN frame_logs fl ON fl.session_id = s.session_id
+         LEFT JOIN survey_results sr ON sr.session_id = s.session_id
+         WHERE s.participant_id = ?
+         GROUP BY s.session_id, fp.food_id, fp.name, fp.category, fp.image_url, sr.final_overall_rating
+         ORDER BY s.start_time DESC, s.session_id DESC`, [id],
+      );
+      return res.json({ ok: true, sessions: rows.map((row) => ({
+        id: Number(row.session_id), foodId: row.food_id == null ? null : Number(row.food_id),
+        foodName: row.food_name == null ? null : String(row.food_name), foodCategory: row.food_category == null ? null : String(row.food_category),
+        foodImageUrl: row.food_image_url == null ? null : String(row.food_image_url),
+        startTime: toIsoOrNull(row.start_time), endTime: toIsoOrNull(row.end_time), status: String(row.status),
+        frameCount: Number(row.frame_count ?? 0), meanConfidence: row.mean_confidence == null ? null : Number(row.mean_confidence),
+        invalidatedAt: null, hasConsent: true, hasSurvey: row.final_overall_rating != null,
+        survey: row.final_overall_rating == null ? null : { color: null, flavorAroma: null, saltSweet: null, texture: null, overall: Number(row.final_overall_rating) },
+      })) });
+    } catch (err) {
+      console.error("GET /api/participants/:id/sessions error:", err);
+      return res.status(500).json({ ok: false, error: "Server error." });
     }
   });
 
@@ -1670,6 +1802,38 @@ async function start() {
       );
       const sessionCount = Number(sessionCountRow?.session_count ?? 0);
       const surveyCount = Number(surveyCountRow?.survey_count ?? 0);
+      const [[aspects]] = await pool.query(
+        `SELECT AVG(color_rating) AS color_mean, STDDEV_SAMP(color_rating) AS color_std, COUNT(color_rating) AS color_n,
+                AVG(flavor_aroma_rating) AS flavor_mean, STDDEV_SAMP(flavor_aroma_rating) AS flavor_std, COUNT(flavor_aroma_rating) AS flavor_n,
+                AVG(salt_sweet_rating) AS salt_mean, STDDEV_SAMP(salt_sweet_rating) AS salt_std, COUNT(salt_sweet_rating) AS salt_n,
+                AVG(texture_rating) AS texture_mean, STDDEV_SAMP(texture_rating) AS texture_std, COUNT(texture_rating) AS texture_n,
+                AVG(final_overall_rating) AS overall_mean, STDDEV_SAMP(final_overall_rating) AS overall_std, COUNT(final_overall_rating) AS overall_n
+         FROM survey_results sr JOIN sessions s ON s.session_id = sr.session_id WHERE s.food_id = ?`, [foodId]);
+      const aspect = (mean, stdDev, n) => ({ mean: mean == null ? 0 : Number(mean), stdDev: stdDev == null ? 0 : Number(stdDev), n: Number(n ?? 0) });
+      const aspectStats = {
+        color: aspect(aspects.color_mean, aspects.color_std, aspects.color_n),
+        flavorAroma: aspect(aspects.flavor_mean, aspects.flavor_std, aspects.flavor_n),
+        saltSweet: aspect(aspects.salt_mean, aspects.salt_std, aspects.salt_n),
+        texture: aspect(aspects.texture_mean, aspects.texture_std, aspects.texture_n),
+        overall: aspect(aspects.overall_mean, aspects.overall_std, aspects.overall_n),
+      };
+      const [trendRows] = await pool.query(
+        `SELECT s.session_id, s.start_time, sr.color_rating, sr.flavor_aroma_rating, sr.salt_sweet_rating,
+                sr.texture_rating, sr.final_overall_rating, AVG(fl.hedonic_score) AS mean_fer_hedonic
+         FROM sessions s LEFT JOIN survey_results sr ON sr.session_id = s.session_id
+         LEFT JOIN frame_logs fl ON fl.session_id = s.session_id AND fl.hedonic_score IS NOT NULL
+         WHERE s.food_id = ?
+         GROUP BY s.session_id, s.start_time, sr.color_rating, sr.flavor_aroma_rating, sr.salt_sweet_rating, sr.texture_rating, sr.final_overall_rating
+         ORDER BY s.start_time ASC, s.session_id ASC`, [foodId]);
+      const sessionTrends = trendRows.map((row) => ({
+        sessionId: Number(row.session_id), sessionDate: toIsoOrNull(row.start_time),
+        overallRating: row.final_overall_rating == null ? null : Number(row.final_overall_rating),
+        color: row.color_rating == null ? null : Number(row.color_rating),
+        flavorAroma: row.flavor_aroma_rating == null ? null : Number(row.flavor_aroma_rating),
+        saltSweet: row.salt_sweet_rating == null ? null : Number(row.salt_sweet_rating),
+        texture: row.texture_rating == null ? null : Number(row.texture_rating),
+        meanFerHedonic: row.mean_fer_hedonic == null ? null : Number(row.mean_fer_hedonic) * 8 + 1,
+      }));
 
       return res.json({
         ok: true,
@@ -1677,7 +1841,11 @@ async function start() {
           meanConfidence: confidenceRow?.mean_confidence == null ? 0 : Number(confidenceRow.mean_confidence),
           // hedonic_score is normalized 0..1 in frame_logs; map to 1..9 for UI consistency.
           meanHedonic: hedonicRow?.mean_hedonic == null ? 0 : Number(hedonicRow.mean_hedonic) * 8 + 1,
-          distribution,
+          distribution: distribution.map((bucket, index) => ({
+            ...bucket,
+            count: Number([distRow?.positive_count, distRow?.neutral_count, distRow?.negative_count][index] ?? 0),
+          })),
+          reactionCounts: { positive: Number(distRow?.positive_count ?? 0), neutral: Number(distRow?.neutral_count ?? 0), negative: Number(distRow?.negative_count ?? 0) },
           radar,
           timeline,
           byAge,
@@ -1686,6 +1854,8 @@ async function start() {
           sessionCount,
           frameLogCount: totalCount,
           surveyCount,
+          aspectStats,
+          sessionTrends,
         },
       });
     } catch (err) {

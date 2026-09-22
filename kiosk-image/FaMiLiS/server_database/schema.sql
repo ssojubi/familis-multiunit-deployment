@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS participants (
   age INT,
   gender ENUM('male', 'female', 'other'),
   photo_url TEXT NULL,
+  dietary_restrictions TEXT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
   INDEX idx_participant_name (name),
@@ -180,4 +181,3 @@ CREATE TABLE IF NOT EXISTS emotion_results (
 -- sessions             1 ──▶ M frame_logs
 -- sessions             1 ──▶ M system_logs
 -- sessions             1 ──▶ 1 survey_results
-

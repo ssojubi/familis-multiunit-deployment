@@ -1,16 +1,120 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { io, Socket } from "socket.io-client";
-import { performLogout } from "../auth";
-import logo from "../assets/logo.png";
+import { PageHeader, PageTitle } from "../components/PageHeader";
+import { apiFetch } from "../lib/api";
+import { InfoTip } from "../components/InfoTip";
+import { confidenceToTier, confidenceTooltip } from "../lib/confidence";
+import { hedonicLabel } from "../lib/ratingLabels";
+import {
+  FAMILIS_CURRENT_SESSION_KEY,
+  getStoredRole,
+  hasSessionConsent,
+  markSessionConsented,
+  performLogout,
+} from "../RequireAuth";
 
-import { getApiBase, getSocketUrl, isKioskPublicPath, kioskRoute } from "../apiConfig";
-
-const API_BASE = getApiBase();
-const SOCKET_SERVER_URL = getSocketUrl();
 const FRAME_CAPTURE_MS = 750;
-// Use backend so session_id in this page matches DB rows.
+// Seconds without a detected face before auto-pausing; increase to reduce sensitivity.
+const NO_FACE_PAUSE_MS = 20000;
+// Consecutive frame-upload failures before treating the emotion service as offline.
+const INFERENCE_FAILURE_PAUSE_COUNT = 8;
+// Set false to prevent alt-tab / window blur from auto-pausing the session.
+const FOCUS_AUTO_PAUSE_ENABLED = false;
+// Grace period (ms) before a focus-based pause fires when FOCUS_AUTO_PAUSE_ENABLED is true; set 0 for immediate.
+const AUTO_PAUSE_GRACE_MS = 0;
 const USE_DB = true;
+
+type PauseReason =
+  | "initial"
+  | "manual"
+  | "tab-hidden"
+  | "window-blur"
+  | "camera-error"
+  | "camera-ended"
+  | "emotion-offline"
+  | "offline"
+  | "no-face"
+  | "confirm-stop";
+
+type StoredPauseState = {
+  isPaused: boolean;
+  pauseReason: PauseReason | null;
+  totalPausedMs: number;
+  pauseStartMs: number | null;
+  hasEverResumed: boolean;
+};
+
+const PAUSE_MESSAGES: Record<PauseReason, string> = {
+  initial: "Ready — press Resume to begin recording. No frames are being captured yet.",
+  manual: "Data collection paused — no frames are being captured.",
+  "tab-hidden": "Tab was hidden — recording paused. Resume when ready.",
+  "window-blur": "Window lost focus — recording paused. Resume when ready.",
+  "camera-error": "Camera unavailable — recording paused. Resume after fixing camera access.",
+  "camera-ended": "Camera stream ended — refresh or re-enable the camera, then resume.",
+  "emotion-offline": "Emotion service offline — recording paused. Start the service, then resume.",
+  offline: "Network offline — recording paused. Reconnect, then resume.",
+  "no-face": "Face not visible — recording paused. Position yourself in frame, then resume.",
+  "confirm-stop": "Confirm stop dialog open — recording paused.",
+};
+
+function pauseStorageKey(sessionId: number) {
+  return `familis.sessionPause.${sessionId}`;
+}
+
+function readStoredPauseState(sessionId: number): StoredPauseState | null {
+  try {
+    const raw = sessionStorage.getItem(pauseStorageKey(sessionId));
+    if (!raw) return null;
+    return JSON.parse(raw) as StoredPauseState;
+  } catch {
+    return null;
+  }
+}
+
+function computeInitialPause(sessionId: number | null) {
+  if (sessionId == null) {
+    return {
+      isPaused: true,
+      pauseReason: "initial" as PauseReason,
+      totalPausedMs: 0,
+      hasEverResumed: false,
+      pauseStartMs: Date.now(),
+    };
+  }
+
+  const stored = readStoredPauseState(sessionId);
+  if (!stored) {
+    return {
+      isPaused: true,
+      pauseReason: "initial" as PauseReason,
+      totalPausedMs: 0,
+      hasEverResumed: false,
+      pauseStartMs: Date.now(),
+    };
+  }
+
+  if (stored.isPaused) {
+    let totalPausedMs = stored.totalPausedMs ?? 0;
+    if (stored.pauseStartMs != null) {
+      totalPausedMs += Date.now() - stored.pauseStartMs;
+    }
+    return {
+      isPaused: true,
+      pauseReason: stored.pauseReason ?? ("manual" as PauseReason),
+      totalPausedMs,
+      hasEverResumed: stored.hasEverResumed ?? false,
+      pauseStartMs: Date.now(),
+    };
+  }
+
+  return {
+    isPaused: false,
+    pauseReason: null,
+    totalPausedMs: stored.totalPausedMs ?? 0,
+    hasEverResumed: stored.hasEverResumed ?? true,
+    pauseStartMs: null,
+  };
+}
 
 type Food = {
   id: number;
@@ -25,6 +129,7 @@ type SessionRow = {
   status: "pending" | "active" | "completed" | "cancelled";
   startTime: string | null;
   endTime: string | null;
+  hasConsent?: boolean;
 };
 
 type StoredSession = {
@@ -33,20 +138,6 @@ type StoredSession = {
   foodId: number;
   status: SessionRow["status"];
   startTime: string;
-  browserKioskId?: string;
-  agentKioskId?: string;
-  roomId?: string;
-};
-type Role = "host" | "viewer" | null;
-type ServerToClientEvents = {
-  "viewer-connected": () => void;
-  "signal": (data: { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) => void;
-  "user-disconnected": () => void;
-  "host-disconnected": () => void;
-};
-type ClientToServerEvents = {
-  "join-room": (roomId: string, role: Role) => void;
-  "signal": (data: { room: string; sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) => void;
 };
 
 function formatMmSs(totalSeconds: number) {
@@ -55,15 +146,40 @@ function formatMmSs(totalSeconds: number) {
   return `${mm}:${ss}`;
 }
 
-// Model values are 0..1; the UI uses a 1..9 scale.
 function hedonic01ToScale(hedonic01: number) {
   return Number((hedonic01 * 8 + 1).toFixed(1));
+}
+
+type SentimentKey = "Positive" | "Negative" | "Neutral";
+
+const SENTIMENT_STYLES: Record<SentimentKey, { bg: string; text: string; icon: string; ring: string }> = {
+  Positive: { bg: "bg-green-100", text: "text-green-800", icon: "↑", ring: "ring-green-400" },
+  Negative: { bg: "bg-red-100",   text: "text-red-800",   icon: "↓", ring: "ring-red-400" },
+  Neutral:  { bg: "bg-gray-100",  text: "text-gray-700",  icon: "→", ring: "ring-gray-300" },
+};
+
+function SentimentChip({ sentiment }: { sentiment: string | null }) {
+  if (!sentiment) {
+    return <span className="text-xs text-gray-400">—</span>;
+  }
+  const key = (sentiment.charAt(0).toUpperCase() + sentiment.slice(1)) as SentimentKey;
+  const style = SENTIMENT_STYLES[key] ?? SENTIMENT_STYLES.Neutral;
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold ${style.bg} ${style.text}`}
+      aria-label={`Sentiment: ${sentiment}`}
+    >
+      <span aria-hidden="true">{style.icon}</span>
+      {key}
+    </span>
+  );
 }
 
 export default function Session() {
   const navigate = useNavigate();
   const location = useLocation();
-  const kioskMode = isKioskPublicPath(location.pathname);
+  const role = getStoredRole();
+  const isTester = role === "tester";
 
   const storedCurrent = useMemo((): StoredSession | null => {
     try {
@@ -80,6 +196,8 @@ export default function Session() {
 
   const initialSessionId = initialSession?.id ?? storedCurrent?.id ?? null;
   const sessionId = initialSessionId;
+  const initialPause = useMemo(() => computeInitialPause(initialSessionId), [initialSessionId]);
+
   const [session, setSession] = useState<SessionRow | null>(initialSession ?? null);
   const [food, setFood] = useState<Food | null>(initialFood ?? null);
 
@@ -89,13 +207,17 @@ export default function Session() {
   const [cameraError, setCameraError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const socketRef = useRef<Socket<ServerToClientEvents, ClientToServerEvents> | null>(null);
-  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
 
   const [isRecording, setIsRecording] = useState((initialSession?.status ?? "active") === "active");
-  const [isPaused, setIsPaused] = useState(false);
-  const pauseStartRef = useRef<number | null>(null);
-  const totalPausedMsRef = useRef(0);
+  const [isPaused, setIsPaused] = useState(initialPause.isPaused);
+  const [pauseReason, setPauseReason] = useState<PauseReason | null>(initialPause.pauseReason);
+  const [hasEverResumed, setHasEverResumed] = useState(initialPause.hasEverResumed);
+  const pauseStartRef = useRef<number | null>(initialPause.pauseStartMs);
+  const totalPausedMsRef = useRef(initialPause.totalPausedMs);
+
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [stopPending, setStopPending] = useState(false);
+  const [stopError, setStopError] = useState<string | null>(null);
 
   const [emotionServiceOk, setEmotionServiceOk] = useState<boolean | null>(null);
   const [framesCaptured, setFramesCaptured] = useState(0);
@@ -106,29 +228,41 @@ export default function Session() {
 
   const frameInFlightRef = useRef(false);
   const cameraSessionActiveRef = useRef(true);
-  const roomId =
-    storedCurrent?.roomId ||
-    `kiosk-${storedCurrent?.browserKioskId || storedCurrent?.agentKioskId || "kiosk-01"}`;
-  const userRole = useMemo(() => {
-    try {
-      const raw = localStorage.getItem("familis.user") || localStorage.getItem("user");
-      if (!raw) return null;
-      return (JSON.parse(raw)?.role ?? null) as string | null;
-    } catch {
-      return null;
-    }
-  }, []);
-  const isAdmin = userRole === "admin";
+  const isRecordingRef = useRef(isRecording);
+  const isPausedRef = useRef(isPaused);
+  const hasEverResumedRef = useRef(hasEverResumed);
+  const consecutiveNoFaceRef = useRef(0);
+  const consecutiveInferenceFailuresRef = useRef(0);
+  const autoPauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const startEpochMs = (() => {
+  useEffect(() => {
+    isRecordingRef.current = isRecording;
+  }, [isRecording]);
+
+  useEffect(() => {
+    isPausedRef.current = isPaused;
+  }, [isPaused]);
+
+  useEffect(() => {
+    hasEverResumedRef.current = hasEverResumed;
+  }, [hasEverResumed]);
+
+  const startEpochMs = useMemo(() => {
     if (!session?.startTime) return null;
     const t = new Date(session.startTime).getTime();
     return Number.isNaN(t) ? null : t;
-  })();
+  }, [session?.startTime]);
+
+  const hasConsent =
+    session?.hasConsent === true ||
+    (sessionId != null && hasSessionConsent(sessionId));
+
+  const consentBlocked = isTester && !loading && session != null && !hasConsent;
+  const sessionReady = !isTester || hasConsent;
 
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   useEffect(() => {
-    if (startEpochMs == null) return;
+    if (startEpochMs == null || !sessionReady) return;
     const tick = () => {
       const now = Date.now();
       let pausePortion = 0;
@@ -144,7 +278,81 @@ export default function Session() {
     tick();
     const id = window.setInterval(tick, 1000);
     return () => window.clearInterval(id);
-  }, [startEpochMs, isPaused]);
+  }, [startEpochMs, isPaused, sessionReady]);
+
+  const persistPauseState = useCallback(() => {
+    if (sessionId == null) return;
+    const state: StoredPauseState = {
+      isPaused: isPausedRef.current,
+      pauseReason,
+      totalPausedMs: totalPausedMsRef.current,
+      pauseStartMs: pauseStartRef.current,
+      hasEverResumed: hasEverResumedRef.current,
+    };
+    sessionStorage.setItem(pauseStorageKey(sessionId), JSON.stringify(state));
+  }, [sessionId, pauseReason]);
+
+  const pauseRecording = useCallback((reason: PauseReason) => {
+    if (!isRecordingRef.current) return;
+    if (!isPausedRef.current) {
+      pauseStartRef.current = Date.now();
+      setIsPaused(true);
+    }
+    setPauseReason(reason);
+  }, []);
+
+  const resumeBlocked =
+    Boolean(cameraError) ||
+    (typeof navigator !== "undefined" && !navigator.onLine) ||
+    emotionServiceOk === false;
+
+  const resumeBlockedTooltip = cameraError
+    ? "Fix camera access before resuming."
+    : typeof navigator !== "undefined" && !navigator.onLine
+      ? "Reconnect to the network before resuming."
+      : emotionServiceOk === false
+        ? "Start the emotion service before resuming."
+        : null;
+
+  const resumeRecording = useCallback(() => {
+    if (!isRecordingRef.current || resumeBlocked) return;
+    if (!isPausedRef.current) return;
+
+    if (pauseStartRef.current != null) {
+      totalPausedMsRef.current += Date.now() - pauseStartRef.current;
+      pauseStartRef.current = null;
+    }
+    consecutiveNoFaceRef.current = 0;
+    consecutiveInferenceFailuresRef.current = 0;
+    setIsPaused(false);
+    setPauseReason(null);
+    hasEverResumedRef.current = true;
+    setHasEverResumed(true);
+  }, [resumeBlocked]);
+
+  // Schedules a focus-based pause after AUTO_PAUSE_GRACE_MS; cancels if user returns in time.
+  const scheduleAutoPause = useCallback((reason: PauseReason) => {
+    if (autoPauseTimerRef.current != null) return;
+    if (AUTO_PAUSE_GRACE_MS <= 0) {
+      pauseRecording(reason);
+      return;
+    }
+    autoPauseTimerRef.current = setTimeout(() => {
+      autoPauseTimerRef.current = null;
+      pauseRecording(reason);
+    }, AUTO_PAUSE_GRACE_MS);
+  }, [pauseRecording]);
+
+  const cancelAutoPause = useCallback(() => {
+    if (autoPauseTimerRef.current != null) {
+      clearTimeout(autoPauseTimerRef.current);
+      autoPauseTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    persistPauseState();
+  }, [isPaused, pauseReason, hasEverResumed, persistPauseState]);
 
   const stopCamera = () => {
     if (streamRef.current) {
@@ -154,39 +362,10 @@ export default function Session() {
     const v = videoRef.current;
     if (v) {
       const obj = v.srcObject;
-      if (obj instanceof MediaStream) {
-        obj.getTracks().forEach((t) => t.stop());
-      }
+      if (obj instanceof MediaStream) obj.getTracks().forEach((t) => t.stop());
       v.srcObject = null;
     }
   };
-
-  const cleanupPeerConnection = () => {
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
-    }
-  };
-
-  const createPeerConnection = useCallback(async () => {
-    if (peerConnectionRef.current) return peerConnectionRef.current;
-
-    const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: "stun:stun.l.google.com:19302" },
-        { urls: "stun:stun1.l.google.com:19302" },
-      ],
-    });
-    peerConnectionRef.current = pc;
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate && socketRef.current && roomId) {
-        socketRef.current.emit("signal", { room: roomId, candidate: event.candidate });
-      }
-    };
-
-    return pc;
-  }, [roomId]);
 
   const startCamera = async () => {
     setCameraError(null);
@@ -200,16 +379,24 @@ export default function Session() {
         return;
       }
       streamRef.current = stream;
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.onended = () => {
+          if (!cameraSessionActiveRef.current) return;
+          setCameraError("Camera stream ended. Refresh or re-enable the camera.");
+          pauseRecording("camera-ended");
+        };
+      }
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play().catch(() => {});
       }
     } catch (err: any) {
       if (!cameraSessionActiveRef.current) return;
-      setCameraError(
-        err?.message ||
-          "Camera permission denied or not available. Please allow access and try again."
-      );
+      const message =
+        err?.message || "Camera permission denied or not available. Please allow access and try again.";
+      setCameraError(message);
+      pauseRecording("camera-error");
     }
   };
 
@@ -221,15 +408,29 @@ export default function Session() {
 
     async function loadSession() {
       try {
-        const res = await fetch(`${API_BASE}/api/sessions/${sessionId}`);
+        const res = await apiFetch(`/api/sessions/${sessionId}`);
         const json = await res.json();
         if (!res.ok || !json?.ok) throw new Error(json?.error || "Failed to load session.");
-        setSession(json.session as SessionRow);
+        const loaded = json.session as SessionRow;
+        if (loaded.hasConsent && loaded.id) {
+          markSessionConsented(loaded.id);
+        }
+        setSession(loaded);
         setFood((prev) => prev ?? (json.food as Food | null));
-        setIsRecording((json.session?.status ?? "active") === "active");
-        setIsPaused(false);
-        pauseStartRef.current = null;
-        totalPausedMsRef.current = 0;
+        setIsRecording((loaded.status ?? "active") === "active");
+
+        if (loaded.startTime) {
+          try {
+            const raw = localStorage.getItem(FAMILIS_CURRENT_SESSION_KEY);
+            if (raw) {
+              const stored = JSON.parse(raw) as Record<string, unknown>;
+              stored.startTime = loaded.startTime;
+              localStorage.setItem(FAMILIS_CURRENT_SESSION_KEY, JSON.stringify(stored));
+            }
+          } catch {
+            /* ignore */
+          }
+        }
       } catch (err: any) {
         setLoadError(err?.message || "Failed to load session.");
       } finally {
@@ -243,7 +444,7 @@ export default function Session() {
   useEffect(() => {
     async function checkEmotion() {
       try {
-        const res = await fetch(`${API_BASE}/api/emotion/health`);
+        const res = await apiFetch(`/api/emotion/health`);
         const json = await res.json();
         const loaded = Boolean(json?.emotion?.modelLoaded);
         setEmotionServiceOk(Boolean(json?.ok && loaded));
@@ -255,18 +456,24 @@ export default function Session() {
   }, []);
 
   useEffect(() => {
+    if (!sessionReady) return;
     cameraSessionActiveRef.current = true;
     void startCamera();
     return () => {
       cameraSessionActiveRef.current = false;
+      stopCamera();
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionReady]);
 
-  // Release hardware before the next screen (e.g. Survey) paints.
   useLayoutEffect(() => {
     return () => {
       cameraSessionActiveRef.current = false;
       stopCamera();
+      if (autoPauseTimerRef.current != null) {
+        clearTimeout(autoPauseTimerRef.current);
+        autoPauseTimerRef.current = null;
+      }
     };
   }, []);
 
@@ -274,7 +481,6 @@ export default function Session() {
     if (sessionId == null || frameInFlightRef.current) return;
     const video = videoRef.current;
     if (!video || video.readyState < 2) return;
-
     const vw = video.videoWidth;
     const vh = video.videoHeight;
     if (!vw || !vh) return;
@@ -289,7 +495,6 @@ export default function Session() {
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
-      // Mirror horizontally to align with 6.3 webcam / live_predict pipeline
       ctx.translate(w, 0);
       ctx.scale(-1, 1);
       ctx.drawImage(video, 0, 0, w, h);
@@ -302,130 +507,135 @@ export default function Session() {
       const fd = new FormData();
       fd.append("frame", blob, "frame.jpg");
 
-      const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/frames`, {
+      const res = await apiFetch(`/api/sessions/${sessionId}/frames`, {
         method: "POST",
         body: fd,
       });
       const json = await res.json().catch(() => null);
       if (!res.ok || !json?.ok) {
         setLastInferenceError(json?.error || `Frame upload failed (${res.status})`);
+        consecutiveInferenceFailuresRef.current += 1;
+        if (consecutiveInferenceFailuresRef.current >= INFERENCE_FAILURE_PAUSE_COUNT) {
+          pauseRecording("emotion-offline");
+        }
         return;
       }
 
+      consecutiveInferenceFailuresRef.current = 0;
       setFramesCaptured((c) => c + 1);
       setLastInferenceError(json.inferenceError || null);
 
       if (json.faceDetected === true && json.hedonicScore != null && json.confidenceScore != null) {
+        consecutiveNoFaceRef.current = 0;
         setLiveHedonic01(Number(json.hedonicScore));
         setLiveConfidence01(Number(json.confidenceScore));
         setLiveSentiment(typeof json.sentiment === "string" ? json.sentiment : null);
       } else if (json.faceDetected === false) {
+        consecutiveNoFaceRef.current += 1;
         setLiveHedonic01(null);
         setLiveConfidence01(null);
         setLiveSentiment(null);
+        if (consecutiveNoFaceRef.current * FRAME_CAPTURE_MS >= NO_FACE_PAUSE_MS) {
+          pauseRecording("no-face");
+        }
       }
     } catch (e: any) {
       setLastInferenceError(e?.message || "Frame capture failed.");
+      consecutiveInferenceFailuresRef.current += 1;
+      if (consecutiveInferenceFailuresRef.current >= INFERENCE_FAILURE_PAUSE_COUNT) {
+        pauseRecording("emotion-offline");
+      }
     } finally {
       frameInFlightRef.current = false;
     }
-  }, [sessionId]);
+  }, [sessionId, pauseRecording]);
 
   useEffect(() => {
     if (!sessionId || !isRecording || isPaused || cameraError) return;
-
-    const id = window.setInterval(() => {
-      void sendFrame();
-    }, FRAME_CAPTURE_MS);
+    const id = window.setInterval(() => { void sendFrame(); }, FRAME_CAPTURE_MS);
     return () => window.clearInterval(id);
   }, [sessionId, isRecording, isPaused, cameraError, sendFrame]);
 
-  useEffect(() => {
-    if (!roomId || !streamRef.current) return;
-
-    const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io(SOCKET_SERVER_URL, {
-      reconnection: true,
-      transports: ["websocket", "polling"],
-    });
-    socketRef.current = socket;
-
-    socket.on("connect", () => {
-      socket.emit("join-room", roomId, "host");
-    });
-
-    socket.on("viewer-connected", async () => {
-      if (!streamRef.current) return;
-      const pc = await createPeerConnection();
-      streamRef.current.getTracks().forEach((track) => {
-        if (streamRef.current) pc.addTrack(track, streamRef.current);
-      });
-      const offer = await pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: true });
-      await pc.setLocalDescription(offer);
-      socket.emit("signal", { room: roomId, sdp: offer });
-    });
-
-    socket.on("signal", async (data) => {
-      const pc = peerConnectionRef.current;
-      if (!pc) return;
-
-      if (data.sdp?.type === "answer" && pc.signalingState === "have-local-offer") {
-        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-      } else if (data.candidate) {
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-        } catch {
-          // Ignore stale candidates after reconnects.
-        }
-      }
-    });
-
-    socket.on("user-disconnected", cleanupPeerConnection);
-    socket.on("host-disconnected", cleanupPeerConnection);
-
-    return () => {
-      socket.disconnect();
-      socketRef.current = null;
-      cleanupPeerConnection();
-    };
-  }, [createPeerConnection, roomId]);
-
-  useEffect(() => {
-    if (!sessionId || isAdmin) return;
-
-    const id = window.setInterval(async () => {
-      try {
-        const res = await fetch(`${API_BASE}/api/sessions/${sessionId}`);
-        const json = await res.json().catch(() => null);
-        if (res.ok && json?.session?.status === "completed") {
-          stopCamera();
-          navigate(kioskMode ? kioskRoute("/survey") : "/survey", { state: { sessionId } });
-        }
-      } catch {
-        // Non-blocking poll.
-      }
-    }, 1500);
-
-    return () => window.clearInterval(id);
-  }, [isAdmin, kioskMode, navigate, sessionId]);
-
   const togglePause = () => {
     if (!isRecording) return;
-    setIsPaused((p) => {
-      if (p) {
-        if (pauseStartRef.current != null) {
-          totalPausedMsRef.current += Date.now() - pauseStartRef.current;
-          pauseStartRef.current = null;
-        }
-        return false;
-      }
-      pauseStartRef.current = Date.now();
-      return true;
-    });
+    if (isPaused) {
+      resumeRecording();
+    } else {
+      pauseRecording("manual");
+    }
   };
 
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [stopPending, setStopPending] = useState(false);
-  const [stopError, setStopError] = useState<string | null>(null);
+  useEffect(() => {
+    if (cameraError && isRecording) {
+      pauseRecording("camera-error");
+    }
+  }, [cameraError, isRecording, pauseRecording]);
+
+  useEffect(() => {
+    if (emotionServiceOk === false && isRecording) {
+      pauseRecording("emotion-offline");
+    }
+  }, [emotionServiceOk, isRecording, pauseRecording]);
+
+  useEffect(() => {
+    if (confirmOpen && isRecording) {
+      pauseRecording("confirm-stop");
+    }
+  }, [confirmOpen, isRecording, pauseRecording]);
+
+  useEffect(() => {
+    if (!confirmOpen && isPaused && pauseReason === "confirm-stop") {
+      setPauseReason("manual");
+    }
+  }, [confirmOpen, isPaused, pauseReason]);
+
+  useEffect(() => {
+    if (!FOCUS_AUTO_PAUSE_ENABLED) return;
+    const onVisibilityChange = () => {
+      if (document.hidden && isRecordingRef.current) {
+        scheduleAutoPause("tab-hidden");
+      } else if (!document.hidden) {
+        cancelAutoPause();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [scheduleAutoPause, cancelAutoPause]);
+
+  useEffect(() => {
+    if (!FOCUS_AUTO_PAUSE_ENABLED) return;
+    const onWindowBlur = () => {
+      if (document.hidden) return;
+      if (isRecordingRef.current) {
+        scheduleAutoPause("window-blur");
+      }
+    };
+    const onWindowFocus = () => {
+      cancelAutoPause();
+    };
+    window.addEventListener("blur", onWindowBlur);
+    window.addEventListener("focus", onWindowFocus);
+    return () => {
+      window.removeEventListener("blur", onWindowBlur);
+      window.removeEventListener("focus", onWindowFocus);
+    };
+  }, [scheduleAutoPause, cancelAutoPause]);
+
+  useEffect(() => {
+    const onOffline = () => {
+      if (isRecordingRef.current) {
+        pauseRecording("offline");
+      }
+    };
+    window.addEventListener("offline", onOffline);
+    return () => window.removeEventListener("offline", onOffline);
+  }, [pauseRecording]);
+
+  useEffect(() => {
+    if (typeof navigator !== "undefined" && !navigator.onLine && isRecording) {
+      pauseRecording("offline");
+    }
+  }, [isRecording, pauseRecording]);
 
   const handleStopClick = () => {
     if (!sessionId) return;
@@ -438,26 +648,22 @@ export default function Session() {
     setStopPending(true);
     setConfirmOpen(false);
     setStopError(null);
-
     try {
       stopCamera();
       setIsRecording(false);
       setIsPaused(false);
+      setPauseReason(null);
       pauseStartRef.current = null;
+      if (sessionId != null) {
+        sessionStorage.removeItem(pauseStorageKey(sessionId));
+      }
 
-      const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/stop`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          webKiosk: kioskMode,
-        }),
-      });
+      const res = await apiFetch(`/api/sessions/${sessionId}/stop`, { method: "POST" });
       const json = await res.json().catch(() => null);
       if (!res.ok || !json?.ok) {
         throw new Error(json?.error || "Unable to stop the session in the database.");
       }
-
-      navigate(kioskMode ? kioskRoute("/survey") : "/survey", { state: { sessionId } });
+      navigate("/survey", { state: { sessionId } });
     } catch (err: any) {
       setStopError(err?.message || "Unable to stop the session.");
       setConfirmOpen(true);
@@ -466,156 +672,229 @@ export default function Session() {
     }
   };
 
-  const handleCancelStop = () => {
-    setConfirmOpen(false);
-  };
-
   const handleBackToDashboard = () => {
     stopCamera();
-    navigate(kioskMode ? kioskRoute("/setup") : "/dashboard");
+    navigate("/dashboard");
   };
 
-  const hedonicDisplay =
-    liveHedonic01 == null ? null : hedonic01ToScale(liveHedonic01);
-  const confidencePct =
-    liveConfidence01 == null ? null : Math.round(liveConfidence01 * 100);
+  const hedonicDisplay = liveHedonic01 == null ? null : hedonic01ToScale(liveHedonic01);
+  const confidencePct  = liveConfidence01 == null ? null : Math.round(liveConfidence01 * 100);
+  const confidenceTier = liveConfidence01 == null ? null : confidenceToTier(liveConfidence01);
+  const confTooltipText = liveConfidence01 == null ? null : confidenceTooltip(liveConfidence01);
+
+  const hedonicLabelText =
+    hedonicDisplay == null ? null : hedonicLabel(hedonicDisplay);
+
+  const pauseBannerMessage =
+    pauseReason != null
+      ? PAUSE_MESSAGES[pauseReason]
+      : "Data collection paused — no frames are being captured.";
 
   return (
-    <div className="min-h-screen bg-[#f6f7fb]" style={{ fontFamily: "'Montserrat', sans-serif" }}>
-      <header className="bg-red-600 text-white">
-        <div className="h-[72px] px-6 flex items-center justify-between">
-          <button
-            type="button"
-            onClick={isAdmin ? handleBackToDashboard : undefined}
-            className="flex items-center gap-3"
-            aria-label="FaMiLis"
-          >
-            <img src={logo} alt="FaMiLis logo" className="w-[44px] h-[44px] object-contain" />
-            <span className="text-white text-[22px] font-bold tracking-wide">FaMiLis</span>
-          </button>
-
-          {isAdmin ? (
-            <button
-              type="button"
-              onClick={() => {
-                stopCamera();
-                performLogout(navigate);
-              }}
-              className="bg-white/90 text-red-700 hover:bg-white transition-colors px-4 py-2 rounded-md text-sm font-semibold"
-            >
-              Log Out
-            </button>
-          ) : null}
-        </div>
-      </header>
-
+    <PageHeader
+      variant="collapsed"
+      onLogoClick={handleBackToDashboard}
+      backLabel="Back to Dashboard"
+      onBack={handleBackToDashboard}
+    >
       <main className="px-6 py-8">
-        <div className="max-w-4xl mx-auto">
-          {!kioskMode ? (
-            <button
-              type="button"
-              onClick={handleBackToDashboard}
-              className="flex items-center gap-2 text-gray-600 hover:text-gray-900 mb-4 text-sm transition-colors"
-            >
-              <span aria-hidden="true">←</span>
-              Back to Dashboard
-            </button>
-          ) : null}
+        <div className="max-w-7xl mx-auto">
+          <PageTitle
+            title="Camera Recording"
+            subtitle={food ? `${food.name} · ${food.category}` : "Session"}
+            hideBack
+          />
 
-          <div className="mb-6">
-            <h1 className="text-[26px] font-bold text-gray-900">Camera Recording</h1>
-            <p className="text-[12px] text-gray-500 mt-1">
-              {food ? `${food.name} • ${food.category}` : "Session"}
-            </p>
-          </div>
+          {/* Pause banner — full width, above grid */}
+          {isRecording && isPaused && (
+            <div className="mb-4 flex items-center gap-3 bg-amber-50 border border-amber-300 rounded-lg px-4 py-3">
+              <span className="w-2.5 h-2.5 rounded-full bg-amber-500 flex-shrink-0" aria-hidden="true" />
+              <p className="text-sm font-semibold text-amber-800">{pauseBannerMessage}</p>
+              <button
+                type="button"
+                onClick={togglePause}
+                disabled={resumeBlocked}
+                title={resumeBlocked ? resumeBlockedTooltip ?? undefined : undefined}
+                className={`ml-auto text-xs font-semibold underline underline-offset-2 ${
+                  resumeBlocked
+                    ? "text-amber-400 cursor-not-allowed no-underline"
+                    : "text-amber-700 hover:text-amber-900"
+                }`}
+              >
+                Resume
+              </button>
+            </div>
+          )}
 
           {loading ? (
             <div className="text-center text-gray-600 text-sm">Loading session…</div>
           ) : loadError ? (
             <div className="text-center text-red-600 text-sm">
               {loadError}{" "}
-              <button
-                type="button"
-                onClick={() => navigate("/dashboard")}
-                className="text-red-700 underline ml-2"
-              >
+              <button type="button" onClick={() => navigate("/dashboard")} className="text-red-700 underline ml-2">
                 Go back
               </button>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="space-y-5">
+            <div className="grid grid-cols-1 md:grid-cols-[2fr_3fr] gap-6">
+              {/* Left column — stats + FER */}
+              <div className="space-y-5 order-2 md:order-1">
+                {/* Timer */}
                 <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
-                  <p className="text-[12px] text-gray-500 font-semibold">Session</p>
-                  <p className="text-[34px] leading-none font-extrabold text-gray-900 mt-2">
+                  <p className="text-[11px] text-gray-500 font-semibold uppercase tracking-wider">Session Timer</p>
+                  <p className="text-[clamp(2rem,5vw,2.5rem)] leading-none font-extrabold text-gray-900 mt-2 tabular-nums">
                     {formatMmSs(elapsedSeconds)}
                   </p>
                   <p className="text-[11px] text-gray-500 mt-2">
-                    Timer pauses while recording is paused. Frames are not captured when paused.
+                    Timer pauses while recording is paused.
                   </p>
                 </div>
 
+                {/* FER panel */}
                 <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
-                  <p className="text-[12px] text-gray-700 font-semibold mb-2">FER (live)</p>
-                  {emotionServiceOk === false ? (
-                    <p className="text-[11px] text-amber-700 mb-2">
-                      Emotion service offline or model missing. Start{" "}
-                      <code className="text-[10px] bg-amber-50 px-1 rounded">npm run emotion-service</code>{" "}
-                      (Python) after training <code className="text-[10px] bg-amber-50 px-1">*.pkl</code> in{" "}
-                      <code className="text-[10px] bg-amber-50 px-1">backend/6.3</code>. Frames still save;
-                      scores may be empty.
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-xs text-gray-700 font-bold inline-flex items-center gap-1.5">
+                      Live Emotion (FER)
+                      <InfoTip term="fer" align="left" />
                     </p>
-                  ) : null}
-                  <div className="space-y-1 text-[12px] text-gray-700">
-                    <p>
-                      <span className="text-gray-500">Hedonic (1–9):</span>{" "}
-                      {hedonicDisplay == null ? "—" : `${hedonicDisplay} / 9`}
-                    </p>
-                    <p>
-                      <span className="text-gray-500">Confidence:</span>{" "}
-                      {confidencePct == null ? "—" : `${confidencePct}%`}
-                    </p>
-                    <p>
-                      <span className="text-gray-500">Sentiment:</span>{" "}
-                      {liveSentiment ?? "—"}
-                    </p>
-                    <p className="text-[11px] text-gray-500 mt-2">
+                    {emotionServiceOk === false && (
+                      <span className="text-[10px] bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full font-semibold">
+                        Service offline
+                      </span>
+                    )}
+                  </div>
+
+                  {emotionServiceOk === false && (
+                    <div className="mb-3 text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded-md p-2.5">
+                      Start the emotion service:{" "}
+                      <code className="text-[10px] bg-amber-100 px-1 py-0.5 rounded">npm run emotion-service</code>{" "}
+                      (run{" "}
+                      <code className="text-[10px] bg-amber-100 px-1 py-0.5 rounded">python backend/emotion_service.py</code>{" "}
+                      after training{" "}
+                      <code className="text-[10px] bg-amber-100 px-1 py-0.5 rounded">*.pkl</code>{" "}
+                      in <code className="text-[10px] bg-amber-100 px-1 py-0.5 rounded">backend/</code>).
+                    </div>
+                  )}
+
+                  <div className="space-y-3">
+                    {/* Hedonic metric card */}
+                    <div className="bg-gray-50 rounded-lg border border-gray-100 px-3 py-2.5">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[11px] text-gray-500 font-semibold inline-flex items-center gap-1">
+                          Hedonic Score
+                          <InfoTip term="hedonicScore" align="left" />
+                        </span>
+                          <span className="text-sm font-bold text-gray-900">
+                            {hedonicDisplay == null ? "—" : `${hedonicDisplay} / 9`}
+                          </span>
+                      </div>
+                      <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-[#e8174a] rounded-full transition-all duration-300"
+                          style={{ width: hedonicDisplay == null ? "0%" : `${((hedonicDisplay - 1) / 8) * 100}%` }}
+                        />
+                      </div>
+                      {hedonicLabelText && (
+                        <p className="text-[10px] text-gray-500 mt-1">{hedonicLabelText}</p>
+                      )}
+                    </div>
+
+                    {/* Confidence metric card */}
+                    <div className="bg-gray-50 rounded-lg border border-gray-100 px-3 py-2.5">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[11px] text-gray-500 font-semibold inline-flex items-center gap-1">
+                          Confidence
+                          <InfoTip term="confidenceScore" align="left" />
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          {confidenceTier && (
+                            <span
+                              className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${confidenceTier.bgClass} ${confidenceTier.textClass}`}
+                              title={confTooltipText ?? undefined}
+                            >
+                              {confidenceTier.label}
+                            </span>
+                          )}
+                          <span className="text-sm font-bold text-gray-900">
+                            {confidencePct == null ? "—" : `${confidencePct}%`}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all duration-300 ${confidenceTier?.colorClass ?? "bg-gray-300"}`}
+                          style={{ width: confidencePct == null ? "0%" : `${confidencePct}%` }}
+                        />
+                      </div>
+                      {confTooltipText && (
+                        <p className="text-[10px] text-gray-500 mt-1">{confTooltipText}</p>
+                      )}
+                    </div>
+
+                    {/* Sentiment */}
+                    <div className="flex items-center justify-between px-1">
+                      <span className="text-[11px] text-gray-500 font-semibold inline-flex items-center gap-1">
+                        Sentiment
+                        <InfoTip term="sentiment" align="left" />
+                      </span>
+                      <SentimentChip sentiment={liveSentiment} />
+                    </div>
+
+                    <p className="text-[11px] text-gray-400 px-1">
                       Frames logged: {framesCaptured}
                     </p>
+
                     {lastInferenceError ? (
-                      <p className="text-[11px] text-red-600 mt-1">{lastInferenceError}</p>
+                      <p className="text-[11px] text-red-600 px-1">{lastInferenceError}</p>
                     ) : null}
                   </div>
                 </div>
 
+                {/* Status card */}
                 <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
-                  <p className="text-[12px] text-gray-700 font-semibold mb-2">Status</p>
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`inline-block w-2.5 h-2.5 rounded-full ${
-                        isRecording ? (isPaused ? "bg-amber-500" : "bg-red-600") : "bg-gray-400"
-                      }`}
-                      aria-hidden="true"
-                    />
-                    <span className="text-[12px] text-gray-600">
-                      {!isRecording
-                        ? "Recording stopped"
-                        : isPaused
-                          ? "Paused"
-                          : "Recording"}
-                    </span>
+                  <p className="text-xs text-gray-700 font-bold mb-2">Recording Status</p>
+                    <div className="flex items-center gap-2">
+                    {isRecording && !isPaused ? (
+                      <>
+                        <span
+                          className="inline-block w-2.5 h-2.5 rounded-full bg-red-600 motion-safe:animate-pulse"
+                          aria-hidden="true"
+                        />
+                        <span className="text-xs text-gray-700 font-semibold">Recording</span>
+                      </>
+                    ) : isRecording && isPaused ? (
+                      <>
+                        <span className="inline-block w-2.5 h-2.5 rounded-full bg-amber-500" aria-hidden="true" />
+                        <span className="text-xs text-amber-700 font-semibold">Paused</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="inline-block w-2.5 h-2.5 rounded-full bg-gray-400" aria-hidden="true" />
+                        <span className="text-xs text-gray-500">Stopped</span>
+                      </>
+                    )}
                   </div>
                   {session?.id ? (
-                    <p className="text-[11px] text-gray-500 mt-2">Session ID: S-{session.id}</p>
+                    <p className="text-[11px] text-gray-400 mt-2">Session ID: S-{session.id}</p>
                   ) : null}
                 </div>
               </div>
 
-              <div className="space-y-5">
+              {/* Right column — camera + controls */}
+              <div className="space-y-5 order-1 md:order-2">
                 <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
                   <h3 className="text-sm text-gray-700 font-semibold mb-3">Camera Preview</h3>
 
-                  <div className="aspect-video bg-gray-100 rounded-lg overflow-hidden border border-gray-200 relative">
+                  {/* Video container with recording ring */}
+                  <div
+                    className={`aspect-video bg-gray-100 rounded-lg overflow-hidden relative transition-all duration-200 ${
+                      isRecording && !isPaused
+                        ? "ring-4 ring-red-600 ring-offset-1"
+                        : isRecording && isPaused
+                          ? "border-2 border-dashed border-amber-400"
+                          : "border border-gray-200"
+                    }`}
+                  >
                     {cameraError ? (
                       <div className="text-center px-6 h-full flex items-center justify-center">
                         <div>
@@ -627,22 +906,24 @@ export default function Session() {
                       <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
                     )}
 
+                    {/* Recording badge */}
                     {isRecording && !isPaused ? (
-                      <div className="absolute top-4 right-4 flex items-center gap-2 bg-red-600 text-white px-4 py-2 rounded-full shadow-sm">
-                        <div className="w-3 h-3 bg-white rounded-full animate-pulse" />
-                        <span className="text-[13px] font-bold">Recording</span>
+                      <div className="absolute top-3 right-3 flex items-center gap-1.5 bg-red-600 text-white px-3 py-1.5 rounded-full shadow">
+                        <div className="w-2 h-2 bg-white rounded-full motion-safe:animate-pulse" aria-hidden="true" />
+                        <span className="text-[11px] font-bold tracking-wide">REC</span>
                       </div>
                     ) : null}
+
+                    {/* Paused overlay badge */}
                     {isRecording && isPaused ? (
-                      <div className="absolute top-4 right-4 flex items-center gap-2 bg-amber-500 text-white px-4 py-2 rounded-full shadow-sm">
-                        <span className="text-[13px] font-bold">Paused</span>
+                      <div className="absolute top-3 right-3 flex items-center gap-1.5 bg-amber-500 text-white px-3 py-1.5 rounded-full shadow">
+                        <span className="text-[11px] font-bold">Paused</span>
                       </div>
                     ) : null}
                   </div>
 
                   <p className="text-[11px] text-gray-500 mt-2">
-                    Keep your face visible and lighting even. Captures about every {FRAME_CAPTURE_MS / 1000}s
-                    while recording.
+                    Keep your face visible and lighting even. Captures every {FRAME_CAPTURE_MS / 1000}s while recording.
                   </p>
                 </div>
 
@@ -650,14 +931,21 @@ export default function Session() {
                   <button
                     type="button"
                     onClick={togglePause}
-                    disabled={!isRecording || stopPending}
+                    disabled={!isRecording || stopPending || (isPaused && resumeBlocked)}
+                    title={isPaused && resumeBlocked ? resumeBlockedTooltip ?? undefined : undefined}
                     className={`w-full py-3 rounded-lg text-sm font-semibold transition-colors ${
-                      isRecording
-                        ? "bg-amber-500 hover:bg-amber-600 text-white"
-                        : "bg-gray-200 text-gray-400 cursor-not-allowed"
+                      !isRecording || stopPending || (isPaused && resumeBlocked)
+                        ? "bg-gray-200 text-gray-400 cursor-not-allowed"
+                        : isPaused
+                          ? "bg-green-600 hover:bg-green-700 text-white"
+                          : "bg-amber-500 hover:bg-amber-600 text-white"
                     }`}
                   >
-                    {isPaused ? "Resume recording" : "Pause recording"}
+                    {isPaused
+                      ? hasEverResumed
+                        ? "Resume recording"
+                        : "Start recording"
+                      : "Pause recording"}
                   </button>
                   <button
                     type="button"
@@ -679,18 +967,46 @@ export default function Session() {
         </div>
       </main>
 
-      {confirmOpen ? (
+      {/* Consent required modal (tester flow) */}
+      {consentBlocked ? (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4 border border-gray-200">
-            <h2 className="text-gray-900 font-bold text-lg">Are you sure?</h2>
+            <h2 className="text-gray-900 font-bold text-lg">Consent required</h2>
             <p className="text-gray-600 text-sm mt-2">
-              Stopping the session will take you to the survey page.
+              You need to review and agree to the consent form before recording can begin.
             </p>
-
             <div className="flex gap-3 mt-5">
               <button
                 type="button"
-                onClick={handleCancelStop}
+                onClick={() => performLogout(navigate)}
+                className="flex-1 border border-gray-200 text-gray-700 hover:bg-gray-50 py-2 rounded-md text-sm font-semibold transition-colors"
+              >
+                Log out
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate("/consent")}
+                className="flex-1 bg-[#e8174a] hover:bg-[#c9143f] text-white py-2 rounded-md text-sm font-semibold transition-colors"
+              >
+                Go to consent form
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Stop confirm modal */}
+      {confirmOpen ? (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4 border border-gray-200">
+            <h2 className="text-gray-900 font-bold text-lg">Stop the session?</h2>
+            <p className="text-gray-600 text-sm mt-2">
+              Stopping the session will take you to the survey page.
+            </p>
+            <div className="flex gap-3 mt-5">
+              <button
+                type="button"
+                onClick={() => setConfirmOpen(false)}
                 disabled={stopPending}
                 className="flex-1 border border-gray-200 text-gray-700 hover:bg-gray-50 py-2 rounded-md text-sm font-semibold transition-colors"
               >
@@ -708,7 +1024,6 @@ export default function Session() {
           </div>
         </div>
       ) : null}
-    </div>
+    </PageHeader>
   );
 }
-
