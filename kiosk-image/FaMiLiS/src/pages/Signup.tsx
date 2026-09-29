@@ -131,6 +131,7 @@ export default function Signup() {
   const [gender, setGender] = useState("");
   const [contactNumber, setContactNumber] = useState("");
   const [gcashNumber, setGcashNumber] = useState("");
+  const [gcashSameAsPhone, setGcashSameAsPhone] = useState(false);
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
@@ -282,7 +283,7 @@ export default function Signup() {
           age: ageValue,
           gender: gender || null,
           contactNumber: contactNumber.trim() || null,
-          gcashNumber: gcashNumber.trim() || null,
+          gcashNumber: gcashSameAsPhone ? contactNumber.trim() : gcashNumber.trim() || null,
         }),
       });
 
@@ -507,8 +508,9 @@ export default function Signup() {
                     type="tel"
                     autoComplete="tel"
                     value={contactNumber}
-                    onChange={(e) => setContactNumber(e.target.value)}
-                    placeholder="Optional"
+                    required
+                    onChange={(e) => { setContactNumber(e.target.value); if (gcashSameAsPhone) setGcashNumber(e.target.value); }}
+                    placeholder="Enter phone number"
                     className="w-full h-[50px] px-7 border border-[#bfbfbf] rounded-[10px] text-[16px] text-black placeholder:text-[#bdb4b4] focus:outline-none focus:border-red-400"
                     style={{ fontFamily: "'Albert Sans', sans-serif" }}
                   />
@@ -531,6 +533,10 @@ export default function Signup() {
                     className="w-full h-[50px] px-7 border border-[#bfbfbf] rounded-[10px] text-[16px] text-black placeholder:text-[#bdb4b4] focus:outline-none focus:border-red-400"
                     style={{ fontFamily: "'Albert Sans', sans-serif" }}
                   />
+                  <label className="mt-3 flex items-center gap-2 text-sm text-gray-700">
+                    <input type="checkbox" checked={gcashSameAsPhone} onChange={(e) => { setGcashSameAsPhone(e.target.checked); setGcashNumber(e.target.checked ? contactNumber : ""); }} />
+                    Same as phone number
+                  </label>
                 </div>
               </>
             )}

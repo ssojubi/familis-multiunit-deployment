@@ -116,6 +116,7 @@ export async function initDb() {
   const schemaPath = path.resolve(__dirname, "../server_database/schema.sql");
   const schemaSql = await readFile(schemaPath, "utf8");
   await pool.query(schemaSql);
+  await pool.query(`CREATE TABLE IF NOT EXISTS app_settings (setting_key VARCHAR(100) PRIMARY KEY, setting_value JSON NOT NULL, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP)`);
 
   const participantColumns = [
     ["name", "VARCHAR(255) NULL"],
@@ -137,6 +138,10 @@ export async function initDb() {
   }
 
   await addColumnIfMissing(pool, "sessions", "testing_room_id", "INT NULL");
+  await addColumnIfMissing(pool, "sessions", "invalidated_at", "TIMESTAMP NULL");
+  await addColumnIfMissing(pool, "users", "contact_number", "VARCHAR(50) NULL");
+  await addColumnIfMissing(pool, "users", "gcash_number", "VARCHAR(50) NULL");
+  await addColumnIfMissing(pool, "session_consents", "consent_copy", "JSON NULL");
   await addColumnIfMissing(pool, "users", "is_active", "TINYINT(1) NOT NULL DEFAULT 1");
   await addIndexIfMissing(
     pool,
@@ -151,10 +156,7 @@ export async function initDb() {
     "FOREIGN KEY (`testing_room_id`) REFERENCES `testing_rooms` (`testing_room_id`) ON DELETE SET NULL",
   );
 
-  await pool.query(`
-    ALTER TABLE users
-    MODIFY role ENUM('staff', 'tester', 'admin') NOT NULL DEFAULT 'tester'
-  `);
+  await pool.query(`ALTER TABLE users MODIFY role VARCHAR(50) NOT NULL DEFAULT 'tester'`);
 
   const initialAdminPassword = "admin123";
   const [[admin]] = await pool.query(

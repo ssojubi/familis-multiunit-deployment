@@ -10,7 +10,7 @@ export const FAMILIS_USER_KEY = "familis.user";
 export const FAMILIS_CURRENT_SESSION_KEY = "familis.currentSession";
 export const FAMILIS_TOKEN_KEY = "familis.token";
 
-export type UserRole = "admin" | "staff" | "tester";
+export type UserRole = string;
 
 /** Removes only the booth session pointer (keeps auth for handoff flows). */
 export function clearStoredSession(): void {
@@ -55,9 +55,7 @@ export function getStoredRole(): UserRole | null {
     const raw = localStorage.getItem(FAMILIS_USER_KEY);
     if (!raw) return null;
     const u = JSON.parse(raw) as { role?: unknown };
-    if (u?.role === "admin" || u?.role === "staff" || u?.role === "tester") {
-      return u.role;
-    }
+    if (typeof u?.role === "string" && u.role.trim()) return u.role;
     return null;
   } catch {
     return null;

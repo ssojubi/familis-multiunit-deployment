@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { apiFetch } from "../lib/api";
 import { performLogout } from "../auth";
 import logo from "../assets/logo.png";
 import {
@@ -13,15 +14,33 @@ export default function TesterConsent() {
   const [testerContext] = useState(() =>
     captureTesterContext(location.search),
   );
-  const [consent, setConsent] = useState({
-    recording: false,
-    dataUsage: false,
-    participant: false,
+  const [consentFields, setConsentFields] = useState<Record<string, { label: string; helper: string }>>({
+    recording: { label: "I consent to being recorded during this session", helper: "Your session frames are analyzed by the lab system." },
+    dataUsage: { label: "I agree to the use of my data for research purposes", helper: "Session results may be used in research reports." },
+    participant: { label: "I confirm I am a willing participant in this study", helper: "Participation is voluntary. You may stop at any time." },
   });
+  const [consent, setConsent] = useState<Record<string, boolean>>({});
+  const [consentVersion, setConsentVersion] = useState("");
+  const [consentLoaded, setConsentLoaded] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
 
-  const allChecked = consent.recording && consent.dataUsage && consent.participant;
+  const allChecked = Object.keys(consentFields).length > 0 && Object.keys(consentFields).every(key => consent[key] === true);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void apiFetch("/api/preferences", { signal: controller.signal }).then(r => r.json()).then(payload => {
+      if (!payload?.ok || !payload.preferences?.consent || !payload.consentVersion) {
+        setError(payload?.error || "Could not load the current consent form. Refresh this page to try again.");
+        return;
+      }
+      setConsentFields(payload.preferences.consent);
+      setConsent(Object.fromEntries(Object.keys(payload.preferences.consent).map(key => [key, false])));
+      setConsentVersion(payload.consentVersion);
+      setConsentLoaded(true);
+    }).catch(() => { setError("Could not load the current consent form. Refresh this page to try again."); });
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     if (!testerContext.roomId || !testerContext.foodId) {
@@ -34,7 +53,11 @@ export default function TesterConsent() {
       setError("Complete the consent checklist to continue.");
       return;
     }
-    localStorage.setItem("familis.consent", "true");
+    localStorage.setItem("familis.consent", JSON.stringify({
+      answers: Object.fromEntries(Object.keys(consentFields).map(key => [key, true])),
+      copy: consentFields,
+      version: consentVersion,
+    }));
 
     const query = testerContextSearch(testerContext);
     navigate(query ? `/tester-session?${query}` : "/tester-session");
@@ -134,22 +157,15 @@ export default function TesterConsent() {
 
                 <div className="flex flex-col gap-2 mt-4">
                   <h3 className="text-sm text-gray-700 font-semibold">Consent Checklist *</h3>
+                  {!consentLoaded ? <p className="text-xs text-gray-500">Loading current consent fields…</p> : null}
                   <div className="space-y-3">
-                    <ConsentRow
-                      checked={consent.recording}
-                      onChange={(checked) => setConsent((p) => ({ ...p, recording: checked }))}
-                      label="I consent to being recorded during this session"
-                    />
-                    <ConsentRow
-                      checked={consent.dataUsage}
-                      onChange={(checked) => setConsent((p) => ({ ...p, dataUsage: checked }))}
-                      label="I agree to the use of my data for research purposes"
-                    />
-                    <ConsentRow
-                      checked={consent.participant}
-                      onChange={(checked) => setConsent((p) => ({ ...p, participant: checked }))}
-                      label="I confirm I am a willing participant in this study"
-                    />
+                    {Object.entries(consentFields).map(([key, field]) => <ConsentRow
+                      key={key}
+                      checked={consent[key] === true}
+                      onChange={(checked) => setConsent((p) => ({ ...p, [key]: checked }))}
+                      label={field.label}
+                      helper={field.helper}
+                    />)}
                   </div>
                 </div>
 
@@ -160,7 +176,7 @@ export default function TesterConsent() {
                 <button
                   type="button"
                   onClick={handleAccept}
-                  disabled={!allChecked}
+                  disabled={!allChecked || !consentLoaded || !consentVersion}
                   className={`flex-1 py-3 rounded-lg text-sm font-semibold transition-colors ${
                     allChecked
                       ? "bg-[#e8174a] hover:bg-[#c9143f] text-white"
@@ -189,10 +205,12 @@ function ConsentRow({
   checked,
   onChange,
   label,
+  helper,
 }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
   label: string;
+  helper?: string;
 }) {
   return (
     <label className="flex items-start gap-3 cursor-pointer">
@@ -202,7 +220,7 @@ function ConsentRow({
         onChange={(e) => onChange(e.target.checked)}
         className="mt-0.5 w-4 h-4 accent-[#e8174a]"
       />
-      <span className="text-sm text-gray-600">{label}</span>
+      <span className="text-sm text-gray-600">{label}{helper ? <span className="block pt-1 text-xs text-gray-500">{helper}</span> : null}</span>
     </label>
   );
 }

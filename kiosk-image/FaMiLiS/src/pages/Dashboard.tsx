@@ -195,6 +195,7 @@ export default function Dashboard() {
   const [deletingFoodId, setDeletingFoodId] = useState<number | null>(null);
   const [deleteFoodError, setDeleteFoodError] = useState<string | null>(null);
   const [sessionStatsLoadingFoodId, setSessionStatsLoadingFoodId] = useState<number | null>(null);
+  const [sessionStatsErrorByFoodId, setSessionStatsErrorByFoodId] = useState<Record<number, string>>({});
   const [editingFoodImage, setEditingFoodImage] = useState<Food | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
@@ -778,18 +779,24 @@ export default function Dashboard() {
   const onOpenLatestSession = async (food: Food) => {
     if (food.sessionsTotal === 0 || sessionStatsLoadingFoodId != null) return;
     setSessionStatsLoadingFoodId(food.id);
+    setSessionStatsErrorByFoodId((current) => ({ ...current, [food.id]: "" }));
     try {
       const res = await apiFetch(`/api/foods/${food.id}/sessions`);
-      const json = await res.json();
+      const json = await res.json().catch(() => null);
       if (!res.ok || !json?.ok) {
         throw new Error(json?.error || "Failed to load sessions.");
       }
-      const sessions = (json.sessions ?? []) as { id: number }[];
-      const latest = sessions[0];
-      if (!latest) return;
+      const sessions = (json.sessions ?? []) as Array<{ id?: number | string; startTime?: string | null }>;
+      const latest = sessions.find((session) => Number.isInteger(Number(session.id)) && Number(session.id) > 0);
+      if (!latest) {
+        throw new Error("No session records were returned for this food. Refresh the dashboard and try again.");
+      }
       navigate(`/session-detail?sessionId=${latest.id}`);
     } catch (err) {
-      console.error(err);
+      setSessionStatsErrorByFoodId((current) => ({
+        ...current,
+        [food.id]: err instanceof Error ? err.message : "Could not open session statistics.",
+      }));
     } finally {
       setSessionStatsLoadingFoodId(null);
     }
@@ -867,6 +874,7 @@ export default function Dashboard() {
                       onStartSession={() => navigate("/setup", { state: { foodId: food.id } })}
                       onSessionStats={() => void onOpenLatestSession(food)}
                       sessionStatsLoading={sessionStatsLoadingFoodId === food.id}
+                      sessionStatsError={sessionStatsErrorByFoodId[food.id] || null}
                     />
                   ))}
                 </div>

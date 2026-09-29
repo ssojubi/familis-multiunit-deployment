@@ -36,6 +36,7 @@ const CONSENT_ITEMS = [
     helper: "All data stays on-premises. This is a lab demo, not a clinical or commercial deployment.",
   },
 ];
+type ConsentCopyItem = { key: string; label: string; helper: string };
 
 const ETHICS_ITEMS = [
   {
@@ -70,17 +71,12 @@ const ETHICS_ITEMS = [
   },
 ];
 
-type ConsentState = Record<(typeof CONSENT_ITEMS)[number]["key"], boolean>;
+type ConsentState = Record<string, boolean>;
 type EthicsKey = DietaryEthicsKey;
 type EthicsState = Record<EthicsKey, boolean | null>;
 type EthicsDetailsState = Record<EthicsKey, string>;
 
-const DEFAULT_CONSENT: ConsentState = {
-  facialRecording: false,
-  dataUsage: false,
-  participant: false,
-  dataStorage: false,
-};
+const DEFAULT_CONSENT: ConsentState = Object.fromEntries(CONSENT_ITEMS.map(item => [item.key, false]));
 
 const DEFAULT_ETHICS: EthicsState = {
   foodAllergies: null,
@@ -137,6 +133,10 @@ export default function Consent() {
   const [sessionLookupDone, setSessionLookupDone] = useState(storedSession !== null);
   const [foodName, setFoodName] = useState<string | null>(null);
   const [consent, setConsent] = useState<ConsentState>(DEFAULT_CONSENT);
+  const [consentCopy, setConsentCopy] = useState<ConsentCopyItem[]>(CONSENT_ITEMS);
+  const [consentVersion, setConsentVersion] = useState(CONSENT_VERSION);
+  const [retentionDays, setRetentionDays] = useState(30);
+  const [backupDestination, setBackupDestination] = useState<"local" | "cloud">("local");
   const [ethics, setEthics] = useState<EthicsState>(DEFAULT_ETHICS);
   const [ethicsDetails, setEthicsDetails] = useState<EthicsDetailsState>(DEFAULT_ETHICS_DETAILS);
   const [submitting, setSubmitting] = useState(false);
@@ -278,9 +278,25 @@ export default function Consent() {
     return () => { cancelled = true; };
   }, [storedSession?.id, storedSession?.participantId]);
 
-  const consentCount = Object.values(consent).filter(Boolean).length;
-  const consentTotal = CONSENT_ITEMS.length;
+  const consentCount = consentCopy.filter(item => consent[item.key] === true).length;
+  const consentTotal = consentCopy.length;
   const allConsentChecked = consentCount === consentTotal;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void apiFetch("/api/preferences", { signal: controller.signal }).then(r => r.json()).then(payload => {
+      const configured = payload?.preferences?.consent;
+      if (typeof payload?.consentVersion === "string") setConsentVersion(payload.consentVersion);
+      if (Number.isFinite(Number(payload?.preferences?.frameRetentionDays))) setRetentionDays(Number(payload.preferences.frameRetentionDays));
+      if (payload?.preferences?.backup?.destination === "cloud") setBackupDestination("cloud");
+      if (payload?.ok && configured && typeof configured === "object") {
+        const items = Object.entries(configured as Record<string, { label?: string; helper?: string }>).map(([key, copy]) => ({ key, label: copy.label || "", helper: copy.helper || "" }));
+        setConsentCopy(items);
+        setConsent(Object.fromEntries(items.map(item => [item.key, false])));
+      }
+    }).catch(() => {});
+    return () => controller.abort();
+  }, []);
   const ethicsAnswered = ETHICS_ITEMS.every((item) => typeof ethics[item.key] === "boolean");
   const canContinue = allConsentChecked && ethicsAnswered;
 
@@ -311,7 +327,8 @@ export default function Consent() {
           deviceId: getDeviceId(),
           facialRecording: true,
           consent: { ...consent },
-          consentVersion: CONSENT_VERSION,
+          consentVersion,
+          consentCopy: Object.fromEntries(consentCopy.map(item => [item.key, { label: item.label, helper: item.helper }])),
           ethics: { ...ethicsAnswers, ...ethicsDetailPayload },
           ethicsDetails: dietaryRestrictions,
           dietaryRestrictions,
@@ -414,20 +431,20 @@ export default function Consent() {
                 </p>
 
                 <div className="mb-4 p-3 bg-[#fde8ed] rounded-lg border border-[#e8174a]/20">
-                  <p className="text-[11px] font-semibold text-[#c9143f] mb-1">Data &amp; Privacy - Lab Demo</p>
+                  <p className="text-[11px] font-semibold text-[#c9143f] mb-1">Data &amp; Privacy</p>
                   <ul className="text-[11px] text-gray-600 space-y-0.5 list-disc list-inside">
-                    <li>Frames are stored locally; no cloud upload.</li>
+                    <li>Frames are processed by the lab system; backups: {backupDestination === "cloud" ? "configured cloud endpoint" : "local server only"}.</li>
                     <li>Scores are anonymized before reporting.</li>
-                    <li>Frame images are deleted after ~30 days.</li>
+                    <li>Frame images are deleted after {retentionDays} days.</li>
                     <li>This is a prototype system, not a clinical tool.</li>
                   </ul>
                 </div>
 
                 <div className="space-y-1">
-                  {CONSENT_ITEMS.map((item) => (
+                  {consentCopy.map((item) => (
                     <ConsentRow
                       key={item.key}
-                      checked={consent[item.key]}
+                      checked={consent[item.key] === true}
                       onChange={(checked) => setConsent((p) => ({ ...p, [item.key]: checked }))}
                       label={item.label}
                       helper={item.helper}

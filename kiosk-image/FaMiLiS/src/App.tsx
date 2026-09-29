@@ -12,6 +12,7 @@ import Consent from "./pages/Consent";
 import Participants from "./pages/Participants";
 import ParticipantDetail from "./pages/ParticipantDetail";
 import AdminUsers from "./pages/AdminUsers";
+import AdminPreferences from "./pages/AdminPreferences";
 import Signup from "./pages/Signup";
 import VideoMonitoring from "./pages/VideoMonitoring";
 import TesterJoin from "./pages/TesterJoin";
@@ -39,6 +40,7 @@ export default function App() {
           {/* Exact admin only: user management (no staff alias) */}
           <Route element={<RequireRole allowed={["admin"]} exact />}>
             <Route path="/admin/users" element={<AdminUsers />} />
+            <Route path="/admin/preferences" element={<AdminPreferences />} />
           </Route>
 
           {/* Tester: consent gate only */}

@@ -9,6 +9,7 @@ type UserRoleDialogProps = {
   error?: string | null;
   onClose: () => void;
   onSubmit: (role: UserListItem["role"]) => void;
+  roleOptions?: string[];
 };
 
 const inputClass =
@@ -22,6 +23,7 @@ export function UserRoleDialog({
   error = null,
   onClose,
   onSubmit,
+  roleOptions = ["admin", "staff", "tester"],
 }: UserRoleDialogProps) {
   const [role, setRole] = useState<UserListItem["role"]>(currentRole);
   const canSubmit = role !== currentRole && !saving && !(isSelf && role !== "admin");
@@ -55,9 +57,7 @@ export function UserRoleDialog({
             disabled={isSelf || saving}
             className={inputClass}
           >
-            <option value="admin">Admin</option>
-            <option value="staff">Operator</option>
-            <option value="tester">Taster</option>
+            {roleOptions.map(value => <option key={value} value={value}>{value === "staff" ? "Operator" : value === "tester" ? "Taster" : value[0].toUpperCase()+value.slice(1)}</option>)}
           </select>
         </div>
 

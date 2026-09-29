@@ -275,6 +275,8 @@ export default function TesterSession() {
 
     setIsStarting(true);
     try {
+      let savedConsent: { answers?: Record<string, boolean>; copy?: Record<string, { label: string; helper: string }>; version?: string } | null = null;
+      try { const storedConsent = localStorage.getItem("familis.consent"); savedConsent = storedConsent ? JSON.parse(storedConsent) : null; } catch { savedConsent = null; }
       const res = await fetch(`${SESSIONS_API_BASE}/api/sessions/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -283,6 +285,9 @@ export default function TesterSession() {
           foodId: fId,
           browserKioskId: kioskId,
           roomCode: roomId,
+          consentAnswers: savedConsent?.answers,
+          consentCopy: savedConsent?.copy,
+          consentVersion: savedConsent?.version,
         }),
       });
       const json = await res.json();

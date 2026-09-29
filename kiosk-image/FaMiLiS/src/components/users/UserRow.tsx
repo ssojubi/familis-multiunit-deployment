@@ -4,7 +4,9 @@ export type UserListItem = {
   id: number;
   username: string;
   email: string;
-  role: "admin" | "staff" | "tester";
+  contactNumber?: string | null;
+  gcashNumber?: string | null;
+  role: string;
   createdAt: string | null;
   lastLogin: string | null;
   isActive: boolean;
@@ -50,6 +52,8 @@ export function UserRow({
         ) : null}
       </td>
       <td className="px-4 py-3 text-sm text-gray-600">{user.email}</td>
+      <td className="px-4 py-3 text-sm text-gray-600">{user.role === "tester" ? user.contactNumber || "—" : "—"}</td>
+      <td className="px-4 py-3 text-sm text-gray-600">{user.role === "tester" ? user.gcashNumber || "—" : "—"}</td>
       <td className="px-4 py-3 text-sm text-gray-600">{roleLabel(user.role)}</td>
       <td className="px-4 py-3 text-sm text-gray-600">{formatDate(user.createdAt)}</td>
       <td className="px-4 py-3 text-sm text-gray-600">{formatDateTime(user.lastLogin)}</td>

@@ -77,6 +77,10 @@ function IconParticipants({ className }: { className?: string }) {
   );
 }
 
+function IconPreferences({ className }: { className?: string }) {
+  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"/><path strokeLinecap="round" strokeLinejoin="round" d="m19.4 15 .1.1a1.8 1.8 0 1 1-2.5 2.5l-.1-.1a1.8 1.8 0 0 0-3.1 1.3v.2a1.8 1.8 0 1 1-3.6 0v-.2a1.8 1.8 0 0 0-3.1-1.3l-.1.1a1.8 1.8 0 1 1-2.5-2.5l.1-.1a1.8 1.8 0 0 0-1.3-3.1h-.2a1.8 1.8 0 1 1 0-3.6h.2a1.8 1.8 0 0 0 1.3-3.1l-.1-.1a1.8 1.8 0 1 1 2.5-2.5l.1.1a1.8 1.8 0 0 0 3.1-1.3v-.2a1.8 1.8 0 1 1 3.6 0v.2a1.8 1.8 0 0 0 3.1 1.3l.1-.1a1.8 1.8 0 1 1 2.5 2.5l-.1.1a1.8 1.8 0 0 0 1.3 3.1h.2a1.8 1.8 0 1 1 0 3.6h-.2a1.8 1.8 0 0 0-1.3 3.1Z"/></svg>;
+}
+
 function IconLogout({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
@@ -101,7 +105,7 @@ function IconSidebarToggle({ className, collapsed }: { className?: string; colla
   );
 }
 
-type NavKey = "food" | "stats" | "monitor" | "users" | "participants";
+type NavKey = "food" | "stats" | "monitor" | "users" | "participants" | "preferences";
 
 function useActiveNav(): NavKey | null {
   const location = useLocation();
@@ -109,6 +113,7 @@ function useActiveNav(): NavKey | null {
   const path = location.pathname;
 
   if (path.startsWith("/admin/users")) return "users";
+  if (path.startsWith("/admin/preferences")) return "preferences";
   if (path.startsWith("/participants")) return "participants";
   if (path.startsWith("/video-monitoring")) return "monitor";
   if (path === "/dashboard") {
@@ -200,6 +205,13 @@ export function PageHeader({
       to: "/participants",
       visible: canSeeParticipants,
       icon: IconParticipants,
+    },
+    {
+      key: "preferences",
+      label: "Preferences",
+      to: "/admin/preferences",
+      visible: canSeeUsers,
+      icon: IconPreferences,
     },
   ];
 

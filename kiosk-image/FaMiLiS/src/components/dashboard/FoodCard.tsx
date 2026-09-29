@@ -20,6 +20,7 @@ type FoodCardProps = {
   onStartSession: () => void;
   onSessionStats: () => void;
   sessionStatsLoading?: boolean;
+  sessionStatsError?: string | null;
   formatDate: (iso: string | null) => string;
 };
 
@@ -34,6 +35,7 @@ export function FoodCard({
   onStartSession,
   onSessionStats,
   sessionStatsLoading = false,
+  sessionStatsError = null,
   formatDate,
 }: FoodCardProps) {
   const durationLabel =
@@ -146,6 +148,9 @@ export function FoodCard({
           {sessionStatsLoading ? "Loading…" : "Session Stats"}
         </button>
       </div>
+      {sessionStatsError ? (
+        <p role="alert" className="px-4 pb-3 text-xs text-red-600">{sessionStatsError}</p>
+      ) : null}
     </article>
   );
 }

@@ -250,7 +250,15 @@ export default function SessionDetail() {
         if (!res.ok || !json?.ok) {
           throw new Error(json?.error || "Failed to load session details.");
         }
-        setData(json as SessionDetailPayload);
+        const payload = json as SessionDetailPayload;
+        setData({
+          ...payload,
+          session: {
+            ...payload.session,
+            invalidatedAt: payload.session.invalidatedAt ?? null,
+            retentionStatus: payload.session.retentionStatus ?? "active",
+          },
+        });
       } catch (err: any) {
         if (err?.name === "AbortError") return;
         setError(err?.message || "Failed to load session details.");
@@ -546,7 +554,7 @@ export default function SessionDetail() {
                       </span>
                     ) : null}
                     <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-semibold bg-gray-100 text-gray-600 border border-gray-200">
-                      Retention: {content.session.retentionStatus.replace("_", " ")}
+                      Retention: {(content.session.retentionStatus ?? "active").replace("_", " ")}
                       <InfoTip term="retentionStatus" />
                     </span>
                   </div>

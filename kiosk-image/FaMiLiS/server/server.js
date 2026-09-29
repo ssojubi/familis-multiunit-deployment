@@ -53,6 +53,18 @@ const AUTH_TOKEN_SECRET =
   process.env.AUTH_TOKEN_SECRET ||
   crypto.randomBytes(32).toString("hex");
 const AUTH_TOKEN_TTL_SECONDS = 12 * 60 * 60;
+const BASE_USER_ROLES = ["admin", "staff", "tester"];
+const DEFAULT_PREFERENCES = {
+  consent: {
+    facialRecording: { label: "I agree to facial recording and camera capture for analysis", helper: "Your webcam feed is captured locally during the session for emotion analysis. No video is stored, only individual frames." },
+    dataUsage: { label: "I agree to the use of session data for research purposes", helper: "Anonymized scores may be included in aggregated reports. Frames are deleted after ~30 days." },
+    participant: { label: "I confirm I am a willing participant in this study", helper: "Participation is voluntary. You may stop the session at any time." },
+    dataStorage: { label: "I understand data is stored locally on this lab system", helper: "All data stays on-premises. This is a lab demo, not a clinical or commercial deployment." },
+  },
+  additionalRoles: [],
+  frameRetentionDays: 30,
+  backup: { frequency: "weekly", destination: "local", time: "02:00", cloudUrl: "" },
+};
 
 if (!process.env.AUTH_TOKEN_SECRET) {
   console.warn("AUTH_TOKEN_SECRET is not set; login sessions will reset when the server restarts.");
@@ -100,7 +112,7 @@ function verifyAuthToken(token) {
     const auth = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
     if (
       !Number.isFinite(Number(auth.id)) ||
-      !["admin", "staff", "tester"].includes(auth.role) ||
+      typeof auth.role !== "string" || !auth.role.trim() ||
       Number(auth.exp) <= Math.floor(Date.now() / 1000)
     ) {
       return null;
@@ -157,6 +169,7 @@ import { createServer as createHttpsServer } from 'https';
 import { Server } from 'socket.io';
 import fs from 'fs';
 import os from 'os';
+import { gzipSync } from "zlib";
 
 // Use HTTPS only when requested; Kubernetes runs plain HTTP inside the cluster.
 let http;
@@ -392,6 +405,31 @@ async function start() {
   }
   const pool = await poolPromise;
 
+  async function runFrameRetentionCleanup() {
+    try {
+      const [[setting]] = await pool.query("SELECT setting_value FROM app_settings WHERE setting_key='preferences'");
+      const stored = setting ? (typeof setting.setting_value === "string" ? JSON.parse(setting.setting_value) : setting.setting_value) : {};
+      const days = Math.min(3650, Math.max(1, Number(stored?.frameRetentionDays) || 30));
+      const [expired] = await pool.query("SELECT frame_log_id,session_id,frame_image_url FROM frame_logs WHERE timestamp < DATE_SUB(NOW(), INTERVAL ? DAY)", [days]);
+      if (!expired.length) return;
+      const conn = await pool.getConnection();
+      try {
+        await conn.beginTransaction();
+        for (const frame of expired) {
+          const fileId = frame.frame_image_url ? path.basename(String(frame.frame_image_url), path.extname(String(frame.frame_image_url))) : "";
+          if (/^[A-Za-z0-9_-]+$/.test(fileId)) await conn.query("DELETE FROM emotion_results WHERE session_id = ? AND frame_id = ?", [String(frame.session_id), fileId]);
+          await conn.query("DELETE FROM frame_logs WHERE frame_log_id = ?", [frame.frame_log_id]);
+        }
+        await conn.commit();
+      } catch (error) { await conn.rollback(); throw error; }
+      finally { conn.release(); }
+      await removeUploadedFiles(expired.map(frame => frame.frame_image_url));
+      console.log(`Frame retention cleanup deleted ${expired.length} frame(s) older than ${days} days.`);
+    } catch (error) { console.error("Frame retention cleanup failed:", error?.message || error); }
+  }
+  void runFrameRetentionCleanup();
+  setInterval(() => void runFrameRetentionCleanup(), 24 * 60 * 60 * 1000).unref();
+
   function toIsoOrNull(v) {
     if (!v) return null;
     const d = v instanceof Date ? v : new Date(v);
@@ -547,10 +585,10 @@ async function start() {
   app.get("/api/users", requireAuth, requireAdmin, async (_req, res) => {
     try {
       const [rows] = await pool.query(
-        "SELECT user_id, username, email, role, is_active, created_at FROM users ORDER BY user_id DESC",
+        "SELECT user_id, username, email, contact_number, gcash_number, role, is_active, created_at FROM users ORDER BY user_id DESC",
       );
       return res.json({ ok: true, users: rows.map((user) => ({
-        id: Number(user.user_id), username: user.username, email: user.email,
+        id: Number(user.user_id), username: user.username, email: user.email, contactNumber: user.contact_number ?? null, gcashNumber: user.gcash_number ?? null,
         role: user.role, isActive: Boolean(user.is_active), createdAt: toIsoOrNull(user.created_at),
       })) });
     } catch (err) {
@@ -559,20 +597,101 @@ async function start() {
     }
   });
 
+  async function readPreferences() {
+    const [[row]] = await pool.query("SELECT setting_value FROM app_settings WHERE setting_key = 'preferences'");
+    if (!row) return DEFAULT_PREFERENCES;
+    try { const stored = typeof row.setting_value === "string" ? JSON.parse(row.setting_value) : row.setting_value; return { ...DEFAULT_PREFERENCES, ...stored, backup: { ...DEFAULT_PREFERENCES.backup, ...(stored.backup || {}) } }; }
+    catch { return DEFAULT_PREFERENCES; }
+  }
+  let backupJobRunning = false;
+  async function createScheduledBackup() {
+    if (backupJobRunning) return;
+    backupJobRunning = true;
+    try {
+      const preferences = await readPreferences();
+      const now = new Date();
+      const [hour, minute] = String(preferences.backup.time || "02:00").split(":").map(Number);
+      if (now.getHours() < hour || (now.getHours() === hour && now.getMinutes() < minute)) return;
+      const day = new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+      if (preferences.backup.frequency === "weekly" && now.getDay() !== 1) return;
+      if (preferences.backup.frequency === "monthly" && now.getDate() !== 1) return;
+      const weekDate = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+      weekDate.setUTCDate(weekDate.getUTCDate() + 4 - (weekDate.getUTCDay() || 7));
+      const isoYearStart = new Date(Date.UTC(weekDate.getUTCFullYear(), 0, 1));
+      const isoWeek = Math.ceil((((weekDate.getTime() - isoYearStart.getTime()) / 86_400_000) + 1) / 7);
+      const periodKey = preferences.backup.frequency === "monthly" ? day.slice(0, 7) : preferences.backup.frequency === "weekly" ? `${weekDate.getUTCFullYear()}-W${String(isoWeek).padStart(2, "0")}` : day;
+      const [[lastRun]] = await pool.query("SELECT setting_value FROM app_settings WHERE setting_key='backup_last_run'");
+      const lastKey = lastRun ? (typeof lastRun.setting_value === "string" ? JSON.parse(lastRun.setting_value) : lastRun.setting_value) : null;
+      if (lastKey === periodKey) return;
+
+      const [tableRows] = await pool.query("SHOW FULL TABLES WHERE Table_type = 'BASE TABLE'");
+      const tables = {};
+      for (const row of tableRows) {
+        const name = String(Object.values(row)[0]);
+        const safeName = name.replaceAll("`", "``");
+        const [records] = await pool.query(`SELECT * FROM \`${safeName}\``);
+        tables[name] = records;
+      }
+      const files = [];
+      async function collectFiles(folder, prefix = "") {
+        for (const entry of await fs.promises.readdir(folder, { withFileTypes: true })) {
+          const absolute = path.join(folder, entry.name);
+          const relative = path.posix.join(prefix, entry.name);
+          if (entry.isDirectory()) await collectFiles(absolute, relative);
+          else if (entry.isFile()) files.push({ path: relative, data: (await fs.promises.readFile(absolute)).toString("base64") });
+        }
+      }
+      await collectFiles(uploadsRoot);
+      const archive = gzipSync(Buffer.from(JSON.stringify({ createdAt: now.toISOString(), tables, uploads: files })));
+      const stamp = now.toISOString().replace(/[:.]/g, "-");
+      if (preferences.backup.destination === "cloud") {
+        const response = await fetch(preferences.backup.cloudUrl, { method: "PUT", headers: { "Content-Type": "application/gzip" }, body: archive });
+        if (!response.ok) throw new Error(`Cloud upload returned HTTP ${response.status}.`);
+      } else {
+        const backupDirectory = path.resolve(__dirname, "backups");
+        await fs.promises.mkdir(backupDirectory, { recursive: true });
+        await fs.promises.writeFile(path.join(backupDirectory, `familis-${stamp}.json.gz`), archive);
+      }
+      await pool.query("INSERT INTO app_settings (setting_key, setting_value) VALUES ('backup_last_run', ?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)", [JSON.stringify(periodKey)]);
+      console.log(`Scheduled ${preferences.backup.destination} backup completed for ${periodKey}.`);
+    } catch (error) { console.error("Scheduled backup failed:", error?.message || error); }
+    finally { backupJobRunning = false; }
+  }
+  setInterval(() => void createScheduledBackup(), 60 * 1000).unref();
+  app.get("/api/preferences", requireAuth, async (_req, res) => {
+    try { const preferences = await readPreferences(); const consentVersion = `1.1-${crypto.createHash("sha256").update(JSON.stringify(preferences.consent)).digest("hex").slice(0, 12)}`; return res.json({ ok: true, preferences, consentVersion }); }
+    catch (err) { console.error("Read preferences failed:", err); return res.status(500).json({ok:false,error:"Could not load preferences."}); }
+  });
+  app.put("/api/preferences", requireAuth, requireAdmin, async (req, res) => {
+    const p = req.body?.preferences;
+    const consentEntries = p?.consent && typeof p.consent === "object" ? Object.entries(p.consent) : [];
+    if (!p || consentEntries.length === 0 || consentEntries.some(([key, field]) => !/^[a-zA-Z0-9_-]{1,64}$/.test(key) || typeof field?.label !== "string" || !field.label.trim() || field.label.length > 1000 || typeof field.helper !== "string" || field.helper.length > 3000) || !Array.isArray(p.additionalRoles) || !Number.isInteger(Number(p.frameRetentionDays)) || Number(p.frameRetentionDays) < 1 || Number(p.frameRetentionDays) > 3650 || !["daily","weekly","monthly"].includes(p.backup?.frequency) || !["local","cloud"].includes(p.backup?.destination) || (p.backup?.destination === "cloud" && !String(p.backup?.cloudUrl || "").startsWith("https://"))) return res.status(400).json({ok:false,error:"Keep a valid consent field and check the retention, role, and backup settings. Cloud backups require an HTTPS upload endpoint."});
+    try {
+      const saved = { ...DEFAULT_PREFERENCES, ...p, consent: Object.fromEntries(consentEntries), frameRetentionDays: Number(p.frameRetentionDays), additionalRoles: [...new Set(p.additionalRoles.map(v=>String(v).trim().toLowerCase()).filter(v=>/^[a-z][a-z0-9_-]{1,24}$/.test(v) && !BASE_USER_ROLES.includes(v)))], backup: { ...DEFAULT_PREFERENCES.backup, ...p.backup } };
+      await pool.query("INSERT INTO app_settings (setting_key, setting_value) VALUES ('preferences', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)",[JSON.stringify(saved)]);
+      const consentVersion = `1.1-${crypto.createHash("sha256").update(JSON.stringify(saved.consent)).digest("hex").slice(0, 12)}`;
+      return res.json({ok:true,preferences:saved,consentVersion});
+    } catch (err) { console.error("Save preferences failed:", err); return res.status(500).json({ok:false,error:"Could not save preferences."}); }
+  });
+
   app.post("/api/users", requireAuth, requireAdmin, async (req, res) => {
     const username = String(req.body?.username || "").trim();
     const email = String(req.body?.email || "").trim().toLowerCase();
     const password = String(req.body?.password || "");
     const role = String(req.body?.role || "tester");
-    if (!username || !email || password.length < 6 || !["admin", "staff", "tester"].includes(role)) {
+    const allowedRoles = [...BASE_USER_ROLES, ...(await readPreferences()).additionalRoles];
+    if (!username || !email || password.length < 6 || !allowedRoles.includes(role)) {
       return res.status(400).json({ ok: false, error: "Username, email, password (6+ characters), and a valid role are required." });
     }
     try {
-      const [result] = await pool.query(
-        "INSERT INTO users (username, email, password_hash, role, is_active) VALUES (?, ?, ?, ?, 1)",
-        [username, email, await bcrypt.hash(password, 10), role],
+    const contactNumber = String(req.body?.contactNumber ?? "").trim() || null;
+    const gcashNumber = String(req.body?.gcashNumber ?? "").trim() || null;
+    if (role === "tester" && !contactNumber) return res.status(400).json({ ok: false, error: "Phone number is required for taster accounts." });
+    const [result] = await pool.query(
+        "INSERT INTO users (username, email, contact_number, gcash_number, password_hash, role, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)",
+        [username, email, contactNumber, gcashNumber, await bcrypt.hash(password, 10), role],
       );
-      return res.status(201).json({ ok: true, user: { id: Number(result.insertId), username, email, role, isActive: true } });
+      return res.status(201).json({ ok: true, user: { id: Number(result.insertId), username, email, contactNumber, gcashNumber, role, isActive: true } });
     } catch (err) {
       if (err?.code === "ER_DUP_ENTRY") return res.status(409).json({ ok: false, error: "That email is already in use." });
       console.error("POST /api/users error:", err);
@@ -587,8 +706,10 @@ async function start() {
     const values = [];
     if (req.body?.username != null) { fields.push("username = ?"); values.push(String(req.body.username).trim()); }
     if (req.body?.email != null) { fields.push("email = ?"); values.push(String(req.body.email).trim().toLowerCase()); }
+    if (req.body?.contactNumber !== undefined) { fields.push("contact_number = ?"); values.push(String(req.body.contactNumber || "").trim() || null); }
+    if (req.body?.gcashNumber !== undefined) { fields.push("gcash_number = ?"); values.push(String(req.body.gcashNumber || "").trim() || null); }
     if (req.body?.password != null) { fields.push("password_hash = ?"); values.push(await bcrypt.hash(String(req.body.password), 10)); }
-    if (req.body?.role != null && ["admin", "staff", "tester"].includes(req.body.role)) { fields.push("role = ?"); values.push(req.body.role); }
+    if (req.body?.role != null && [...BASE_USER_ROLES, ...(await readPreferences()).additionalRoles].includes(req.body.role)) { fields.push("role = ?"); values.push(req.body.role); }
     if (req.body?.isActive != null) { fields.push("is_active = ?"); values.push(req.body.isActive ? 1 : 0); }
     if (!fields.length) return res.status(400).json({ ok: false, error: "No valid changes supplied." });
     try {
@@ -777,6 +898,7 @@ async function start() {
       rawContactNumber == null || rawContactNumber === ""
         ? null
         : String(rawContactNumber).trim();
+    if (!contactNumber) return res.status(400).json({ ok: false, error: "Phone number is required." });
     const gcashNumber =
       rawGcashNumber == null || rawGcashNumber === ""
         ? null
@@ -848,10 +970,10 @@ async function start() {
       const passwordHash = await bcrypt.hash(password, 10);
       const [result] = await connection.query(
         `
-        INSERT INTO users (username, email, password_hash, role)
-        VALUES (?, ?, ?, 'tester')
+        INSERT INTO users (username, email, contact_number, gcash_number, password_hash, role)
+        VALUES (?, ?, ?, ?, ?, 'tester')
       `,
-        [username, email, passwordHash],
+        [username, email, contactNumber, gcashNumber, passwordHash],
       );
 
       const participantResult = await upsertParticipantRecord(connection, {
@@ -938,7 +1060,9 @@ async function start() {
       (routePath.startsWith("/testing-rooms") &&
         routePath !== "/testing-rooms/active" &&
         routePath !== "/testing-rooms/validate") ||
-      (/^\/sessions\/\d+\/(details|status)$/.test(routePath)) ||
+      (/^\/sessions\/\d+\/(details|status|invalidate|revalidate|export)$/.test(routePath)) ||
+      (/^\/foods\/\d+\/export$/.test(routePath)) ||
+      (req.method === "DELETE" && /^\/sessions\/\d+\/frames\/\d+$/.test(routePath)) ||
       (req.method === "DELETE" && /^\/sessions\/\d+$/.test(routePath));
 
     if (adminOnly) return requireAdmin(req, res, next);
@@ -1333,13 +1457,13 @@ async function start() {
     try {
       const [rows] = await pool.query(
         `SELECT s.session_id, s.food_id, fp.name AS food_name, fp.category AS food_category, fp.image_url AS food_image_url,
-                s.start_time, s.end_time, s.status, COUNT(fl.frame_log_id) AS frame_count,
+                s.start_time, s.end_time, s.status, s.invalidated_at, COUNT(fl.frame_log_id) AS frame_count,
                 AVG(fl.confidence_score) AS mean_confidence, sr.final_overall_rating
          FROM sessions s LEFT JOIN food_products fp ON fp.food_id = s.food_id
          LEFT JOIN frame_logs fl ON fl.session_id = s.session_id
          LEFT JOIN survey_results sr ON sr.session_id = s.session_id
          WHERE s.participant_id = ?
-         GROUP BY s.session_id, fp.food_id, fp.name, fp.category, fp.image_url, sr.final_overall_rating
+         GROUP BY s.session_id, fp.food_id, fp.name, fp.category, fp.image_url, sr.final_overall_rating, s.invalidated_at
          ORDER BY s.start_time DESC, s.session_id DESC`, [id],
       );
       return res.json({ ok: true, sessions: rows.map((row) => ({
@@ -1348,7 +1472,7 @@ async function start() {
         foodImageUrl: row.food_image_url == null ? null : String(row.food_image_url),
         startTime: toIsoOrNull(row.start_time), endTime: toIsoOrNull(row.end_time), status: String(row.status),
         frameCount: Number(row.frame_count ?? 0), meanConfidence: row.mean_confidence == null ? null : Number(row.mean_confidence),
-        invalidatedAt: null, hasConsent: true, hasSurvey: row.final_overall_rating != null,
+        invalidatedAt: toIsoOrNull(row.invalidated_at), hasConsent: true, hasSurvey: row.final_overall_rating != null,
         survey: row.final_overall_rating == null ? null : { color: null, flavorAroma: null, saltSweet: null, texture: null, overall: Number(row.final_overall_rating) },
       })) });
     } catch (err) {
@@ -2159,6 +2283,7 @@ async function start() {
           : null;
     const normalizedRoomCode =
       typeof roomCode === "string" ? roomCode.trim() : "";
+    let testerConsentPreferences = null;
 
     if (!Number.isFinite(uId) || !Number.isFinite(fId) || (pId != null && !Number.isFinite(pId)) || (kId != null && !Number.isFinite(kId))) {
       return res.status(400).json({ ok: false, error: "userId, foodId, and optional participantId/kioskId are required." });
@@ -2204,6 +2329,18 @@ async function start() {
         });
       }
 
+      if (req.auth.role === "tester" && normalizedRoomCode) {
+        const answers = req.body?.consentAnswers;
+        const version = String(req.body?.consentVersion || "");
+        testerConsentPreferences = await readPreferences();
+        const expectedVersion = `1.1-${crypto.createHash("sha256").update(JSON.stringify(testerConsentPreferences.consent)).digest("hex").slice(0, 12)}`;
+        const expectedKeys = Object.keys(testerConsentPreferences.consent).sort();
+        const answerKeys = answers && typeof answers === "object" ? Object.keys(answers).sort() : [];
+        if (version !== expectedVersion || expectedKeys.join("|") !== answerKeys.join("|") || Object.values(answers || {}).some(answer => answer !== true)) {
+          return res.status(409).json({ ok: false, error: "Please review and accept the current consent form before starting your session." });
+        }
+      }
+
       const [result] = await pool.query(
         `
         INSERT INTO sessions
@@ -2213,6 +2350,22 @@ async function start() {
         [uId, kId, pId, fId, testingRoomId]
       );
       const sessionId = Number(result.insertId);
+
+      if (req.auth.role === "tester" && normalizedRoomCode && testerConsentPreferences) {
+        const consentVersion = `1.1-${crypto.createHash("sha256").update(JSON.stringify(testerConsentPreferences.consent)).digest("hex").slice(0, 12)}`;
+        try {
+          await pool.query(
+            `INSERT INTO session_consents
+              (session_id, user_id, participant_id, device_id, consent_version, consent_copy, consent_answers, health_screening, dietary_restrictions)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+            [sessionId, uId, pId, String(browserKiosk || `tester-${uId}`).slice(0, 128), consentVersion,
+              JSON.stringify(testerConsentPreferences.consent), JSON.stringify(req.body.consentAnswers), JSON.stringify({ legacyRoomConsent: true })],
+          );
+        } catch (consentError) {
+          await pool.query("DELETE FROM sessions WHERE session_id = ?", [sessionId]);
+          throw consentError;
+        }
+      }
 
       if (browserKiosk) {
         try {
@@ -2292,11 +2445,11 @@ async function start() {
     const consentAnswers = req.body?.consent;
     const screening = req.body?.ethics;
     const dietaryRestrictions = String(req.body?.dietaryRestrictions ?? "").trim() || null;
-    const requiredConsent = ["facialRecording", "dataUsage", "participant", "dataStorage"];
+    const requiredConsent = consentAnswers && typeof consentAnswers === "object" ? Object.values(consentAnswers) : [];
     const requiredScreening = ["foodAllergies", "intolerances", "medicalDietary", "religiousCultural", "healthToday", "recentFoodMedication"];
 
     if (!Number.isFinite(sessionId) || !deviceId || !consentVersion || req.body?.facialRecording !== true ||
-        !consentAnswers || requiredConsent.some((key) => consentAnswers[key] !== true) ||
+        !consentAnswers || requiredConsent.length === 0 || requiredConsent.some((answer) => answer !== true) ||
         !screening || requiredScreening.some((key) => typeof screening[key] !== "boolean")) {
       return res.status(400).json({ ok: false, error: "Complete all consent and health screening questions before continuing." });
     }
@@ -2305,6 +2458,9 @@ async function start() {
     }
 
     try {
+      const currentPreferences = await readPreferences();
+      const currentConsentVersion = `1.1-${crypto.createHash("sha256").update(JSON.stringify(currentPreferences.consent)).digest("hex").slice(0, 12)}`;
+      if (consentVersion !== currentConsentVersion) return res.status(409).json({ ok: false, error: "The consent form changed. Refresh and review the updated form before continuing." });
       const [[session]] = await pool.query(
         `SELECT session_id, user_id, participant_id, status, start_time
          FROM sessions WHERE session_id = ? LIMIT 1`,
@@ -2323,11 +2479,11 @@ async function start() {
 
       await pool.query(
         `INSERT INTO session_consents
-          (session_id, user_id, participant_id, device_id, consent_version, consent_answers, health_screening, dietary_restrictions)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          (session_id, user_id, participant_id, device_id, consent_version, consent_copy, consent_answers, health_screening, dietary_restrictions)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
           participant_id = VALUES(participant_id), device_id = VALUES(device_id),
-          consent_version = VALUES(consent_version), consent_answers = VALUES(consent_answers),
+          consent_version = VALUES(consent_version), consent_copy = VALUES(consent_copy), consent_answers = VALUES(consent_answers),
           health_screening = VALUES(health_screening), dietary_restrictions = VALUES(dietary_restrictions),
           recorded_at = CURRENT_TIMESTAMP`,
         [
@@ -2336,6 +2492,7 @@ async function start() {
           session.participant_id == null ? null : Number(session.participant_id),
           deviceId.slice(0, 128),
           consentVersion.slice(0, 32),
+          JSON.stringify(currentPreferences.consent),
           JSON.stringify(consentAnswers),
           JSON.stringify({ answers: screening, details: req.body?.ethicsDetails ?? null }),
           dietaryRestrictions,
@@ -2467,13 +2624,14 @@ async function start() {
       }
 
       try {
-        const [[sess]] = await pool.query(`SELECT status FROM sessions WHERE session_id = ? LIMIT 1`, [sessionId]);
+        const [[sess]] = await pool.query(`SELECT status, invalidated_at FROM sessions WHERE session_id = ? LIMIT 1`, [sessionId]);
         if (!sess) {
           return res.status(404).json({ ok: false, error: "Session not found." });
         }
         if (sess.status !== "active") {
           return res.status(409).json({ ok: false, error: "Session is not active; cannot record frames." });
         }
+        if (sess.invalidated_at) return res.status(409).json({ ok: false, error: "Session was invalidated; recording is disabled." });
 
         const kioskId =
           String(req.body?.kiosk_id || req.body?.kioskId || `session-${sessionId}`).trim();
@@ -2513,6 +2671,54 @@ async function start() {
   );
 
   // Full session detail for the results page (frame logs, system logs, survey results)
+  app.post("/api/sessions/:sessionId/invalidate", async (req, res) => {
+    const id = Number.parseInt(req.params.sessionId, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "Invalid session id." });
+    try {
+      const [result] = await pool.query("UPDATE sessions SET invalidated_at = COALESCE(invalidated_at, CURRENT_TIMESTAMP) WHERE session_id = ?", [id]);
+      if (!result.affectedRows) return res.status(404).json({ ok: false, error: "Session not found." });
+      const [[row]] = await pool.query("SELECT invalidated_at FROM sessions WHERE session_id = ?", [id]);
+      return res.json({ ok: true, session: { invalidatedAt: toIsoOrNull(row.invalidated_at) } });
+    } catch (err) { console.error("Session invalidation failed:", err); return res.status(500).json({ ok: false, error: "Could not invalidate session." }); }
+  });
+
+  app.post("/api/sessions/:sessionId/revalidate", async (req, res) => {
+    const id = Number.parseInt(req.params.sessionId, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "Invalid session id." });
+    try {
+      const [result] = await pool.query("UPDATE sessions SET invalidated_at = NULL WHERE session_id = ?", [id]);
+      if (!result.affectedRows) return res.status(404).json({ ok: false, error: "Session not found." });
+      return res.json({ ok: true, session: { invalidatedAt: null } });
+    } catch (err) { console.error("Session revalidation failed:", err); return res.status(500).json({ ok: false, error: "Could not revalidate session." }); }
+  });
+
+  app.get("/api/sessions/:sessionId/export", async (req, res) => {
+    const id = Number.parseInt(req.params.sessionId, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "Invalid session id." });
+    try {
+      const [[s]] = await pool.query(`SELECT s.session_id,s.status,s.start_time,s.end_time,s.invalidated_at,fp.name food_name,fp.category food_category,p.name participant_label,p.age participant_age,p.gender participant_gender FROM sessions s LEFT JOIN food_products fp ON fp.food_id=s.food_id LEFT JOIN participants p ON p.participant_id=s.participant_id WHERE s.session_id=?`, [id]);
+      if (!s) return res.status(404).json({ ok: false, error: "Session not found." });
+      const [[survey]] = await pool.query("SELECT color_rating,flavor_aroma_rating,salt_sweet_rating,texture_rating,final_overall_rating,remarks FROM survey_results WHERE session_id=? LIMIT 1", [id]);
+      const [[stats]] = await pool.query(`SELECT COUNT(*) total_frames,AVG(confidence_score) mean_confidence,AVG(hedonic_score) mean_hedonic,SUM(face_detected=1) face_count,SUM(hedonic_score>=0.75) positive_count,SUM(hedonic_score>=0.5 AND hedonic_score<0.75) neutral_count,SUM(hedonic_score<0.5) negative_count FROM frame_logs WHERE session_id=?`, [id]);
+      return res.json({ ok:true, session:{id:Number(s.session_id),status:s.status,invalidatedAt:toIsoOrNull(s.invalidated_at),startTime:toIsoOrNull(s.start_time),endTime:toIsoOrNull(s.end_time),foodName:s.food_name,foodCategory:s.food_category,participantLabel:s.participant_label,participantAge:s.participant_age==null?null:Number(s.participant_age),participantGender:s.participant_gender}, survey:survey?.final_overall_rating==null?null:survey, frameSummary:{totalFrames:Number(stats.total_frames||0),meanConfidence:stats.mean_confidence==null?null:Number(stats.mean_confidence),meanHedonicOutOf9:stats.mean_hedonic==null?null:Number(stats.mean_hedonic)*8+1,faceDetectedCount:Number(stats.face_count||0),positiveCount:Number(stats.positive_count||0),neutralCount:Number(stats.neutral_count||0),negativeCount:Number(stats.negative_count||0)} });
+    } catch(err) { console.error("Session export failed:",err); return res.status(500).json({ok:false,error:"Could not export session."}); }
+  });
+
+  app.get("/api/foods/:foodId/export", async (req, res) => {
+    const id = Number.parseInt(req.params.foodId, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok:false,error:"Invalid food id." });
+    try {
+      const [[food]] = await pool.query("SELECT food_id,name,category FROM food_products WHERE food_id=?",[id]);
+      if (!food) return res.status(404).json({ok:false,error:"Food not found."});
+      const [rows] = await pool.query(`SELECT s.session_id,s.status,s.start_time,s.end_time,s.invalidated_at,p.name participant_label,p.age participant_age,p.gender participant_gender,COUNT(DISTINCT fl.frame_log_id) frame_count,MAX(sr.final_overall_rating) survey_overall,AVG(fl.hedonic_score) mean_fer_hedonic,AVG(fl.confidence_score) mean_fer_confidence FROM sessions s LEFT JOIN participants p ON p.participant_id=s.participant_id LEFT JOIN frame_logs fl ON fl.session_id=s.session_id LEFT JOIN survey_results sr ON sr.session_id=s.session_id WHERE s.food_id=? GROUP BY s.session_id,p.name,p.age,p.gender ORDER BY s.session_id DESC`,[id]);
+      const [surveys] = await pool.query(`SELECT s.session_id,p.name participant_label,p.age,p.gender,sr.color_rating,sr.flavor_aroma_rating,sr.salt_sweet_rating,sr.texture_rating,sr.final_overall_rating,sr.remarks FROM survey_results sr JOIN sessions s ON s.session_id=sr.session_id LEFT JOIN participants p ON p.participant_id=s.participant_id WHERE s.food_id=? AND s.invalidated_at IS NULL`,[id]);
+      const valid = rows.filter(r=>!r.invalidated_at);
+      const score=valid.flatMap(r=>r.mean_fer_hedonic==null?[]:[Number(r.mean_fer_hedonic)]);
+      const conf=valid.flatMap(r=>r.mean_fer_confidence==null?[]:[Number(r.mean_fer_confidence)]);
+      return res.json({ok:true,food:{id:Number(food.food_id),name:food.name,category:food.category},sessions:rows.map(r=>({sessionId:Number(r.session_id),status:r.status,startTime:toIsoOrNull(r.start_time),endTime:toIsoOrNull(r.end_time),invalidatedAt:toIsoOrNull(r.invalidated_at),validity:r.invalidated_at?"Invalidated":"Valid",participantLabel:r.participant_label,participantAge:r.participant_age==null?null:Number(r.participant_age),participantGender:r.participant_gender,frameCount:Number(r.frame_count||0),hasSurvey:r.survey_overall!=null,surveyOverall:r.survey_overall==null?null:Number(r.survey_overall),meanFerHedonic:r.mean_fer_hedonic==null?null:Number(r.mean_fer_hedonic),meanFerConfidence:r.mean_fer_confidence==null?null:Number(r.mean_fer_confidence)})),surveys:surveys.map(r=>({sessionId:Number(r.session_id),participantLabel:r.participant_label,age:r.age==null?null:Number(r.age),gender:r.gender,colorRating:r.color_rating==null?null:Number(r.color_rating),flavorAromaRating:r.flavor_aroma_rating==null?null:Number(r.flavor_aroma_rating),saltSweetRating:r.salt_sweet_rating==null?null:Number(r.salt_sweet_rating),textureRating:r.texture_rating==null?null:Number(r.texture_rating),finalOverallRating:Number(r.final_overall_rating),remarks:r.remarks})),ferSummary:{validSessionCount:valid.length,frameCount:valid.reduce((n,r)=>n+Number(r.frame_count||0),0),meanHedonic:score.length?score.reduce((a,b)=>a+b,0)/score.length:null,meanConfidence:conf.length?conf.reduce((a,b)=>a+b,0)/conf.length:null,positiveCount:0,neutralCount:0,negativeCount:0}});
+    } catch(err) { console.error("Food export failed:",err); return res.status(500).json({ok:false,error:"Could not export food report."}); }
+  });
+
   app.get("/api/sessions/:sessionId/details", async (req, res) => {
     const sessionId = Number.parseInt(req.params.sessionId, 10);
     if (!Number.isFinite(sessionId)) {
@@ -2528,6 +2734,7 @@ async function start() {
           s.participant_id,
           s.food_id,
           s.status,
+          s.invalidated_at,
           s.start_time,
           s.end_time,
           fp.name AS food_name,
@@ -2560,6 +2767,7 @@ async function start() {
       const [frameRows] = await pool.query(
         `
         SELECT
+          frame_log_id,
           timestamp,
           face_detected,
           confidence_score,
@@ -2613,6 +2821,8 @@ async function start() {
           participantId: sessionRow.participant_id == null ? null : Number(sessionRow.participant_id),
           foodId: Number(sessionRow.food_id),
           status: sessionRow.status,
+          invalidatedAt: toIsoOrNull(sessionRow.invalidated_at),
+          retentionStatus: "active",
           startTime: toIsoOrNull(sessionRow.start_time),
           endTime: toIsoOrNull(sessionRow.end_time),
         },
@@ -2632,6 +2842,7 @@ async function start() {
           meanHedonic: frameStatsRow?.mean_hedonic == null ? null : Number(frameStatsRow.mean_hedonic),
         },
         frameLogs: (frameRows ?? []).map((r) => ({
+          frameLogId: Number(r.frame_log_id),
           timestamp: toIsoOrNull(r.timestamp),
           faceDetected: r.face_detected == null ? null : Boolean(r.face_detected),
           confidenceScore: r.confidence_score == null ? null : Number(r.confidence_score),
@@ -2663,6 +2874,68 @@ async function start() {
     } catch (err) {
       console.error("GET /api/sessions/:sessionId/details error:", err);
       return res.status(500).json({ ok: false, error: "Server error." });
+    }
+  });
+
+  app.delete("/api/sessions/:sessionId/frames/:frameLogId", async (req, res) => {
+    const sessionId = Number.parseInt(req.params.sessionId, 10);
+    const frameLogId = Number.parseInt(req.params.frameLogId, 10);
+    if (!Number.isFinite(sessionId) || !Number.isFinite(frameLogId)) {
+      return res.status(400).json({ ok: false, error: "Invalid session or frame ID." });
+    }
+
+    let connection;
+    let frameImageUrl = null;
+    try {
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
+      const [[frame]] = await connection.query(
+        `SELECT frame_image_url FROM frame_logs WHERE session_id = ? AND frame_log_id = ? FOR UPDATE`,
+        [sessionId, frameLogId],
+      );
+      if (!frame) {
+        await connection.rollback();
+        return res.status(404).json({ ok: false, error: "Frame not found in this session." });
+      }
+
+      frameImageUrl = frame.frame_image_url == null ? null : String(frame.frame_image_url);
+      const frameFileId = frameImageUrl
+        ? path.basename(frameImageUrl, path.extname(frameImageUrl))
+        : "";
+      if (/^[A-Za-z0-9_-]+$/.test(frameFileId)) {
+        await connection.query(
+          "DELETE FROM emotion_results WHERE session_id = ? AND frame_id = ?",
+          [String(sessionId), frameFileId],
+        );
+      }
+      await connection.query(
+        "DELETE FROM frame_logs WHERE session_id = ? AND frame_log_id = ?",
+        [sessionId, frameLogId],
+      );
+
+      const [[metrics]] = await connection.query(
+        `SELECT COUNT(*) AS total_frames, AVG(confidence_score) AS mean_confidence,
+                AVG(hedonic_score) AS mean_hedonic
+         FROM frame_logs WHERE session_id = ?`,
+        [sessionId],
+      );
+      await connection.commit();
+      if (frameImageUrl) await removeUploadedFiles([frameImageUrl]);
+
+      return res.json({
+        ok: true,
+        metrics: {
+          totalFrames: Number(metrics?.total_frames ?? 0),
+          meanConfidence: metrics?.mean_confidence == null ? null : Number(metrics.mean_confidence),
+          meanHedonic: metrics?.mean_hedonic == null ? null : Number(metrics.mean_hedonic),
+        },
+      });
+    } catch (err) {
+      if (connection) await connection.rollback();
+      console.error("DELETE /api/sessions/:sessionId/frames/:frameLogId error:", err);
+      return res.status(500).json({ ok: false, error: "Failed to delete frame." });
+    } finally {
+      connection?.release();
     }
   });
 

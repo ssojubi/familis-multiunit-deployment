@@ -19,18 +19,7 @@ type SortKey = "username" | "email" | "role" | "createdAt" | "isActive";
 type SortDir = "asc" | "desc";
 type RoleFilter = "" | UserListItem["role"];
 
-const ROLE_FILTER_OPTIONS: { value: RoleFilter; label: string }[] = [
-  { value: "", label: "All roles" },
-  { value: "admin", label: "Admin" },
-  { value: "staff", label: "Operator" },
-  { value: "tester", label: "Taster account" },
-];
-
-const ROLE_SORT_ORDER: Record<UserListItem["role"], number> = {
-  admin: 0,
-  staff: 1,
-  tester: 2,
-};
+const BASE_ROLES = ["admin", "staff", "tester"];
 
 function getStoredUserId(): number | null {
   try {
@@ -99,6 +88,7 @@ function SortHeader({
 export default function AdminUsers() {
   const selfId = getStoredUserId();
   const [users, setUsers] = useState<UserListItem[]>([]);
+  const [roleOptions, setRoleOptions] = useState<string[]>(BASE_ROLES);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -147,6 +137,7 @@ export default function AdminUsers() {
   useEffect(() => {
     const ac = new AbortController();
     void loadUsers(ac.signal);
+    void apiFetch("/api/preferences", { signal: ac.signal }).then(r => r.json()).then(j => { if (j?.ok) setRoleOptions([...BASE_ROLES, ...(j.preferences?.additionalRoles || [])]); }).catch(() => {});
     return () => ac.abort();
   }, [loadUsers]);
 
@@ -202,7 +193,7 @@ export default function AdminUsers() {
           cmp = a.email.localeCompare(b.email, undefined, { sensitivity: "base" });
           break;
         case "role":
-          cmp = ROLE_SORT_ORDER[a.role] - ROLE_SORT_ORDER[b.role];
+          cmp = roleOptions.indexOf(a.role) - roleOptions.indexOf(b.role);
           break;
         case "createdAt": {
           const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
@@ -248,6 +239,10 @@ export default function AdminUsers() {
       setFormError("Password must be at least 6 characters.");
       return;
     }
+    if (values.role === "tester" && !values.contactNumber.trim()) {
+      setFormError("Phone number is required for taster accounts.");
+      return;
+    }
 
     setFormSaving(true);
     setFormError(null);
@@ -261,6 +256,8 @@ export default function AdminUsers() {
             email,
             password: values.password,
             role: values.role,
+            contactNumber: values.contactNumber,
+            gcashNumber: values.gcashNumber,
           }),
         });
         const json = await res.json().catch(() => null);
@@ -272,7 +269,7 @@ export default function AdminUsers() {
         const res = await apiFetch(`/api/users/${editing.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username, email }),
+          body: JSON.stringify({ username, email, contactNumber: values.contactNumber, gcashNumber: values.gcashNumber }),
         });
         const json = await res.json().catch(() => null);
         if (!res.ok || !json?.ok) {
@@ -395,11 +392,8 @@ export default function AdminUsers() {
                   className="border border-gray-200 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
                   aria-label="Filter by role"
                 >
-                  {ROLE_FILTER_OPTIONS.map((opt) => (
-                    <option key={opt.value || "all"} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
+                  <option value="">All roles</option>
+                  {roleOptions.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}
                 </select>
               </div>
               <button
@@ -428,6 +422,8 @@ export default function AdminUsers() {
                     <tr className="text-xs text-gray-500 bg-gray-50">
                       <SortHeader label="Username" column="username" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                       <SortHeader label="Email" column="email" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                      <th className="px-4 py-3 font-semibold">Phone</th>
+                      <th className="px-4 py-3 font-semibold">GCash</th>
                       <SortHeader label="Role" column="role" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                       <SortHeader label="Created" column="createdAt" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                       <th className="px-4 py-3 font-semibold">Last login</th>
@@ -469,13 +465,14 @@ export default function AdminUsers() {
           mode={formMode}
           initial={
             formMode === "edit" && editing
-              ? { username: editing.username, email: editing.email }
+              ? { username: editing.username, email: editing.email, contactNumber: editing.contactNumber, gcashNumber: editing.gcashNumber }
               : null
           }
           saving={formSaving}
           error={formError}
           onClose={closeForm}
           onSubmit={(values) => void handleFormSubmit(values)}
+          roleOptions={roleOptions}
         />
       ) : null}
 
@@ -486,6 +483,7 @@ export default function AdminUsers() {
           isSelf={selfId != null && selfId === roleTarget.id}
           saving={roleSaving}
           error={roleError}
+          roleOptions={roleOptions}
           onClose={() => {
             if (roleSaving) return;
             setRoleTarget(null);

@@ -7,8 +7,10 @@ CREATE TABLE IF NOT EXISTS users (
   user_id INT AUTO_INCREMENT PRIMARY KEY,
   username VARCHAR(50) NOT NULL,
   email VARCHAR(255) NOT NULL UNIQUE,
+  contact_number VARCHAR(50) NULL,
+  gcash_number VARCHAR(50) NULL,
   password_hash TEXT NOT NULL,
-  role ENUM('tester', 'admin') NOT NULL DEFAULT 'tester',
+  role VARCHAR(50) NOT NULL DEFAULT 'tester',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   last_login TIMESTAMP NULL
 );
@@ -81,6 +83,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   testing_room_id INT NULL,
   start_time TIMESTAMP NULL,
   end_time TIMESTAMP NULL,
+  invalidated_at TIMESTAMP NULL,
   status ENUM('pending', 'active', 'completed', 'cancelled') NOT NULL DEFAULT 'pending',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
@@ -106,6 +109,7 @@ CREATE TABLE IF NOT EXISTS session_consents (
   participant_id INT NULL,
   device_id VARCHAR(128) NOT NULL,
   consent_version VARCHAR(32) NOT NULL,
+  consent_copy JSON NULL,
   consent_answers JSON NOT NULL,
   health_screening JSON NOT NULL,
   dietary_restrictions TEXT NULL,
