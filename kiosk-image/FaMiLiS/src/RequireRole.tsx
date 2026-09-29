@@ -28,6 +28,6 @@ export default function RequireRole({ allowed, exact = false }: RequireRoleProps
   if (isAdminRole(role)) {
     return <Navigate to="/dashboard" replace />;
   }
-  // Tester landing: session only after consent, otherwise the consent gate.
+  // Testers join a room before entering consent and recording.
   return <Navigate to={testerLandingPath()} replace />;
 }

@@ -1,14 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { io, Socket } from "socket.io-client";
-import logo from "../assets/logo.png";
-import { performLogout } from "../auth";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { getApiBase, getSocketUrl } from "../apiConfig";
-import {
-  getAdminDashboardPath,
-  getAdminRoomContext,
-  saveAdminRoomContext,
-} from "../adminRoomContext";
+import { apiFetch } from "../lib/api";
+import { PageHeader, PageTitle } from "../components/PageHeader";
+import { getAdminRoomContext, saveAdminRoomContext } from "../adminRoomContext";
 import { WEBRTC_CONFIGURATION } from "../webrtcConfig";
 
 type Role = "host" | "viewer" | null;
@@ -17,6 +13,7 @@ const SOCKET_SERVER_URL = getSocketUrl();
 const API_BASE = getApiBase();
 
 interface ServerToClientEvents {
+  "room-error": (data: { error?: string }) => void;
   "viewer-connected": (viewerId: string) => void;
   "user-disconnected": (peerId: string) => void;
   "host-disconnected": () => void;
@@ -52,53 +49,72 @@ type RemoteKiosk = {
   foodName: string | null;
 };
 
+type ActiveRoom = { id: number; roomCode: string; foodId: number; foodName: string; sessionsActive: number };
+type MonitorFood = { id: number; name: string };
+
 export default function VideoMonitoring() {
-  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
   const [kioskStatus, setKioskStatus] = useState<string>("Connecting…");
-  const [{ role, roomId }] = useState<{ role: Role; roomId: string }>(() => {
+  const [{ role }] = useState<{ role: Role }>(() => {
     const storedUser =
       localStorage.getItem("familis.user") || localStorage.getItem("user");
     const user = storedUser ? JSON.parse(storedUser) : null;
     const userRole = user?.role;
-    const urlRoom = searchParams.get("room");
-    const savedContext = getAdminRoomContext();
-
-    if (userRole === "admin") {
-      return {
-        role: "viewer",
-        roomId:
-          urlRoom ||
-          savedContext.roomId ||
-          Math.random().toString(36).substring(2, 9),
-      };
-    }
+    if (userRole === "admin") return { role: "viewer" };
     if (userRole === "staff" || userRole === "tester") {
-      return { role: "host", roomId: urlRoom || "default-staff-room" };
+      return { role: "host" };
     }
-    return { role: urlRoom ? "viewer" : null, roomId: urlRoom || "" };
+    return { role: null };
   });
+  const [activeRooms, setActiveRooms] = useState<ActiveRoom[]>([]);
+  const [foods, setFoods] = useState<MonitorFood[]>([]);
+  const [newRoomFoodId, setNewRoomFoodId] = useState("");
+  const [creatingRoom, setCreatingRoom] = useState(false);
+  const [roomMessage, setRoomMessage] = useState<string | null>(null);
+  const [roomId, setRoomId] = useState(() => searchParams.get("room") || getAdminRoomContext().roomId);
   const [publicAccessUrl, setPublicAccessUrl] = useState<string>("");
   const [remoteKiosks, setRemoteKiosks] = useState<RemoteKiosk[]>([]);
-  const remoteKiosksRef = useRef<RemoteKiosk[]>([]);
-  useEffect(() => {
-    remoteKiosksRef.current = remoteKiosks;
-  }, [remoteKiosks]);
-
+  const sessionStatusByPeerRef = useRef<Map<string, { sessionId: number | null; foodName: string | null }>>(new Map());
   const socketRef = useRef<Socket<ServerToClientEvents, ClientToServerEvents> | null>(
     null,
   );
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
 
-  const foodIdParam = searchParams.get("foodId");
-  const foodId = foodIdParam ? Number(foodIdParam) : null;
-  const validFoodId =
-    foodId !== null && Number.isInteger(foodId) && foodId > 0 ? foodId : null;
-  const dashboardPath = getAdminDashboardPath(
-    roomId,
-    validFoodId,
-  );
+  const selectedRoom = activeRooms.find((room) => room.roomCode === roomId);
+  const validFoodId = selectedRoom?.foodId ?? null;
+
+  useEffect(() => {
+    if (role !== "viewer") return;
+    let cancelled = false;
+    void apiFetch("/api/testing-rooms?status=active")
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok || !payload?.ok) throw new Error(payload?.error || "Could not load active testing rooms.");
+        const rooms = (payload.rooms ?? []) as ActiveRoom[];
+        if (cancelled) return;
+        setActiveRooms(rooms);
+        setRoomId((current) => rooms.some((room) => room.roomCode === current) ? current : rooms[0]?.roomCode ?? "");
+      })
+      .catch(() => { if (!cancelled) setActiveRooms([]); });
+    return () => { cancelled = true; };
+  }, [role]);
+
+  useEffect(() => {
+    if (role !== "viewer") return;
+    let cancelled = false;
+    void apiFetch("/api/foods")
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok || !payload?.ok) throw new Error(payload?.error || "Could not load foods.");
+        const list = (payload.foods ?? []).map((food: { id: number; name: string }) => ({ id: Number(food.id), name: String(food.name) })) as MonitorFood[];
+        if (cancelled) return;
+        setFoods(list);
+        setNewRoomFoodId((current) => current || String(list[0]?.id ?? ""));
+      })
+      .catch(() => { if (!cancelled) setFoods([]); });
+    return () => { cancelled = true; };
+  }, [role]);
 
   useEffect(() => {
     if (role === "viewer" && roomId) {
@@ -134,6 +150,29 @@ export default function VideoMonitoring() {
     alert("Room code copied.");
   };
 
+  const createTestingRoom = async () => {
+    if (!newRoomFoodId || creatingRoom) return;
+    setCreatingRoom(true);
+    setRoomMessage(null);
+    try {
+      const response = await apiFetch("/api/testing-rooms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ foodId: Number(newRoomFoodId) }),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload?.ok || !payload.room) throw new Error(payload?.error || "Could not create the testing room.");
+      const room = payload.room as ActiveRoom;
+      setActiveRooms((rooms) => [room, ...rooms.filter((item) => item.id !== room.id)]);
+      setRoomId(room.roomCode);
+      setRoomMessage(`Room ready for ${room.foodName}. Share code ${room.roomCode} with tasters.`);
+    } catch (error) {
+      setRoomMessage(error instanceof Error ? error.message : "Could not create the testing room.");
+    } finally {
+      setCreatingRoom(false);
+    }
+  };
+
   const createPeerConnectionFor = (peerId: string): RTCPeerConnection => {
     const existing = peerConnectionsRef.current.get(peerId);
     if (existing) return existing;
@@ -161,7 +200,8 @@ export default function VideoMonitoring() {
       setRemoteKiosks((prev) => {
         if (prev.find((k) => k.peerId === peerId)) return prev;
         const label = `Kiosk ${prev.length + 1}`;
-        return [...prev, { peerId, stream, label, sessionId: null, foodName: null }];
+        const sessionStatus = sessionStatusByPeerRef.current.get(peerId);
+        return [...prev, { peerId, stream, label, sessionId: sessionStatus?.sessionId ?? null, foodName: sessionStatus?.foodName ?? null }];
       });
     };
 
@@ -171,12 +211,14 @@ export default function VideoMonitoring() {
   const removeKiosk = (peerId: string) => {
     peerConnectionsRef.current.get(peerId)?.close();
     peerConnectionsRef.current.delete(peerId);
+    sessionStatusByPeerRef.current.delete(peerId);
     setRemoteKiosks((prev) => prev.filter((k) => k.peerId !== peerId));
   };
 
   const cleanupAllPeerConnections = () => {
     peerConnectionsRef.current.forEach((pc) => pc.close());
     peerConnectionsRef.current.clear();
+    sessionStatusByPeerRef.current.clear();
     setRemoteKiosks([]);
   };
 
@@ -200,6 +242,10 @@ export default function VideoMonitoring() {
 
     socket.on("connect_error", () => {
       setKioskStatus("Connection failed — check that server.js is running.");
+    });
+
+    socket.on("room-error", (data) => {
+      setKioskStatus(data.error || "This testing room is no longer active.");
     });
 
     socket.on("signal", async (data) => {
@@ -229,6 +275,10 @@ export default function VideoMonitoring() {
     socket.on("tester-session-status", (data) => {
       const { from, status, sessionId, foodName } = data;
       if (!from) return;
+
+      sessionStatusByPeerRef.current.set(from, status === "recording"
+        ? { sessionId: sessionId ?? null, foodName: foodName ?? null }
+        : { sessionId: null, foodName: null });
 
       setRemoteKiosks((prev) =>
         prev.map((k) =>
@@ -269,43 +319,13 @@ export default function VideoMonitoring() {
   }, [roomId, role]);
 
   return (
-    <div className="min-h-screen bg-[#f6f7fb]" style={{ fontFamily: "'Montserrat', sans-serif" }}>
-      <header className="bg-red-600 text-white">
-        <div className="h-[72px] px-6 flex items-center justify-between">
-          <button
-            type="button"
-            onClick={() => navigate(dashboardPath)}
-            className="flex items-center gap-3"
-            aria-label="Go to dashboard"
-          >
-            <img src={logo} alt="FaMiLis logo" className="w-[44px] h-[44px] object-contain" />
-            <span className="text-white text-[22px] font-bold tracking-wide">FaMiLis</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => performLogout(navigate)}
-            className="bg-white/90 text-red-700 hover:bg-white transition-colors px-4 py-2 rounded-md text-sm font-semibold"
-          >
-            Log Out
-          </button>
-        </div>
-      </header>
-
-      <main className="px-6 py-8 max-w-5xl mx-auto">
-        <button
-          type="button"
-          onClick={() => navigate(dashboardPath)}
-          className="flex items-center gap-2 text-gray-600 hover:text-gray-900 mb-4 text-sm transition-colors"
-        >
-          <span aria-hidden="true">←</span>
-          Manage Current Room
-        </button>
-
+    <PageHeader variant="expanded">
+      <main className="px-6 py-8">
+        <div className="max-w-6xl mx-auto">
         <div className="mb-6">
-          <h1 className="text-[26px] font-bold text-gray-900">Monitor Kiosks</h1>
+          <PageTitle title="Monitor Kiosks" subtitle="Watch connected tasters while they record. Camera frames continue through the central FER pipeline." />
           <p className="text-[12px] text-gray-500 mt-1">
-            Live feeds from every connected kiosk. Testers start and stop their own
-            recording — this screen is for watching only.
+            Open a food test, share its room code, then tasters log in, join, consent, and start recording. Their camera feed and captured frames go through the existing kiosk and FER pipeline.
           </p>
         </div>
 
@@ -320,6 +340,9 @@ export default function VideoMonitoring() {
             </p>
 
             <div className="inline-flex items-center gap-2">
+              <select aria-label="Active food test" value={roomId} onChange={(event) => setRoomId(event.target.value)} className="max-w-[260px] rounded-md border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700" disabled={!activeRooms.length}>
+                {activeRooms.length ? activeRooms.map((room) => <option key={room.id} value={room.roomCode}>{room.foodName} · {room.roomCode}</option>) : <option value="">No active food tests</option>}
+              </select>
               <button
                 type="button"
                 onClick={copyPublicAccessUrl}
@@ -340,11 +363,25 @@ export default function VideoMonitoring() {
           </div>
 
           <div className="space-y-4">
+            {role === "viewer" ? (
+              <div className="flex flex-col gap-3 rounded-lg border border-gray-200 bg-gray-50 p-4 sm:flex-row sm:items-end">
+                <label className="flex-1 text-xs font-semibold text-gray-700">
+                  Open a food test for tasters
+                  <select value={newRoomFoodId} onChange={(event) => setNewRoomFoodId(event.target.value)} disabled={!foods.length || creatingRoom} className="mt-1.5 block w-full rounded-md border border-gray-200 bg-white px-3 py-2.5 text-sm font-normal">
+                    {foods.length ? foods.map((food) => <option key={food.id} value={food.id}>{food.name}</option>) : <option value="">No foods available</option>}
+                  </select>
+                </label>
+                <button type="button" onClick={() => void createTestingRoom()} disabled={!newRoomFoodId || creatingRoom} className="rounded-md border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40">
+                  {creatingRoom ? "Opening…" : "Open / Create Room"}
+                </button>
+              </div>
+            ) : null}
+            {roomMessage ? <p role="status" className={`text-xs ${roomMessage.startsWith("Room ready") ? "text-green-700" : "text-red-600"}`}>{roomMessage}</p> : null}
             {/* Dynamic grid: one tile per connected kiosk, no fixed count */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {remoteKiosks.length === 0 ? (
                 <div className="col-span-full bg-black aspect-video rounded-lg flex items-center justify-center">
-                  <p className="text-gray-500 text-sm">Waiting for kiosks to connect…</p>
+                  <p className="text-gray-300 text-sm">{roomId ? "Waiting for tasters to connect…" : "Start a food test to monitor its kiosks."}</p>
                 </div>
               ) : (
                 remoteKiosks.map((kiosk) => (
@@ -373,8 +410,9 @@ export default function VideoMonitoring() {
             )}
           </div>
         </section>
+        </div>
       </main>
-    </div>
+    </PageHeader>
   );
 }
 

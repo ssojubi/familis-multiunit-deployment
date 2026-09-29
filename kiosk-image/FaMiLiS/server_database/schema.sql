@@ -98,6 +98,24 @@ CREATE TABLE IF NOT EXISTS sessions (
   CONSTRAINT chk_end_after_start CHECK (end_time IS NULL OR end_time >= start_time)
 );
 
+-- Tester consent and dietary screening captured before camera recording.
+CREATE TABLE IF NOT EXISTS session_consents (
+  consent_id INT AUTO_INCREMENT PRIMARY KEY,
+  session_id INT NOT NULL UNIQUE,
+  user_id INT NOT NULL,
+  participant_id INT NULL,
+  device_id VARCHAR(128) NOT NULL,
+  consent_version VARCHAR(32) NOT NULL,
+  consent_answers JSON NOT NULL,
+  health_screening JSON NOT NULL,
+  dietary_restrictions TEXT NULL,
+  recorded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_session_consents_session FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE,
+  CONSTRAINT fk_session_consents_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+  CONSTRAINT fk_session_consents_participant FOREIGN KEY (participant_id) REFERENCES participants(participant_id) ON DELETE SET NULL,
+  INDEX idx_session_consents_user (user_id)
+);
+
 -- FRAME LOGS
 CREATE TABLE IF NOT EXISTS frame_logs (
   frame_log_id INT AUTO_INCREMENT PRIMARY KEY,

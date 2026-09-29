@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { io, type Socket } from "socket.io-client";
 import { PageHeader, PageTitle } from "../components/PageHeader";
 import { apiFetch } from "../lib/api";
+import { getSocketUrl } from "../apiConfig";
+import { WEBRTC_CONFIGURATION } from "../webrtcConfig";
 import { InfoTip } from "../components/InfoTip";
 import { confidenceToTier, confidenceTooltip } from "../lib/confidence";
 import { hedonicLabel } from "../lib/ratingLabels";
@@ -130,6 +133,7 @@ type SessionRow = {
   startTime: string | null;
   endTime: string | null;
   hasConsent?: boolean;
+  roomCode?: string | null;
 };
 
 type StoredSession = {
@@ -138,6 +142,17 @@ type StoredSession = {
   foodId: number;
   status: SessionRow["status"];
   startTime: string;
+  roomCode?: string | null;
+};
+
+type MonitorServerEvents = {
+  "viewer-connected": (viewerId: string) => void;
+  signal: (data: { from?: string; sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) => void;
+};
+type MonitorClientEvents = {
+  "join-room": (roomId: string) => void;
+  signal: (data: { room: string; to?: string; sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) => void;
+  "tester-session-status": (data: { room: string; status: "recording" | "completed"; sessionId?: number; foodName?: string }) => void;
 };
 
 function formatMmSs(totalSeconds: number) {
@@ -207,6 +222,31 @@ export default function Session() {
   const [cameraError, setCameraError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const monitorSocketRef = useRef<Socket<MonitorServerEvents, MonitorClientEvents> | null>(null);
+  const monitorPeersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const monitorViewersRef = useRef<Set<string>>(new Set());
+  const roomCode = session?.roomCode ?? storedCurrent?.roomCode ?? null;
+
+  function closeMonitorPeer(viewerId: string) {
+    monitorPeersRef.current.get(viewerId)?.close();
+    monitorPeersRef.current.delete(viewerId);
+  }
+
+  async function publishMonitorStream(viewerId: string) {
+    const socket = monitorSocketRef.current;
+    const stream = streamRef.current;
+    if (!socket || !roomCode || !stream || (isTester && !hasConsent)) return;
+    closeMonitorPeer(viewerId);
+    const pc = new RTCPeerConnection(WEBRTC_CONFIGURATION);
+    monitorPeersRef.current.set(viewerId, pc);
+    pc.onicecandidate = (event) => {
+      if (event.candidate) socket.emit("signal", { room: roomCode, to: viewerId, candidate: event.candidate });
+    };
+    stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    socket.emit("signal", { room: roomCode, to: viewerId, sdp: offer });
+  }
 
   const [isRecording, setIsRecording] = useState((initialSession?.status ?? "active") === "active");
   const [isPaused, setIsPaused] = useState(initialPause.isPaused);
@@ -259,6 +299,47 @@ export default function Session() {
 
   const consentBlocked = isTester && !loading && session != null && !hasConsent;
   const sessionReady = !isTester || hasConsent;
+
+  useEffect(() => {
+    if (!isTester || !roomCode) return;
+    const socket: Socket<MonitorServerEvents, MonitorClientEvents> = io(getSocketUrl(), {
+      reconnection: true,
+      transports: ["websocket", "polling"],
+      withCredentials: true,
+    });
+    monitorSocketRef.current = socket;
+    socket.on("connect", () => socket.emit("join-room", roomCode));
+    socket.on("viewer-connected", (viewerId) => {
+      monitorViewersRef.current.add(viewerId);
+      void publishMonitorStream(viewerId);
+    });
+    socket.on("signal", async (data) => {
+      if (!data.from) return;
+      const pc = monitorPeersRef.current.get(data.from);
+      if (!pc) return;
+      if (data.sdp?.type === "answer" && pc.signalingState === "have-local-offer") {
+        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+      } else if (data.candidate) {
+        try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch { /* ignore stale candidates */ }
+      }
+    });
+    return () => {
+      socket.disconnect();
+      monitorPeersRef.current.forEach((peer) => peer.close());
+      monitorPeersRef.current.clear();
+      monitorViewersRef.current.clear();
+      monitorSocketRef.current = null;
+    };
+    // Room and camera stream are published for each connected viewer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTester, roomCode]);
+
+  useEffect(() => {
+    const socket = monitorSocketRef.current;
+    if (!socket || !roomCode || sessionId == null) return;
+    const status = isRecording && hasConsent ? "recording" : "completed";
+    socket.emit("tester-session-status", { room: roomCode, status, sessionId, foodName: food?.name ?? undefined });
+  }, [food?.name, hasConsent, isRecording, roomCode, sessionId]);
 
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   useEffect(() => {
@@ -391,6 +472,7 @@ export default function Session() {
         videoRef.current.srcObject = stream;
         await videoRef.current.play().catch(() => {});
       }
+      monitorViewersRef.current.forEach((viewerId) => void publishMonitorStream(viewerId));
     } catch (err: any) {
       if (!cameraSessionActiveRef.current) return;
       const message =

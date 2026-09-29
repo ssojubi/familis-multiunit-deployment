@@ -2246,6 +2246,112 @@ async function start() {
     }
   });
 
+  // Let a tester device discover a session assigned by an operator from the
+  // kiosk monitor. Consent.tsx uses this when no session was handed off in
+  // the same browser's localStorage.
+  app.get("/api/sessions/booth/active", async (req, res) => {
+    if (req.auth.role !== "tester") {
+      return res.status(403).json({ ok: false, error: "This endpoint is for tester accounts." });
+    }
+    try {
+      const [[row]] = await pool.query(
+        `SELECT s.session_id, s.user_id, s.participant_id, s.food_id, s.status, s.start_time,
+                tr.room_code, fp.name AS food_name
+         FROM sessions s
+         JOIN food_products fp ON fp.food_id = s.food_id
+         LEFT JOIN testing_rooms tr ON tr.testing_room_id = s.testing_room_id
+         WHERE s.user_id = ? AND s.status = 'active'
+         ORDER BY s.start_time DESC, s.session_id DESC
+         LIMIT 1`,
+        [Number(req.auth.id)],
+      );
+      if (!row) return res.json({ ok: true, session: null, food: null });
+      return res.json({
+        ok: true,
+        session: {
+          id: Number(row.session_id),
+          userId: Number(row.user_id),
+          participantId: row.participant_id == null ? null : Number(row.participant_id),
+          foodId: Number(row.food_id),
+          roomCode: row.room_code == null ? null : String(row.room_code),
+          status: String(row.status),
+          startTime: toIsoOrNull(row.start_time),
+        },
+        food: { name: String(row.food_name) },
+      });
+    } catch (err) {
+      console.error("GET /api/sessions/booth/active error:", err);
+      return res.status(500).json({ ok: false, error: "Could not find an active session." });
+    }
+  });
+
+  app.post("/api/consent", async (req, res) => {
+    const sessionId = Number.parseInt(String(req.body?.sessionId ?? ""), 10);
+    const deviceId = String(req.body?.deviceId ?? "").trim();
+    const consentVersion = String(req.body?.consentVersion ?? "").trim();
+    const consentAnswers = req.body?.consent;
+    const screening = req.body?.ethics;
+    const dietaryRestrictions = String(req.body?.dietaryRestrictions ?? "").trim() || null;
+    const requiredConsent = ["facialRecording", "dataUsage", "participant", "dataStorage"];
+    const requiredScreening = ["foodAllergies", "intolerances", "medicalDietary", "religiousCultural", "healthToday", "recentFoodMedication"];
+
+    if (!Number.isFinite(sessionId) || !deviceId || !consentVersion || req.body?.facialRecording !== true ||
+        !consentAnswers || requiredConsent.some((key) => consentAnswers[key] !== true) ||
+        !screening || requiredScreening.some((key) => typeof screening[key] !== "boolean")) {
+      return res.status(400).json({ ok: false, error: "Complete all consent and health screening questions before continuing." });
+    }
+    if (req.auth.role !== "tester") {
+      return res.status(403).json({ ok: false, error: "Consent must be recorded by the taster assigned to the session." });
+    }
+
+    try {
+      const [[session]] = await pool.query(
+        `SELECT session_id, user_id, participant_id, status, start_time
+         FROM sessions WHERE session_id = ? LIMIT 1`,
+        [sessionId],
+      );
+      if (!session) return res.status(404).json({ ok: false, error: "Session not found." });
+      if (Number(session.user_id) !== Number(req.auth.id)) {
+        return res.status(403).json({ ok: false, error: "This session belongs to another taster." });
+      }
+      if (session.status !== "active") {
+        return res.status(409).json({ ok: false, error: "This session is no longer active." });
+      }
+      if (req.body?.participantId != null && Number(req.body.participantId) !== Number(session.participant_id)) {
+        return res.status(409).json({ ok: false, error: "The taster profile does not match this session." });
+      }
+
+      await pool.query(
+        `INSERT INTO session_consents
+          (session_id, user_id, participant_id, device_id, consent_version, consent_answers, health_screening, dietary_restrictions)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+          participant_id = VALUES(participant_id), device_id = VALUES(device_id),
+          consent_version = VALUES(consent_version), consent_answers = VALUES(consent_answers),
+          health_screening = VALUES(health_screening), dietary_restrictions = VALUES(dietary_restrictions),
+          recorded_at = CURRENT_TIMESTAMP`,
+        [
+          sessionId,
+          Number(req.auth.id),
+          session.participant_id == null ? null : Number(session.participant_id),
+          deviceId.slice(0, 128),
+          consentVersion.slice(0, 32),
+          JSON.stringify(consentAnswers),
+          JSON.stringify({ answers: screening, details: req.body?.ethicsDetails ?? null }),
+          dietaryRestrictions,
+        ],
+      );
+
+      if (session.participant_id != null && dietaryRestrictions) {
+        await pool.query("UPDATE participants SET dietary_restrictions = ? WHERE participant_id = ?", [dietaryRestrictions, Number(session.participant_id)]);
+      }
+      return res.json({ ok: true, sessionStartTime: toIsoOrNull(session.start_time) });
+    } catch (err) {
+      console.error("POST /api/consent error:", err);
+      return res.status(500).json({ ok: false, error: "Failed to save consent. Please try again." });
+    }
+  });
+
   // Get a session + its food (used by Camera Session UI)
   app.get("/api/sessions/:sessionId", async (req, res) => {
     const sessionId = Number.parseInt(req.params.sessionId, 10);
@@ -2264,10 +2370,14 @@ async function start() {
           s.status,
           s.start_time,
           s.end_time,
+          tr.room_code,
+          sc.consent_id,
           fp.name AS food_name,
           fp.category AS food_category,
           fp.image_url AS food_image_url
         FROM sessions s
+        LEFT JOIN testing_rooms tr ON tr.testing_room_id = s.testing_room_id
+        LEFT JOIN session_consents sc ON sc.session_id = s.session_id
         LEFT JOIN food_products fp ON fp.food_id = s.food_id
         WHERE s.session_id = ?
         LIMIT 1
@@ -2291,6 +2401,8 @@ async function start() {
           status: r.status,
           startTime: toIsoOrNull(r.start_time),
           endTime: toIsoOrNull(r.end_time),
+          roomCode: r.room_code == null ? null : String(r.room_code),
+          hasConsent: r.consent_id != null,
         },
         food: r.food_name
           ? {

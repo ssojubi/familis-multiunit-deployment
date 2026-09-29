@@ -44,6 +44,15 @@ function IconStats({ className }: { className?: string }) {
   );
 }
 
+function IconMonitor({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="13" rx="2" />
+      <path strokeLinecap="round" d="M8 21h8M12 17v4M7 9h.01M10 9h7" />
+    </svg>
+  );
+}
+
 function IconUsers({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
@@ -92,7 +101,7 @@ function IconSidebarToggle({ className, collapsed }: { className?: string; colla
   );
 }
 
-type NavKey = "food" | "stats" | "users" | "participants";
+type NavKey = "food" | "stats" | "monitor" | "users" | "participants";
 
 function useActiveNav(): NavKey | null {
   const location = useLocation();
@@ -101,6 +110,7 @@ function useActiveNav(): NavKey | null {
 
   if (path.startsWith("/admin/users")) return "users";
   if (path.startsWith("/participants")) return "participants";
+  if (path.startsWith("/video-monitoring")) return "monitor";
   if (path === "/dashboard") {
     return searchParams.get("tab") === "stats" ? "stats" : "food";
   }
@@ -169,6 +179,13 @@ export function PageHeader({
       to: "/dashboard?tab=stats",
       visible: canSeeStaffNav,
       icon: IconStats,
+    },
+    {
+      key: "monitor",
+      label: "Monitor Kiosks",
+      to: "/video-monitoring",
+      visible: role === "admin",
+      icon: IconMonitor,
     },
     {
       key: "users",

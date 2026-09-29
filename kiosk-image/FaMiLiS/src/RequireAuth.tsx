@@ -117,10 +117,9 @@ export function hasConsentedSession(): boolean {
   return hasSessionConsent(sessionId);
 }
 
-/** Tester landing route: session only after consent, otherwise consent gate. */
+/** Testers join an active room before consent and recording. */
 export function testerLandingPath(): string {
-  if (!hasActiveSession()) return "/consent";
-  return hasConsentedSession() ? "/session" : "/consent";
+  return "/tester-join";
 }
 
 export function hasStoredUser(): boolean {

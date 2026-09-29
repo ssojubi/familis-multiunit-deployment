@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { FAMILIS_CURRENT_SESSION_KEY, markSessionConsented, performLogout } from "../RequireAuth";
+import { FAMILIS_CURRENT_SESSION_KEY, getStoredRole, markSessionConsented, performLogout } from "../RequireAuth";
 import { apiFetch } from "../lib/api";
 import { BrandTopBar } from "../components/BrandTopBar";
 import {
@@ -99,6 +99,7 @@ type StoredSession = {
   id: number;
   foodId?: number;
   participantId?: number | null;
+  roomCode?: string | null;
 };
 
 function getDeviceId(): string {
@@ -126,6 +127,11 @@ function readLocalSession(): StoredSession | null {
 
 export default function Consent() {
   const navigate = useNavigate();
+  const role = getStoredRole();
+
+  useEffect(() => {
+    if (role === "tester") navigate("/tester-join", { replace: true });
+  }, [navigate, role]);
 
   const [storedSession, setStoredSession] = useState<StoredSession | null>(readLocalSession);
   const [sessionLookupDone, setSessionLookupDone] = useState(storedSession !== null);
@@ -153,12 +159,14 @@ export default function Consent() {
             id: Number(json.session.id),
             foodId: json.session.foodId ?? undefined,
             participantId: json.session.participantId ?? null,
+            roomCode: json.session.roomCode ?? null,
           };
           localStorage.setItem(FAMILIS_CURRENT_SESSION_KEY, JSON.stringify({
             id: found.id,
             userId: json.session.userId,
             participantId: found.participantId,
             foodId: found.foodId,
+            roomCode: found.roomCode,
             status: json.session.status,
             startTime: json.session.startTime,
           }));
@@ -302,6 +310,7 @@ export default function Consent() {
           participantId: storedSession.participantId ?? null,
           deviceId: getDeviceId(),
           facialRecording: true,
+          consent: { ...consent },
           consentVersion: CONSENT_VERSION,
           ethics: { ...ethicsAnswers, ...ethicsDetailPayload },
           ethicsDetails: dietaryRestrictions,
