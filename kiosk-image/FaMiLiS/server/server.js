@@ -62,6 +62,7 @@ const DEFAULT_PREFERENCES = {
     dataStorage: { label: "I understand data is stored locally on this lab system", helper: "All data stays on-premises. This is a lab demo, not a clinical or commercial deployment." },
   },
   additionalRoles: [],
+  roleTabAccess: { staff: ["food", "participants"], tester: [] },
   frameRetentionDays: 30,
   backup: { frequency: "weekly", destination: "local", time: "02:00", cloudUrl: "" },
 };
@@ -582,7 +583,7 @@ async function start() {
 
   // Admin-user management for the imported FaMiLis operator UI. These routes
   // keep the deployment's cookie authentication and MySQL pool intact.
-  app.get("/api/users", requireAuth, requireAdmin, async (_req, res) => {
+  app.get("/api/users", requireAuth, requireTabAccess("users"), async (_req, res) => {
     try {
       const [rows] = await pool.query(
         "SELECT user_id, username, email, contact_number, gcash_number, role, is_active, created_at FROM users ORDER BY user_id DESC",
@@ -600,8 +601,24 @@ async function start() {
   async function readPreferences() {
     const [[row]] = await pool.query("SELECT setting_value FROM app_settings WHERE setting_key = 'preferences'");
     if (!row) return DEFAULT_PREFERENCES;
-    try { const stored = typeof row.setting_value === "string" ? JSON.parse(row.setting_value) : row.setting_value; return { ...DEFAULT_PREFERENCES, ...stored, backup: { ...DEFAULT_PREFERENCES.backup, ...(stored.backup || {}) } }; }
+    try { const stored = typeof row.setting_value === "string" ? JSON.parse(row.setting_value) : row.setting_value; const roleTabAccess = { ...DEFAULT_PREFERENCES.roleTabAccess, ...(stored.roleTabAccess || {}) }; for (const role of stored.additionalRoles || []) roleTabAccess[role] ||= []; return { ...DEFAULT_PREFERENCES, ...stored, roleTabAccess, backup: { ...DEFAULT_PREFERENCES.backup, ...(stored.backup || {}) } }; }
     catch { return DEFAULT_PREFERENCES; }
+  }
+  async function hasRoleTabAccess(role, tab) {
+    if (role === "admin") return true;
+    const preferences = await readPreferences();
+    return Boolean(preferences.roleTabAccess?.[role]?.includes(tab));
+  }
+  function requireTabAccess(tab) {
+    return async (req, res, next) => {
+      try {
+        if (await hasRoleTabAccess(req.auth?.role, tab)) return next();
+        return res.status(403).json({ ok: false, error: "Your role does not have access to this tab." });
+      } catch (err) {
+        console.error("Role tab authorization failed:", err);
+        return res.status(500).json({ ok: false, error: "Could not check role access." });
+      }
+    };
   }
   let backupJobRunning = false;
   async function createScheduledBackup() {
@@ -662,19 +679,27 @@ async function start() {
     try { const preferences = await readPreferences(); const consentVersion = `1.1-${crypto.createHash("sha256").update(JSON.stringify(preferences.consent)).digest("hex").slice(0, 12)}`; return res.json({ ok: true, preferences, consentVersion }); }
     catch (err) { console.error("Read preferences failed:", err); return res.status(500).json({ok:false,error:"Could not load preferences."}); }
   });
-  app.put("/api/preferences", requireAuth, requireAdmin, async (req, res) => {
+  app.put("/api/preferences", requireAuth, requireTabAccess("preferences"), async (req, res) => {
     const p = req.body?.preferences;
     const consentEntries = p?.consent && typeof p.consent === "object" ? Object.entries(p.consent) : [];
     if (!p || consentEntries.length === 0 || consentEntries.some(([key, field]) => !/^[a-zA-Z0-9_-]{1,64}$/.test(key) || typeof field?.label !== "string" || !field.label.trim() || field.label.length > 1000 || typeof field.helper !== "string" || field.helper.length > 3000) || !Array.isArray(p.additionalRoles) || !Number.isInteger(Number(p.frameRetentionDays)) || Number(p.frameRetentionDays) < 1 || Number(p.frameRetentionDays) > 3650 || !["daily","weekly","monthly"].includes(p.backup?.frequency) || !["local","cloud"].includes(p.backup?.destination) || (p.backup?.destination === "cloud" && !String(p.backup?.cloudUrl || "").startsWith("https://"))) return res.status(400).json({ok:false,error:"Keep a valid consent field and check the retention, role, and backup settings. Cloud backups require an HTTPS upload endpoint."});
     try {
-      const saved = { ...DEFAULT_PREFERENCES, ...p, consent: Object.fromEntries(consentEntries), frameRetentionDays: Number(p.frameRetentionDays), additionalRoles: [...new Set(p.additionalRoles.map(v=>String(v).trim().toLowerCase()).filter(v=>/^[a-z][a-z0-9_-]{1,24}$/.test(v) && !BASE_USER_ROLES.includes(v)))], backup: { ...DEFAULT_PREFERENCES.backup, ...p.backup } };
+      const additionalRoles = [...new Set(p.additionalRoles.map(v=>String(v).trim().toLowerCase()).filter(v=>/^[a-z][a-z0-9_-]{1,24}$/.test(v) && !BASE_USER_ROLES.includes(v)))];
+      const grantableTabs = new Set(["food", "participants", "stats", "monitor", "users", "preferences"]);
+      const accessInput = p.roleTabAccess && typeof p.roleTabAccess === "object" ? p.roleTabAccess : {};
+      const roleTabAccess = {
+        staff: (Array.isArray(accessInput.staff) ? accessInput.staff : DEFAULT_PREFERENCES.roleTabAccess.staff).filter(tab=>grantableTabs.has(tab)),
+        tester: (Array.isArray(accessInput.tester) ? accessInput.tester : DEFAULT_PREFERENCES.roleTabAccess.tester).filter(tab=>grantableTabs.has(tab)),
+      };
+      for (const role of additionalRoles) roleTabAccess[role] = (Array.isArray(accessInput[role]) ? accessInput[role] : []).filter(tab=>grantableTabs.has(tab));
+      const saved = { ...DEFAULT_PREFERENCES, ...p, consent: Object.fromEntries(consentEntries), roleTabAccess, frameRetentionDays: Number(p.frameRetentionDays), additionalRoles, backup: { ...DEFAULT_PREFERENCES.backup, ...p.backup } };
       await pool.query("INSERT INTO app_settings (setting_key, setting_value) VALUES ('preferences', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)",[JSON.stringify(saved)]);
       const consentVersion = `1.1-${crypto.createHash("sha256").update(JSON.stringify(saved.consent)).digest("hex").slice(0, 12)}`;
       return res.json({ok:true,preferences:saved,consentVersion});
     } catch (err) { console.error("Save preferences failed:", err); return res.status(500).json({ok:false,error:"Could not save preferences."}); }
   });
 
-  app.post("/api/users", requireAuth, requireAdmin, async (req, res) => {
+  app.post("/api/users", requireAuth, requireTabAccess("users"), async (req, res) => {
     const username = String(req.body?.username || "").trim();
     const email = String(req.body?.email || "").trim().toLowerCase();
     const password = String(req.body?.password || "");
@@ -699,7 +724,7 @@ async function start() {
     }
   });
 
-  app.patch("/api/users/:userId", requireAuth, requireAdmin, async (req, res) => {
+  app.patch("/api/users/:userId", requireAuth, requireTabAccess("users"), async (req, res) => {
     const userId = Number.parseInt(req.params.userId, 10);
     if (!Number.isFinite(userId)) return res.status(400).json({ ok: false, error: "Invalid user id." });
     const fields = [];
@@ -1052,20 +1077,29 @@ async function start() {
 
   app.use("/api", async (req, res, next) => {
     const routePath = req.path;
-    const adminOnly =
-      routePath.startsWith("/participants") ||
-      routePath.startsWith("/foods") ||
-      routePath.startsWith("/kiosks") ||
-      routePath === "/emotion/health" ||
-      (routePath.startsWith("/testing-rooms") &&
-        routePath !== "/testing-rooms/active" &&
-        routePath !== "/testing-rooms/validate") ||
-      (/^\/sessions\/\d+\/(details|status|invalidate|revalidate|export)$/.test(routePath)) ||
-      (/^\/foods\/\d+\/export$/.test(routePath)) ||
-      (req.method === "DELETE" && /^\/sessions\/\d+\/frames\/\d+$/.test(routePath)) ||
-      (req.method === "DELETE" && /^\/sessions\/\d+$/.test(routePath));
-
-    if (adminOnly) return requireAdmin(req, res, next);
+    const permissionTab = routePath.startsWith("/participants")
+      ? "participants"
+      : routePath.startsWith("/kiosks") || routePath === "/emotion/health" ||
+        (routePath.startsWith("/testing-rooms") && routePath !== "/testing-rooms/active" && routePath !== "/testing-rooms/validate")
+        ? "monitor"
+        : routePath.startsWith("/sessions") && (/^\/sessions\/\d+\/(details|status|invalidate|revalidate|export)$/.test(routePath) || (req.method === "DELETE" && /^\/sessions\/\d+(?:\/frames\/\d+)?$/.test(routePath)))
+          ? "stats"
+          : routePath.startsWith("/foods")
+            ? routePath.includes("/analytics") || routePath.endsWith("/export") || /^\/foods\/\d+\/sessions$/.test(routePath) ? "stats" : "food"
+            : null;
+    if (permissionTab && req.auth.role !== "admin") {
+      try {
+        const preferences = await readPreferences();
+        const hasTab = preferences.roleTabAccess?.[req.auth.role]?.includes(permissionTab);
+        const canReadFoodsForStats = routePath === "/foods" && req.method === "GET" && preferences.roleTabAccess?.[req.auth.role]?.includes("stats");
+        if (!hasTab && !canReadFoodsForStats) {
+          return res.status(403).json({ ok: false, error: "Your role does not have access to this tab." });
+        }
+      } catch (err) {
+        console.error("Role tab authorization failed:", err);
+        return res.status(500).json({ ok: false, error: "Could not check role access." });
+      }
+    }
 
     const sessionMatch = routePath.match(/^\/sessions\/(\d+)(?:\/(frames|stop|survey))?$/);
     if (sessionMatch && req.auth.role !== "admin") {

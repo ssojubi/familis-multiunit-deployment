@@ -1,13 +1,13 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   FAMILIS_USER_KEY,
   getStoredRole,
-  isAdminRole,
   performLogout,
 } from "../RequireAuth";
 import { BrandStripButton } from "./shell/BrandMark";
 import { useSidebarCollapse, type ShellVariant } from "./shell/useSidebarCollapse";
+import { apiFetch } from "../lib/api";
 
 interface StoredUser {
   username?: string;
@@ -153,9 +153,19 @@ export function PageHeader({
   const role = getStoredRole();
   const user = getStoredUser();
   const active = useActiveNav();
-  const canSeeParticipants = isAdminRole(role);
-  const canSeeUsers = role === "admin";
-  const canSeeStaffNav = isAdminRole(role);
+  const [roleTabAccess, setRoleTabAccess] = useState<Record<string, string[]>>({ staff: ["food", "participants"], tester: [] });
+  useEffect(() => {
+    if (!role || role === "admin") return;
+    const controller = new AbortController();
+    void apiFetch("/api/preferences", { signal: controller.signal }).then(response => response.json()).then(payload => {
+      if (payload?.ok && payload.preferences?.roleTabAccess) setRoleTabAccess(payload.preferences.roleTabAccess);
+    }).catch(() => {});
+    return () => controller.abort();
+  }, [role]);
+  const hasTabAccess = (tab: string) => role === "admin" || Boolean(role && roleTabAccess[role]?.includes(tab));
+  const canSeeParticipants = hasTabAccess("participants");
+  const canSeeUsers = hasTabAccess("users");
+  const canSeeFood = hasTabAccess("food");
   const { collapsed, canToggle, toggle } = useSidebarCollapse(variant);
   const isMinimal = shell === "minimal";
 
@@ -175,21 +185,21 @@ export function PageHeader({
       key: "food",
       label: "Food Management",
       to: "/dashboard",
-      visible: canSeeStaffNav,
+      visible: canSeeFood,
       icon: IconHome,
     },
     {
       key: "stats",
       label: "Statistics & Analytics",
       to: "/dashboard?tab=stats",
-      visible: canSeeStaffNav,
+      visible: hasTabAccess("stats"),
       icon: IconStats,
     },
     {
       key: "monitor",
       label: "Monitor Kiosks",
       to: "/video-monitoring",
-      visible: role === "admin",
+      visible: hasTabAccess("monitor"),
       icon: IconMonitor,
     },
     {
@@ -210,7 +220,7 @@ export function PageHeader({
       key: "preferences",
       label: "Preferences",
       to: "/admin/preferences",
-      visible: canSeeUsers,
+      visible: hasTabAccess("preferences"),
       icon: IconPreferences,
     },
   ];

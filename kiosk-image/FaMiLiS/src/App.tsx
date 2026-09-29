@@ -1,7 +1,7 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 
 import RequireAuth from "./RequireAuth";
-import RequireRole from "./RequireRole";
+import RequireRole, { RequireTabAccess } from "./RequireRole";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Setup from "./pages/Setup";
@@ -27,22 +27,21 @@ export default function App() {
         <Route path="/" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route element={<RequireAuth />}>
-          {/* Admin / staff: full operator flow */}
-          <Route element={<RequireRole allowed={["admin", "staff"]} />}>
+          {/* Tabs allowed by the user's role and Preferences configuration. */}
+          <Route element={<RequireTabAccess />}>
             <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/setup" element={<Setup />} />
-            <Route path="/session-detail" element={<SessionDetail />} />
             <Route path="/participants" element={<Participants />} />
             <Route path="/participants/:id" element={<ParticipantDetail />} />
             <Route path="/video-monitoring" element={<VideoMonitoring />} />
-          </Route>
-
-          {/* Exact admin only: user management (no staff alias) */}
-          <Route element={<RequireRole allowed={["admin"]} exact />}>
             <Route path="/admin/users" element={<AdminUsers />} />
             <Route path="/admin/preferences" element={<AdminPreferences />} />
           </Route>
 
+          {/* Operator workflows */}
+          <Route element={<RequireRole allowed={["admin", "staff"]} />}>
+            <Route path="/setup" element={<Setup />} />
+            <Route path="/session-detail" element={<SessionDetail />} />
+          </Route>
           {/* Tester: consent gate only */}
           <Route element={<RequireRole allowed={["tester"]} />}>
             <Route path="/consent" element={<Consent />} />
