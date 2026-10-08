@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { io, Socket } from "socket.io-client";
 import { useSearchParams } from "react-router-dom";
-import { getApiBase, getSocketUrl } from "../apiConfig";
+import { getApiBase, getSocketUrl, toApiUrl } from "../apiConfig";
 import { apiFetch } from "../lib/api";
 import { PageHeader, PageTitle } from "../components/PageHeader";
 import { getAdminRoomContext, saveAdminRoomContext } from "../adminRoomContext";
 import { WEBRTC_CONFIGURATION } from "../webrtcConfig";
+
+/* ───────────────────────── Shared types ───────────────────────── */
 
 type Role = "host" | "viewer" | null;
 
@@ -52,8 +54,231 @@ type RemoteKiosk = {
 type ActiveRoom = { id: number; roomCode: string; foodId: number; foodName: string; sessionsActive: number };
 type MonitorFood = { id: number; name: string };
 
+/** Registered kiosk record from the database. */
+type RegisteredKiosk = {
+  id: number;
+  name: string;
+  location: string | null;
+  imageUrl: string | null;
+  createdAt: string | null;
+};
+
+/* ═══════════════════════════════════════════════════════════════
+   Root component — switches between Overview and Detail views
+   ═══════════════════════════════════════════════════════════════ */
+
 export default function VideoMonitoring() {
+  const [selectedKioskId, setSelectedKioskId] = useState<number | null>(null);
+
+  if (selectedKioskId !== null) {
+    return (
+      <KioskMonitorDetail
+        kioskId={selectedKioskId}
+        onBack={() => setSelectedKioskId(null)}
+      />
+    );
+  }
+
+  return <KioskOverviewDashboard onSelectKiosk={setSelectedKioskId} />;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   VIEW 1 — Kiosk Overview Dashboard
+   Lightweight grid of kiosk cards. No WebRTC / live streams.
+   ═══════════════════════════════════════════════════════════════ */
+
+function KioskOverviewDashboard({
+  onSelectKiosk,
+}: {
+  onSelectKiosk: (kioskId: number) => void;
+}) {
+  const [kiosks, setKiosks] = useState<RegisteredKiosk[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [activeRoomCount, setActiveRoomCount] = useState(0);
+
+  /* Fetch registered kiosks from DB */
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    void apiFetch("/api/kiosks")
+      .then(async (res) => {
+        const payload = await res.json();
+        if (!res.ok || !payload?.ok) throw new Error(payload?.error || "Failed to load kiosks.");
+        if (!cancelled) setKiosks(payload.kiosks ?? []);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load kiosks.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  /* Fetch active room count for status indicator */
+  useEffect(() => {
+    let cancelled = false;
+    void apiFetch("/api/testing-rooms?status=active")
+      .then(async (res) => {
+        const payload = await res.json();
+        if (res.ok && payload?.ok) {
+          if (!cancelled) setActiveRoomCount((payload.rooms ?? []).length);
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  return (
+    <PageHeader variant="expanded">
+      <main className="px-6 py-8">
+        <div className="max-w-6xl mx-auto">
+          <div className="mb-6">
+            <PageTitle
+              title="Monitor Kiosks"
+              subtitle="Select a kiosk to view its live camera stream. Camera frames continue through the central FER pipeline."
+            />
+            <p className="text-[12px] text-gray-500 mt-1">
+              Click a kiosk card to open its monitoring view. Live video streams are only loaded when you select a specific kiosk.
+            </p>
+          </div>
+
+          {/* Summary bar */}
+          <div className="flex flex-wrap items-center gap-4 mb-6">
+            <div className="inline-flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-4 py-2.5 shadow-sm">
+              <span className="w-2 h-2 rounded-full bg-gray-400 shrink-0" />
+              <span className="text-[13px] font-semibold text-gray-700">
+                {kiosks.length} kiosk{kiosks.length === 1 ? "" : "s"} registered
+              </span>
+            </div>
+            <div className="inline-flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-4 py-2.5 shadow-sm">
+              <span className={`w-2 h-2 rounded-full shrink-0 ${activeRoomCount > 0 ? "bg-green-500 animate-pulse" : "bg-gray-300"}`} />
+              <span className="text-[13px] font-semibold text-gray-700">
+                {activeRoomCount} active room{activeRoomCount === 1 ? "" : "s"}
+              </span>
+            </div>
+          </div>
+
+          {/* Loading / Error states */}
+          {loading && (
+            <div className="flex items-center justify-center py-20">
+              <div className="flex flex-col items-center gap-3">
+                <div className="w-8 h-8 border-3 border-gray-300 border-t-[#e8174a] rounded-full animate-spin" />
+                <p className="text-sm text-gray-500 font-medium">Loading kiosks…</p>
+              </div>
+            </div>
+          )}
+          {error && !loading && (
+            <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700">
+              {error}
+            </div>
+          )}
+
+          {/* Kiosk grid */}
+          {!loading && !error && kiosks.length === 0 && (
+            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-12 text-center">
+              <KioskEmptyIcon className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+              <p className="text-gray-500 text-sm font-medium">
+                No kiosks registered yet.
+              </p>
+              <p className="text-gray-400 text-xs mt-1">
+                Add kiosks in the Food Management &rarr; Setup section.
+              </p>
+            </div>
+          )}
+
+          {!loading && !error && kiosks.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {kiosks.map((kiosk) => (
+                <KioskCard
+                  key={kiosk.id}
+                  kiosk={kiosk}
+                  onClick={() => onSelectKiosk(kiosk.id)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </main>
+    </PageHeader>
+  );
+}
+
+/* ─── Kiosk Card ─── */
+
+function KioskCard({
+  kiosk,
+  onClick,
+}: {
+  kiosk: RegisteredKiosk;
+  onClick: () => void;
+}) {
+  const resolvedImage = toApiUrl(kiosk.imageUrl);
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="group relative bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-gray-200 transition-all duration-200 text-left overflow-hidden focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30 focus:ring-offset-2"
+    >
+      {/* Thumbnail / Icon area */}
+      <div className="aspect-[16/10] bg-gradient-to-br from-gray-100 to-gray-50 flex items-center justify-center relative overflow-hidden">
+        {resolvedImage ? (
+          <img
+            src={resolvedImage}
+            alt={kiosk.name}
+            className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-300"
+          />
+        ) : (
+          <KioskPlaceholderIcon className="w-12 h-12 text-gray-300 group-hover:text-gray-400 transition-colors" />
+        )}
+        {/* Hover overlay */}
+        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors duration-200 flex items-center justify-center">
+          <span className="opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-white/90 backdrop-blur-sm text-gray-800 text-xs font-semibold px-3 py-1.5 rounded-full shadow-sm">
+            Open Monitor →
+          </span>
+        </div>
+      </div>
+
+      {/* Info area */}
+      <div className="px-4 py-3">
+        <h3 className="text-sm font-bold text-gray-900 truncate group-hover:text-[#e8174a] transition-colors">
+          {kiosk.name}
+        </h3>
+        {kiosk.location && (
+          <p className="text-xs text-gray-500 mt-0.5 truncate flex items-center gap-1">
+            <LocationPinIcon className="w-3 h-3 text-gray-400 shrink-0" />
+            {kiosk.location}
+          </p>
+        )}
+        <div className="flex items-center gap-1.5 mt-2">
+          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-gray-500 bg-gray-100 rounded-full px-2 py-0.5">
+            ID: {kiosk.id}
+          </span>
+        </div>
+      </div>
+    </button>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   VIEW 2 — Individual Kiosk Monitoring Detail
+   Opens the WebRTC stream for the selected room. Reuses all
+   existing Socket.IO signaling and peer connection logic.
+   ═══════════════════════════════════════════════════════════════ */
+
+function KioskMonitorDetail({
+  kioskId,
+  onBack,
+}: {
+  kioskId: number;
+  onBack: () => void;
+}) {
   const [searchParams] = useSearchParams();
+
+  /* Kiosk metadata from DB */
+  const [kioskInfo, setKioskInfo] = useState<RegisteredKiosk | null>(null);
 
   const [kioskStatus, setKioskStatus] = useState<string>("Connecting…");
   const [{ role }] = useState<{ role: Role }>(() => {
@@ -83,6 +308,21 @@ export default function VideoMonitoring() {
 
   const selectedRoom = activeRooms.find((room) => room.roomCode === roomId);
   const validFoodId = selectedRoom?.foodId ?? null;
+
+  /* Load kiosk metadata */
+  useEffect(() => {
+    let cancelled = false;
+    void apiFetch("/api/kiosks")
+      .then(async (res) => {
+        const payload = await res.json();
+        if (res.ok && payload?.ok) {
+          const match = (payload.kiosks ?? []).find((k: RegisteredKiosk) => k.id === kioskId);
+          if (!cancelled && match) setKioskInfo(match);
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [kioskId]);
 
   useEffect(() => {
     if (role !== "viewer") return;
@@ -173,7 +413,7 @@ export default function VideoMonitoring() {
     }
   };
 
-  const createPeerConnectionFor = (peerId: string): RTCPeerConnection => {
+  const createPeerConnectionFor = useCallback((peerId: string): RTCPeerConnection => {
     const existing = peerConnectionsRef.current.get(peerId);
     if (existing) return existing;
 
@@ -206,21 +446,21 @@ export default function VideoMonitoring() {
     };
 
     return pc;
-  };
+  }, [roomId]);
 
-  const removeKiosk = (peerId: string) => {
+  const removeKiosk = useCallback((peerId: string) => {
     peerConnectionsRef.current.get(peerId)?.close();
     peerConnectionsRef.current.delete(peerId);
     sessionStatusByPeerRef.current.delete(peerId);
     setRemoteKiosks((prev) => prev.filter((k) => k.peerId !== peerId));
-  };
+  }, []);
 
-  const cleanupAllPeerConnections = () => {
+  const cleanupAllPeerConnections = useCallback(() => {
     peerConnectionsRef.current.forEach((pc) => pc.close());
     peerConnectionsRef.current.clear();
     sessionStatusByPeerRef.current.clear();
     setRemoteKiosks([]);
-  };
+  }, []);
 
   useEffect(() => {
     if (!roomId || !role) return;
@@ -322,9 +562,37 @@ export default function VideoMonitoring() {
     <PageHeader variant="expanded">
       <main className="px-6 py-8">
         <div className="max-w-6xl mx-auto">
+        {/* Back navigation */}
         <div className="mb-6">
-          <PageTitle title="Monitor Kiosks" subtitle="Watch connected tasters while they record. Camera frames continue through the central FER pipeline." />
-          <p className="text-[12px] text-gray-500 mt-1">
+          <button
+            type="button"
+            onClick={onBack}
+            className="inline-flex items-center gap-2 text-gray-500 hover:text-gray-800 mb-4 text-sm transition-colors group"
+          >
+            <span aria-hidden="true" className="group-hover:-translate-x-0.5 transition-transform">←</span>
+            Back to Kiosk Overview
+          </button>
+
+          <div className="flex items-start gap-4">
+            <div className="flex-1">
+              <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 leading-tight">
+                {kioskInfo?.name ?? `Kiosk #${kioskId}`}
+              </h1>
+              <div className="flex flex-wrap items-center gap-3 mt-1">
+                {kioskInfo?.location && (
+                  <span className="inline-flex items-center gap-1 text-sm text-gray-500">
+                    <LocationPinIcon className="w-3.5 h-3.5 text-gray-400" />
+                    {kioskInfo.location}
+                  </span>
+                )}
+                <span className="text-sm text-gray-400">
+                  ID: {kioskId}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <p className="text-[12px] text-gray-500 mt-2">
             Open a food test, share its room code, then tasters log in, join, consent, and start recording. Their camera feed and captured frames go through the existing kiosk and FER pipeline.
           </p>
         </div>
@@ -416,6 +684,10 @@ export default function VideoMonitoring() {
   );
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   KioskVideoTile — unchanged from original
+   ═══════════════════════════════════════════════════════════════ */
+
 function KioskVideoTile({
   kiosk,
   onStop,
@@ -486,5 +758,38 @@ function KioskVideoTile({
         </button>
       </div>
     </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SVG Icon Components
+   ═══════════════════════════════════════════════════════════════ */
+
+function KioskPlaceholderIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+      <rect x="3" y="3" width="18" height="14" rx="2" />
+      <path strokeLinecap="round" d="M8 21h8M12 17v4" />
+      <circle cx="12" cy="10" r="2.5" />
+      <path strokeLinecap="round" d="M7 7h.01" />
+    </svg>
+  );
+}
+
+function KioskEmptyIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+      <rect x="2" y="3" width="20" height="14" rx="2.5" />
+      <path strokeLinecap="round" d="M8 21h8M12 17v4" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 10h6M12 7v6" />
+    </svg>
+  );
+}
+
+function LocationPinIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5z" />
+    </svg>
   );
 }
