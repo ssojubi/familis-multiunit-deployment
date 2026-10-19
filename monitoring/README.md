@@ -1,11 +1,27 @@
-# FaMiLiS stress-test monitoring
+# Monitoring
 
-For the complete CachyOS startup, private access, troubleshooting, and shutdown
-procedure, see [LOCAL-ACCESS-GUIDE.md](LOCAL-ACCESS-GUIDE.md).
+Run commands from the repository root. Assumes the `familis` kind cluster already exists.
 
-## Install or update monitoring
+## 1. Start the cluster
 
-Install the monitoring stack on the local `kind-familis` cluster:
+Docker runs the local Kubernetes cluster.
+
+```bash
+sudo systemctl start docker
+kubectl config use-context kind-familis
+kubectl get nodes
+```
+
+If the node is stopped:
+
+```bash
+docker start familis-control-plane
+kubectl wait --for=condition=Ready node/familis-control-plane --timeout=120s
+```
+
+## 2. Install or update monitoring
+
+Skip this step for daily use. Prometheus collects metrics; Grafana displays them.
 
 ```bash
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
@@ -16,9 +32,7 @@ kubectl apply -f monitoring/familis-monitors.yaml
 kubectl apply -f monitoring/dashboard-configmap.yaml
 ```
 
-The application metrics require rebuilding and loading
-`familis-central-server:latest` into kind, then rolling out `central-api` and
-`fer-worker`:
+After changing application metrics, rebuild and restart the API and worker:
 
 ```bash
 docker build -t familis-central-server:latest central-server
@@ -29,135 +43,96 @@ kubectl -n familis rollout status deployment/central-api
 kubectl -n familis rollout status deployment/fer-worker
 ```
 
-Check the namespace and image tags before restarting workloads in any other
-cluster.
+## 3. Check readiness
 
-## Secure local access
-
-Grafana and Prometheus remain `ClusterIP` services inside Kubernetes. Do not
-create an Ingress, NodePort, public tunnel, or router port-forward for either
-service. Access Grafana through a temporary loopback-only Kubernetes tunnel.
-
-### 1. Check that monitoring is running
+Confirm services are ready before opening the application or collecting results.
 
 ```bash
+kubectl -n familis get pods
+kubectl -n traefik get pods
 kubectl -n monitoring get pods
-kubectl -n monitoring get svc monitoring-grafana monitoring-kube-prometheus-prometheus
 ```
 
-Wait until the Grafana and Prometheus pods show `Running` and all containers
-ready. The services should show type `ClusterIP`.
+Wait for pods to be `Running` with all containers ready. `kafka-init` should be `Completed`.
 
-### 2. Start private Grafana access
+## 4. Open the application
+
+Run in a separate terminal and keep it open. This allows kiosks on the trusted LAN to connect.
 
 ```bash
-kubectl -n monitoring port-forward --address 127.0.0.1 service/monitoring-grafana 3000:80
+kubectl -n traefik port-forward --address 0.0.0.0 service/traefik 5173:443
 ```
 
-Keep that terminal open. Only programs on the same laptop can connect. Do not
-replace `127.0.0.1` with `0.0.0.0` or add Grafana to the application's
-Cloudflare tunnel.
+Open `https://localhost:5173`, or `https://<LAPTOP-IP>:5173` from a kiosk.
+Find the laptop IP after `src` in `ip route get 1.1.1.1`. Allow TCP `5173` through the firewall.
+Accept the local TLS certificate warning only for this application address.
 
-If port 3000 is occupied, use another local port, such as `3300:80`, and open
-`http://localhost:3300` instead.
+## 5. Open Grafana
 
-### 3. Retrieve the local administrator password
-
-Linux, macOS, or Git Bash:
+Retrieve the password; the username is `admin`. Keep the password out of reports and source control.
 
 ```bash
 kubectl -n monitoring get secret monitoring-grafana \
   -o jsonpath='{.data.admin-password}' | base64 -d; echo
 ```
 
-PowerShell:
-
-```powershell
-$encoded = kubectl -n monitoring get secret monitoring-grafana -o jsonpath='{.data.admin-password}'
-[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded))
-```
-
-The username is `admin`. Do not copy the password into the paper, source
-control, recordings, or screenshots.
-
-### 4. Open the dashboard
-
-1. Open `http://localhost:3000` in a browser on the same laptop.
-2. Sign in with username `admin` and the password from step 3.
-3. Open **Dashboards**, then **FaMiLiS Stress Test**. The direct local URL is
-   `http://localhost:3000/d/familis-stress-test/familis-stress-test`.
-4. Set the time range to the planned test period and refresh to `5s`.
-
-Use the plain `http://` URL because traffic stays on the local loopback
-interface. If a browser shows an empty Grafana home page, open the direct
-dashboard URL above; dashboard history can differ between browser profiles.
-
-### 5. Confirm that readings are live
+Run in another terminal and keep it open. Loopback binding keeps monitoring private to the laptop.
 
 ```bash
-kubectl -n familis get pods
-kubectl -n familis get servicemonitor,podmonitor
+kubectl -n monitoring port-forward --address 127.0.0.1 service/monitoring-grafana 3000:80
 ```
 
-In Grafana, confirm that **Web app copies ready** and **Processing workers
-ready** are above zero. Generate a normal test session and verify that **Frames
-received in 5 minutes** and **Frames finished in 5 minutes** increase. A blank
-panel usually means no traffic occurred in the selected time range. Investigate
-`N/A` or query errors before recording results.
+Open [FaMiLiS Stress Test](http://localhost:3000/d/familis-stress-test/familis-stress-test).
+Select the test time range and refresh every `5s`. Keep Grafana and Prometheus as
+`ClusterIP` services; do not expose them through public tunnels or ingress.
 
-### 6. Close access after the test
+## 6. Verify and run the test
 
-Press `Ctrl+C` in the terminal running `kubectl port-forward`. Refresh
-`http://localhost:3000` and confirm it no longer connects. Stopping the tunnel
-does not stop metric collection inside the cluster.
+Verify metrics before recording results:
 
-### Optional: inspect Prometheus locally
+- Web app and processing workers ready: above zero.
+- Containers unavailable: zero.
+- Frames received and finished: increase after a normal session.
+- Scrape targets: both `UP`. Investigate `N/A`, query errors, or frames held after retries.
 
-Grafana should be the normal panel interface. To troubleshoot queries:
+Run 2, 5, 10, 20, and 30 kiosks for a fixed duration per load level.
+Record machine resources, capture rate, actual client count, and start/end times.
+For each run, record accepted/processed frames, failures, p95 processing time,
+CPU, RAM, worker replicas, and restarts. Let the queue drain, then calculate
+completion rate from distinct database frame IDs; dashboard rates alone do not prove delivery.
+
+Interpret results using these limits:
+
+- CPU `1.0` = one core, averaged over one minute. RAM is working-set memory. Totals cover `familis`, not the laptop.
+- Pod restarts reset counters. Prometheus retains seven days of history.
+- Upload-to-result time uses API and worker timestamps, independent of the kiosk clock.
+- Workers scale from 1–6 at a CPU target of 65% of their 250m request. Scale-down can take five minutes.
+- Frames failing five attempts enter `video-frames-failed`. Include these failures in the report.
+
+## 7. Stop access
+
+Press `Ctrl+C` in both port-forward terminals. Kubernetes continues collecting metrics.
+To stop the entire local cluster:
+
+```bash
+sudo systemctl stop docker
+```
+
+## Troubleshooting
+
+| Problem | Action |
+| --- | --- |
+| Browser cannot connect | Restart the corresponding port-forward and keep its terminal open. |
+| Port 3000 occupied | Use `3300:80` in the Grafana command; open `http://localhost:3300`. |
+| Kubernetes unavailable | Check Docker and run `docker start familis-control-plane`. |
+| Dashboard missing | Run `kubectl apply -f monitoring/dashboard-configmap.yaml`, then refresh. |
+| Blank charts | Generate traffic and check the selected time range. |
+
+To inspect scrape targets or queries in Prometheus:
 
 ```bash
 kubectl -n monitoring port-forward --address 127.0.0.1 \
   service/monitoring-kube-prometheus-prometheus 9090:9090
 ```
 
-Open `http://localhost:9090`, then stop the tunnel with `Ctrl+C` when done.
-
-## Running a stress test
-
-Before a stress test, verify both scrape targets are **UP** and record the
-machine resources, frame capture rate, and test duration. Prometheus counters
-come from running pods, so a pod restart resets that pod's local counters.
-**Time from upload to saved result** uses timestamps from the central API and
-worker and does not depend on the kiosk clock. Record the load generator's
-actual client count separately.
-
-Run each load level (2, 5, 10, 20, 30 kiosks) for a fixed duration. Record
-accepted and processed frame counts, failures, p95 processing duration,
-CPU/memory, worker replicas, and restarts. Allow the queue to drain after each
-run before calculating final completion rate from distinct frame IDs in the
-database. Dashboard rates alone are not a delivery guarantee.
-
-Frames that still fail after five attempts are placed in the internal
-`video-frames-failed` Kafka topic and appear as **Frames held after retries**.
-Any nonzero value needs investigation and must be included in the test report.
-
-## CPU, RAM, and pod counts during a test
-
-The top of **FaMiLiS Stress Test** shows current CPU cores, working-set RAM,
-running application pods, and ready FER workers. CPU uses a one-minute average:
-`1.0` means one core. Totals cover the `familis` namespace, not the entire laptop.
-The per-pod charts show current and peak values for the selected time range.
-Pod-level cgroup queries count each pod once and exclude child container cgroups.
-These queries are verified against the local kind cluster's cgroup layout.
-Missing metrics display **No data**, not a misleading zero.
-
-For a test report, select the exact start/end time and record the actual kiosk
-count separately. Use CPU/RAM per-pod history, ready pods by deployment, and
-current/desired worker history alongside frame throughput and latency.
-Historical data is available only while retained by Prometheus (configured for
-seven days). Current stat cards show the value at the selected range's end.
-
-The FER autoscaler targets 65% of a 250m CPU request per worker, with 1–6 workers.
-It does not scale directly from kiosk count or total received frames. The
-five-minute scale-down stabilization can keep extra workers after traffic ends.
-One ready worker is distinct from the total number of application pods.
+Open `http://localhost:9090`. Stop the tunnel with `Ctrl+C` when done.
