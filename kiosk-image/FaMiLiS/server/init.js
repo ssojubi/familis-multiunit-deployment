@@ -187,7 +187,7 @@ export async function initDb() {
 
   const initialTesterPassword = "Tester123!";
   const testerPasswordHash = await bcrypt.hash(initialTesterPassword, 10);
-  for (let number = 1; number <= 10; number += 1) {
+  for (let number = 1; number <= 30; number += 1) {
     const suffix = String(number).padStart(2, "0");
     const username = `Tester ${suffix}`;
     const email = `tester${suffix}@familis.com`;

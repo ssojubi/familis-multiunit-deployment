@@ -249,7 +249,7 @@ try {
   ) | Set-Content -Path $credentialFile
   $testerCredentialFile = Join-Path $RuntimeDir "tester-credentials.txt"
   @(
-    (1..10 | ForEach-Object { "tester$($_.ToString('00'))@familis.com" })
+    (1..30 | ForEach-Object { "tester$($_.ToString('00'))@familis.com" })
     "Password: Tester123!"
   ) | Set-Content -Path $testerCredentialFile
 

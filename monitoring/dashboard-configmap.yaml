@@ -11,24 +11,743 @@ data:
       "uid": "familis-stress-test",
       "title": "FaMiLiS Stress Test",
       "schemaVersion": 41,
-      "version": 5,
+      "version": 6,
       "refresh": "5s",
-      "time": {"from": "now-30m", "to": "now"},
-      "tags": ["familis", "capstone"],
+      "time": {
+        "from": "now-30m",
+        "to": "now"
+      },
+      "tags": [
+        "familis",
+        "capstone"
+      ],
       "panels": [
-        {"id": 1, "type": "stat", "title": "Web app copies ready", "description": "How many web app copies can serve requests right now.", "gridPos": {"x": 0, "y": 0, "w": 6, "h": 5}, "targets": [{"expr": "kube_deployment_status_replicas_available{namespace=\"familis\",deployment=\"familis\"}", "legendFormat": "Web app", "refId": "A"}], "fieldConfig": {"defaults": {"decimals": 0, "min": 0}}},
-        {"id": 2, "type": "stat", "title": "Processing workers ready", "description": "Workers available to turn incoming frames into results.", "gridPos": {"x": 6, "y": 0, "w": 6, "h": 5}, "targets": [{"expr": "kube_deployment_status_replicas_available{namespace=\"familis\",deployment=\"fer-worker\"}", "legendFormat": "Workers", "refId": "A"}], "fieldConfig": {"defaults": {"decimals": 0, "min": 0}}},
-        {"id": 11, "type": "stat", "title": "Frames received in 5 minutes", "description": "Frames accepted into the processing queue during the last five minutes.", "gridPos": {"x": 12, "y": 0, "w": 6, "h": 5}, "targets": [{"expr": "sum(increase(familis_frames_accepted_total{job=\"central-api\"}[5m]))", "legendFormat": "Received", "refId": "A"}], "fieldConfig": {"defaults": {"decimals": 0, "min": 0}}},
-        {"id": 12, "type": "stat", "title": "Frames finished in 5 minutes", "description": "Frames with a saved processing result during the last five minutes.", "gridPos": {"x": 18, "y": 0, "w": 6, "h": 5}, "targets": [{"expr": "sum(increase(familis_frames_processed_total{job=\"familis/familis-fer-worker\"}[5m]))", "legendFormat": "Finished", "refId": "A"}], "fieldConfig": {"defaults": {"decimals": 0, "min": 0}}},
-        {"id": 13, "type": "stat", "title": "Containers unavailable now", "description": "App containers that are not ready. Completed setup jobs are excluded; zero is healthy.", "gridPos": {"x": 0, "y": 5, "w": 8, "h": 5}, "targets": [{"expr": "sum((kube_pod_container_status_ready{namespace=\"familis\"} == 0) and on(namespace,pod) (kube_pod_status_phase{namespace=\"familis\",phase!=\"Succeeded\"} == 1)) or vector(0)", "legendFormat": "Unavailable containers", "refId": "A"}], "fieldConfig": {"defaults": {"decimals": 0, "min": 0}}},
-        {"id": 9, "type": "stat", "title": "Container restarts in 30 minutes", "description": "A restart may follow a crash or health failure. Planned pod replacement is counted separately.", "gridPos": {"x": 8, "y": 5, "w": 8, "h": 5}, "targets": [{"expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"familis\"}[30m])) or vector(0)", "legendFormat": "Restarts", "refId": "A"}], "fieldConfig": {"defaults": {"decimals": 0, "min": 0}}},
-        {"id": 14, "type": "stat", "title": "Pods started in 30 minutes", "description": "New pods can result from replacement, autoscaling, or a planned update. This number alone does not indicate failure.", "gridPos": {"x": 16, "y": 5, "w": 8, "h": 5}, "targets": [{"expr": "count(kube_pod_created{namespace=\"familis\"} > time() - 1800) or vector(0)", "legendFormat": "New pods", "refId": "A"}], "fieldConfig": {"defaults": {"decimals": 0, "min": 0}}},
-        {"id": 3, "type": "timeseries", "title": "Frames received and finished each minute", "description": "If finished frames stay below received frames, processing may be falling behind. A short delay is normal.", "gridPos": {"x": 0, "y": 10, "w": 12, "h": 8}, "targets": [{"expr": "sum(rate(familis_frames_accepted_total{job=\"central-api\"}[1m])) * 60", "legendFormat": "Frames received", "refId": "A"}, {"expr": "sum(rate(familis_frames_processed_total{job=\"familis/familis-fer-worker\"}[1m])) * 60", "legendFormat": "Frames finished", "refId": "B"}], "fieldConfig": {"defaults": {"decimals": 0, "min": 0}}},
-        {"id": 4, "type": "timeseries", "title": "Processing errors and held frames", "description": "Failed attempts may recover. A frame moved to the failure queue needs investigation and is not counted as a finished result.", "gridPos": {"x": 12, "y": 10, "w": 12, "h": 8}, "targets": [{"expr": "sum(increase(familis_frames_failed_total{job=\"familis/familis-fer-worker\"}[1m]))", "legendFormat": "Failed attempts", "refId": "A"}, {"expr": "sum(increase(familis_frames_dead_lettered_total{job=\"familis/familis-fer-worker\"}[1m]))", "legendFormat": "Moved to failure queue", "refId": "B"}], "fieldConfig": {"defaults": {"decimals": 0, "min": 0}}},
-        {"id": 5, "type": "timeseries", "title": "Time spent processing a frame", "description": "Seconds for a slower frame: 95 out of 100 frames finish within this time.", "gridPos": {"x": 0, "y": 18, "w": 12, "h": 8}, "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(familis_frame_processing_seconds_bucket{job=\"familis/familis-fer-worker\"}[5m])))", "legendFormat": "Processing time", "refId": "A"}], "fieldConfig": {"defaults": {"unit": "s", "min": 0}}},
-        {"id": 6, "type": "timeseries", "title": "Time from upload to saved result", "description": "Seconds from API acceptance to a saved result for a slower frame. This avoids differences in kiosk clocks.", "gridPos": {"x": 12, "y": 18, "w": 12, "h": 8}, "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(familis_frame_queue_to_result_seconds_bucket{job=\"familis/familis-fer-worker\"}[5m])))", "legendFormat": "Upload to result", "refId": "A"}], "fieldConfig": {"defaults": {"unit": "s", "min": 0}}},
-        {"id": 7, "type": "timeseries", "title": "Processor use by system part", "description": "CPU cores used. A higher line means that part is doing more work; sustained saturation can slow the system.", "gridPos": {"x": 0, "y": 26, "w": 12, "h": 8}, "targets": [{"expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"familis\",container=\"familis\"}[5m]))", "legendFormat": "Web app", "refId": "A"}, {"expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"familis\",container=\"central-api\"}[5m]))", "legendFormat": "Frame intake", "refId": "B"}, {"expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"familis\",container=\"fer-worker\"}[5m]))", "legendFormat": "Processing workers", "refId": "C"}, {"expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"familis\",container=\"kafka\"}[5m]))", "legendFormat": "Frame queue", "refId": "D"}, {"expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"familis\",container=\"mysql\"}[5m]))", "legendFormat": "Database", "refId": "E"}], "fieldConfig": {"defaults": {"unit": "short", "min": 0}}},
-        {"id": 8, "type": "timeseries", "title": "Memory use by system part", "description": "Live memory use. Watch for steady growth or a part running out of its memory allowance.", "gridPos": {"x": 12, "y": 26, "w": 12, "h": 8}, "targets": [{"expr": "sum(container_memory_working_set_bytes{namespace=\"familis\",container=\"familis\"})", "legendFormat": "Web app", "refId": "A"}, {"expr": "sum(container_memory_working_set_bytes{namespace=\"familis\",container=\"central-api\"})", "legendFormat": "Frame intake", "refId": "B"}, {"expr": "sum(container_memory_working_set_bytes{namespace=\"familis\",container=\"fer-worker\"})", "legendFormat": "Processing workers", "refId": "C"}, {"expr": "sum(container_memory_working_set_bytes{namespace=\"familis\",container=\"kafka\"})", "legendFormat": "Frame queue", "refId": "D"}, {"expr": "sum(container_memory_working_set_bytes{namespace=\"familis\",container=\"mysql\"})", "legendFormat": "Database", "refId": "E"}], "fieldConfig": {"defaults": {"unit": "bytes", "min": 0}}},
-        {"id": 10, "type": "timeseries", "title": "Frame upload outcomes each minute", "description": "Accepted uploads should dominate. Rejected uploads or server errors need investigation.", "gridPos": {"x": 0, "y": 34, "w": 24, "h": 6}, "targets": [{"expr": "sum(rate(familis_ingest_requests_total{status_class=\"2xx\"}[1m])) * 60", "legendFormat": "Accepted uploads", "refId": "A"}, {"expr": "sum(rate(familis_ingest_requests_total{status_class=\"4xx\"}[1m])) * 60", "legendFormat": "Rejected uploads", "refId": "B"}, {"expr": "sum(rate(familis_ingest_requests_total{status_class=\"5xx\"}[1m])) * 60", "legendFormat": "Server errors", "refId": "C"}], "fieldConfig": {"defaults": {"decimals": 0, "min": 0}}}
+        {
+          "id": 15,
+          "type": "stat",
+          "title": "CPU used now (cores)",
+          "description": "FaMiLiS namespace only; excludes monitoring and other host processes. Pod cgroups include all containers once, without double-counting child cgroups. 1.0 means one CPU core; averaged over the last minute.",
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 6,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "sum(sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"familis\",job=\"kubelet\",metrics_path=\"/metrics/cadvisor\",pod!=\"\",id=~\".*pod[^/]+\"}[1m])))",
+              "legendFormat": "",
+              "refId": "A",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "cores",
+              "min": 0,
+              "noValue": "No data"
+            }
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none"
+          }
+        },
+        {
+          "id": 16,
+          "type": "stat",
+          "title": "RAM used now",
+          "description": "FaMiLiS namespace only; excludes monitoring and other host processes. Pod cgroups include all containers once, without double-counting child cgroups. Working-set memory, not disk storage.",
+          "gridPos": {
+            "x": 6,
+            "y": 0,
+            "w": 6,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "sum(max by (pod) (container_memory_working_set_bytes{namespace=\"familis\",job=\"kubelet\",metrics_path=\"/metrics/cadvisor\",pod!=\"\",id=~\".*pod[^/]+\"}))",
+              "legendFormat": "",
+              "refId": "A",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "min": 0,
+              "noValue": "No data"
+            }
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none"
+          }
+        },
+        {
+          "id": 17,
+          "type": "stat",
+          "title": "Running application pods",
+          "description": "All running FaMiLiS pods including app, API, workers, database and queue. Running does not guarantee readiness. Completed jobs excluded.",
+          "gridPos": {
+            "x": 12,
+            "y": 0,
+            "w": 6,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "sum(kube_pod_status_phase{namespace=\"familis\",phase=\"Running\"})",
+              "legendFormat": "",
+              "refId": "A",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "noValue": "No data"
+            }
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none"
+          }
+        },
+        {
+          "id": 18,
+          "type": "stat",
+          "title": "Ready processing workers",
+          "description": "Current ready FER workers. This is not the number of connected kiosks.",
+          "gridPos": {
+            "x": 18,
+            "y": 0,
+            "w": 6,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "kube_deployment_status_replicas_available{namespace=\"familis\",deployment=\"fer-worker\"}",
+              "legendFormat": "",
+              "refId": "A",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "noValue": "No data"
+            }
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none"
+          }
+        },
+        {
+          "id": 19,
+          "type": "timeseries",
+          "title": "CPU usage per pod (cores)",
+          "description": "FaMiLiS namespace only; excludes monitoring and other host processes. Pod cgroups include all containers once, without double-counting child cgroups. One-minute average. 1.0 = one core.",
+          "gridPos": {
+            "x": 0,
+            "y": 5,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"familis\",job=\"kubelet\",metrics_path=\"/metrics/cadvisor\",pod!=\"\",id=~\".*pod[^/]+\"}[1m]))",
+              "legendFormat": "{{pod}}",
+              "refId": "A",
+              "instant": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "cores",
+              "min": 0,
+              "noValue": "No data"
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "id": 20,
+          "type": "timeseries",
+          "title": "RAM usage per pod",
+          "description": "FaMiLiS namespace only; excludes monitoring and other host processes. Pod cgroups include all containers once, without double-counting child cgroups. Working-set memory.",
+          "gridPos": {
+            "x": 12,
+            "y": 5,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "expr": "max by (pod) (container_memory_working_set_bytes{namespace=\"familis\",job=\"kubelet\",metrics_path=\"/metrics/cadvisor\",pod!=\"\",id=~\".*pod[^/]+\"})",
+              "legendFormat": "{{pod}}",
+              "refId": "A",
+              "instant": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "min": 0,
+              "noValue": "No data"
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "id": 21,
+          "type": "timeseries",
+          "title": "Ready pods by deployment",
+          "description": "Shows pod availability and scaling throughout the selected test period.",
+          "gridPos": {
+            "x": 0,
+            "y": 13,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "expr": "kube_deployment_status_replicas_available{namespace=\"familis\"}",
+              "legendFormat": "{{deployment}}",
+              "refId": "A",
+              "instant": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "noValue": "No data"
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "id": 22,
+          "type": "timeseries",
+          "title": "FER worker autoscaling: current and desired",
+          "description": "HPA scales from 1 to 6 workers at 65% of requested CPU (250m per worker). Scale-down stabilization is 300 seconds. Frame count alone does not trigger scaling.",
+          "gridPos": {
+            "x": 12,
+            "y": 13,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "expr": "kube_horizontalpodautoscaler_status_current_replicas{namespace=\"familis\",horizontalpodautoscaler=\"fer-worker\"}",
+              "legendFormat": "Current",
+              "refId": "A",
+              "instant": false
+            },
+            {
+              "expr": "kube_horizontalpodautoscaler_status_desired_replicas{namespace=\"familis\",horizontalpodautoscaler=\"fer-worker\"}",
+              "legendFormat": "Desired",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "noValue": "No data"
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "Web app copies ready",
+          "description": "How many web app copies can serve requests right now.",
+          "gridPos": {
+            "x": 0,
+            "y": 21,
+            "w": 6,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "kube_deployment_status_replicas_available{namespace=\"familis\",deployment=\"familis\"}",
+              "legendFormat": "Web app",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "min": 0
+            }
+          }
+        },
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "Processing workers ready",
+          "description": "Workers available to turn incoming frames into results.",
+          "gridPos": {
+            "x": 6,
+            "y": 21,
+            "w": 6,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "kube_deployment_status_replicas_available{namespace=\"familis\",deployment=\"fer-worker\"}",
+              "legendFormat": "Workers",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "min": 0
+            }
+          }
+        },
+        {
+          "id": 11,
+          "type": "stat",
+          "title": "Frames received in 5 minutes",
+          "description": "Frames accepted into the processing queue during the last five minutes.",
+          "gridPos": {
+            "x": 12,
+            "y": 21,
+            "w": 6,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "sum(increase(familis_frames_accepted_total{job=\"central-api\"}[5m]))",
+              "legendFormat": "Received",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "min": 0
+            }
+          }
+        },
+        {
+          "id": 12,
+          "type": "stat",
+          "title": "Frames finished in 5 minutes",
+          "description": "Frames with a saved processing result during the last five minutes.",
+          "gridPos": {
+            "x": 18,
+            "y": 21,
+            "w": 6,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "sum(increase(familis_frames_processed_total{job=\"familis/familis-fer-worker\"}[5m]))",
+              "legendFormat": "Finished",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "min": 0
+            }
+          }
+        },
+        {
+          "id": 13,
+          "type": "stat",
+          "title": "Containers unavailable now",
+          "description": "App containers that are not ready. Completed setup jobs are excluded; zero is healthy.",
+          "gridPos": {
+            "x": 0,
+            "y": 26,
+            "w": 8,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "sum((kube_pod_container_status_ready{namespace=\"familis\"} == 0) and on(namespace,pod) (kube_pod_status_phase{namespace=\"familis\",phase!=\"Succeeded\"} == 1)) or vector(0)",
+              "legendFormat": "Unavailable containers",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "min": 0
+            }
+          }
+        },
+        {
+          "id": 9,
+          "type": "stat",
+          "title": "Container restarts in 30 minutes",
+          "description": "A restart may follow a crash or health failure. Planned pod replacement is counted separately.",
+          "gridPos": {
+            "x": 8,
+            "y": 26,
+            "w": 8,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"familis\"}[30m])) or vector(0)",
+              "legendFormat": "Restarts",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "min": 0
+            }
+          }
+        },
+        {
+          "id": 14,
+          "type": "stat",
+          "title": "Pods started in 30 minutes",
+          "description": "New pods can result from replacement, autoscaling, or a planned update. This number alone does not indicate failure.",
+          "gridPos": {
+            "x": 16,
+            "y": 26,
+            "w": 8,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "count(kube_pod_created{namespace=\"familis\"} > time() - 1800) or vector(0)",
+              "legendFormat": "New pods",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "min": 0
+            }
+          }
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Frames received and finished each minute",
+          "description": "If finished frames stay below received frames, processing may be falling behind. A short delay is normal.",
+          "gridPos": {
+            "x": 0,
+            "y": 31,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(familis_frames_accepted_total{job=\"central-api\"}[1m])) * 60",
+              "legendFormat": "Frames received",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(rate(familis_frames_processed_total{job=\"familis/familis-fer-worker\"}[1m])) * 60",
+              "legendFormat": "Frames finished",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "min": 0
+            }
+          }
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "Processing errors and held frames",
+          "description": "Failed attempts may recover. A frame moved to the failure queue needs investigation and is not counted as a finished result.",
+          "gridPos": {
+            "x": 12,
+            "y": 31,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "expr": "sum(increase(familis_frames_failed_total{job=\"familis/familis-fer-worker\"}[1m]))",
+              "legendFormat": "Failed attempts",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(increase(familis_frames_dead_lettered_total{job=\"familis/familis-fer-worker\"}[1m]))",
+              "legendFormat": "Moved to failure queue",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "min": 0
+            }
+          }
+        },
+        {
+          "id": 5,
+          "type": "timeseries",
+          "title": "Time spent processing a frame",
+          "description": "Seconds for a slower frame: 95 out of 100 frames finish within this time.",
+          "gridPos": {
+            "x": 0,
+            "y": 39,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(familis_frame_processing_seconds_bucket{job=\"familis/familis-fer-worker\"}[5m])))",
+              "legendFormat": "Processing time",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "min": 0
+            }
+          }
+        },
+        {
+          "id": 6,
+          "type": "timeseries",
+          "title": "Time from upload to saved result",
+          "description": "Seconds from API acceptance to a saved result for a slower frame. This avoids differences in kiosk clocks.",
+          "gridPos": {
+            "x": 12,
+            "y": 39,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(familis_frame_queue_to_result_seconds_bucket{job=\"familis/familis-fer-worker\"}[5m])))",
+              "legendFormat": "Upload to result",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "min": 0
+            }
+          }
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "Processor use by system part",
+          "description": "CPU cores used. A higher line means that part is doing more work; sustained saturation can slow the system.",
+          "gridPos": {
+            "x": 0,
+            "y": 47,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"familis\",container=\"familis\"}[5m]))",
+              "legendFormat": "Web app",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"familis\",container=\"central-api\"}[5m]))",
+              "legendFormat": "Frame intake",
+              "refId": "B"
+            },
+            {
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"familis\",container=\"fer-worker\"}[5m]))",
+              "legendFormat": "Processing workers",
+              "refId": "C"
+            },
+            {
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"familis\",container=\"kafka\"}[5m]))",
+              "legendFormat": "Frame queue",
+              "refId": "D"
+            },
+            {
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"familis\",container=\"mysql\"}[5m]))",
+              "legendFormat": "Database",
+              "refId": "E"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0
+            }
+          }
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "Memory use by system part",
+          "description": "Live memory use. Watch for steady growth or a part running out of its memory allowance.",
+          "gridPos": {
+            "x": 12,
+            "y": 47,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "expr": "sum(container_memory_working_set_bytes{namespace=\"familis\",container=\"familis\"})",
+              "legendFormat": "Web app",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(container_memory_working_set_bytes{namespace=\"familis\",container=\"central-api\"})",
+              "legendFormat": "Frame intake",
+              "refId": "B"
+            },
+            {
+              "expr": "sum(container_memory_working_set_bytes{namespace=\"familis\",container=\"fer-worker\"})",
+              "legendFormat": "Processing workers",
+              "refId": "C"
+            },
+            {
+              "expr": "sum(container_memory_working_set_bytes{namespace=\"familis\",container=\"kafka\"})",
+              "legendFormat": "Frame queue",
+              "refId": "D"
+            },
+            {
+              "expr": "sum(container_memory_working_set_bytes{namespace=\"familis\",container=\"mysql\"})",
+              "legendFormat": "Database",
+              "refId": "E"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "min": 0
+            }
+          }
+        },
+        {
+          "id": 10,
+          "type": "timeseries",
+          "title": "Frame upload outcomes each minute",
+          "description": "Accepted uploads should dominate. Rejected uploads or server errors need investigation.",
+          "gridPos": {
+            "x": 0,
+            "y": 55,
+            "w": 24,
+            "h": 6
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(familis_ingest_requests_total{status_class=\"2xx\"}[1m])) * 60",
+              "legendFormat": "Accepted uploads",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(rate(familis_ingest_requests_total{status_class=\"4xx\"}[1m])) * 60",
+              "legendFormat": "Rejected uploads",
+              "refId": "B"
+            },
+            {
+              "expr": "sum(rate(familis_ingest_requests_total{status_class=\"5xx\"}[1m])) * 60",
+              "legendFormat": "Server errors",
+              "refId": "C"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "min": 0
+            }
+          }
+        }
       ]
     }
