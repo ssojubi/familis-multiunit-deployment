@@ -3,7 +3,7 @@ import type { FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { testerLandingPath } from "../RequireAuth";
 import { apiFetch, setToken } from "../lib/api";
-import { PageHeader } from "../components/PageHeader";
+
 import loginBg from "../assets/login-bg.png";
 
 function IconMail(props: { className?: string; size?: number }) {
@@ -173,14 +173,12 @@ export default function Login() {
   };
 
   return (
-    <PageHeader
-      shell="minimal"
-      variant="expanded"
-      onLogoClick={() => navigate("/")}
-      logoAriaLabel="Go to home"
+    <div
+      className="min-h-screen bg-[#f6f7fb]"
+      style={{ fontFamily: "'Montserrat', sans-serif" }}
     >
       <div
-        className="min-h-full relative flex items-center justify-center px-6 py-10"
+        className="min-h-screen relative flex items-center justify-center px-6 py-10"
         style={{
           backgroundImage: `url(${loginBg})`,
           backgroundSize: "cover",
@@ -268,6 +266,6 @@ export default function Login() {
           </div>
         </div>
       </div>
-    </PageHeader>
+    </div>
   );
 }

@@ -147,12 +147,23 @@ type StoredSession = {
 
 type MonitorServerEvents = {
   "viewer-connected": (viewerId: string) => void;
+  "stream-request": (data: { from?: string }) => void;
+  "stream-stop": (data: { from?: string }) => void;
   signal: (data: { from?: string; sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) => void;
 };
 type MonitorClientEvents = {
   "join-room": (roomId: string) => void;
   signal: (data: { room: string; to?: string; sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) => void;
-  "tester-session-status": (data: { room: string; status: "recording" | "completed"; sessionId?: number; foodName?: string }) => void;
+  "request-stream": (data: { to: string }) => void;
+  "stop-stream": (data: { to: string }) => void;
+  "tester-session-status": (data: {
+    room: string;
+    status: "recording" | "completed";
+    sessionId?: number;
+    foodName?: string;
+    sentiment?: string | null;
+    confidence?: number | null;
+  }) => void;
 };
 
 function formatMmSs(totalSeconds: number) {
@@ -311,7 +322,17 @@ export default function Session() {
     socket.on("connect", () => socket.emit("join-room", roomCode));
     socket.on("viewer-connected", (viewerId) => {
       monitorViewersRef.current.add(viewerId);
-      void publishMonitorStream(viewerId);
+    });
+    socket.on("stream-request", (data) => {
+      if (!data.from) return;
+      monitorViewersRef.current.add(data.from);
+      void publishMonitorStream(data.from);
+    });
+    socket.on("stream-stop", (data) => {
+      if (data.from) {
+        monitorViewersRef.current.delete(data.from);
+        closeMonitorPeer(data.from);
+      }
     });
     socket.on("signal", async (data) => {
       if (!data.from) return;
@@ -338,8 +359,15 @@ export default function Session() {
     const socket = monitorSocketRef.current;
     if (!socket || !roomCode || sessionId == null) return;
     const status = isRecording && hasConsent ? "recording" : "completed";
-    socket.emit("tester-session-status", { room: roomCode, status, sessionId, foodName: food?.name ?? undefined });
-  }, [food?.name, hasConsent, isRecording, roomCode, sessionId]);
+    socket.emit("tester-session-status", {
+      room: roomCode,
+      status,
+      sessionId,
+      foodName: food?.name ?? undefined,
+      sentiment: liveSentiment,
+      confidence: liveConfidence01,
+    });
+  }, [food?.name, hasConsent, isRecording, liveConfidence01, liveSentiment, roomCode, sessionId]);
 
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   useEffect(() => {

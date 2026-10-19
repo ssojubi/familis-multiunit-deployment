@@ -21,6 +21,8 @@ const MAX_FRAME_WIDTH = 960;
 
 type ServerToClientEvents = {
   "viewer-connected": (viewerId: string) => void;
+  "stream-request": (data: { from?: string }) => void;
+  "stream-stop": (data: { from?: string }) => void;
   "user-disconnected": (peerId: string) => void;
   signal: (data: {
     from?: string;
@@ -125,8 +127,19 @@ export default function TesterSession() {
 
     socket.on("viewer-connected", (viewerId) => {
       viewerIdsRef.current.add(viewerId);
-      if (isRecordingRef.current) {
-        void publishCameraStream(viewerId);
+    });
+
+    socket.on("stream-request", (data) => {
+      if (data.from && isRecordingRef.current) {
+        viewerIdsRef.current.add(data.from);
+        void publishCameraStream(data.from);
+      }
+    });
+
+    socket.on("stream-stop", (data) => {
+      if (data.from) {
+        viewerIdsRef.current.delete(data.from);
+        cleanupPeerConnection(data.from);
       }
     });
 

@@ -221,16 +221,16 @@ function RatingRow({
   onChange: (v: number) => void;
 }) {
   return (
-    <div className="flex items-center justify-between py-3 border-b border-gray-100">
-      <span className="text-sm font-semibold text-gray-700 w-32">{label}</span>
-      <div className="flex gap-2">
+    <div className="py-3 border-b border-gray-100">
+      <span className="text-sm font-semibold text-gray-700 block mb-2">{label}</span>
+      <div className="flex flex-wrap gap-1.5">
         {RATING_OPTIONS.map((rating) => (
           <button
             key={rating}
             onClick={() => onChange(rating)}
-            className={`w-10 h-10 rounded-lg font-bold transition-all ${
+            className={`min-w-[36px] h-9 px-2 rounded-lg font-bold text-sm transition-all ${
               value === rating
-                ? "bg-red-600 text-white"
+                ? "bg-red-600 text-white shadow-sm"
                 : "bg-gray-100 text-gray-700 hover:bg-gray-200"
             }`}
           >
