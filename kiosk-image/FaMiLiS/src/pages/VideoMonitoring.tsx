@@ -56,9 +56,6 @@ type RemoteKiosk = {
 
 type ActiveRoom = { id: number; roomCode: string; foodId: number; foodName: string; sessionsActive: number };
 type MonitorFood = { id: number; name: string };
-
-<<<<<<< Updated upstream
-/** Registered kiosk record from the database. */
 type RegisteredKiosk = {
   id: number;
   name: string;
@@ -67,10 +64,6 @@ type RegisteredKiosk = {
   createdAt: string | null;
 };
 
-/* ═══════════════════════════════════════════════════════════════
-   Root component — switches between Overview and Detail views
-   ═══════════════════════════════════════════════════════════════ */
-=======
 type LayoutMode = "icon-grid" | "sidebar-spotlight" | "pinned-grid" | "show-all";
 type StatusFilter = "all" | "streaming" | "idle" | "offline";
 
@@ -134,6 +127,22 @@ function IconSearch({ className }: { className?: string }) {
   );
 }
 
+function KioskEmptyIcon({ className }: { className?: string }) {
+  return <IconCamera className={className} />;
+}
+
+function KioskPlaceholderIcon({ className }: { className?: string }) {
+  return <IconCamera className={className} />;
+}
+
+function LocationPinIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 20 20" fill="currentColor" className={className ?? "w-4 h-4"} aria-hidden="true">
+      <path fillRule="evenodd" d="M10 18s6-5.2 6-10A6 6 0 1 0 4 8c0 4.8 6 10 6 10Zm0-7a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" clipRule="evenodd" />
+    </svg>
+  );
+}
+
 /* ──────────────────────────── Status Badge ──────────────────────────── */
 
 function StatusBadge({ state }: { state: KioskConnectionState }) {
@@ -183,13 +192,6 @@ function KioskStatusTile({
         }
       `}
     >
-      {/* Inline video if toggled on in show-all mode */}
-      {showVideo && layoutMode === "show-all" ? (
-        <div className="aspect-video rounded-t-xl overflow-hidden bg-black">
-          <LiveVideoView stream={kiosk.stream} />
-        </div>
-      ) : null}
-
       <div className="p-3.5">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
@@ -222,20 +224,19 @@ function KioskStatusTile({
                 <IconPinned className="w-3.5 h-3.5" />
               </button>
             ) : null}
-            {layoutMode === "show-all" ? (
-              <button
-                type="button"
-                onClick={onToggleVideo}
-                title={showVideo ? "Hide video" : "Show video"}
-                className={`p-1.5 rounded-md transition-colors text-xs font-bold ${
-                  showVideo
-                    ? "bg-[#e8174a] text-white hover:bg-[#c9143f]"
-                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                }`}
-              >
-                <IconCamera className="w-3.5 h-3.5" />
-              </button>
-            ) : null}
+            <button
+              type="button"
+              onClick={onToggleVideo}
+              title={showVideo ? "Hide video" : "Show video"}
+              aria-label={`${showVideo ? "Hide" : "Show"} ${kiosk.label} video`}
+              className={`p-1.5 rounded-md transition-colors text-xs font-bold ${
+                showVideo
+                  ? "bg-[#e8174a] text-white hover:bg-[#c9143f]"
+                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              }`}
+            >
+              <IconCamera className="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
       </div>
@@ -416,17 +417,13 @@ function StatusFilterBar({
 /* ══════════════════════════════════════════════════════════════════════
    Main Component
    ══════════════════════════════════════════════════════════════════════ */
->>>>>>> Stashed changes
 
 export default function VideoMonitoring() {
   const [selectedKioskId, setSelectedKioskId] = useState<number | null>(null);
 
   if (selectedKioskId !== null) {
     return (
-      <KioskMonitorDetail
-        kioskId={selectedKioskId}
-        onBack={() => setSelectedKioskId(null)}
-      />
+      <KioskMonitorDetail />
     );
   }
 
@@ -619,17 +616,8 @@ function KioskCard({
    existing Socket.IO signaling and peer connection logic.
    ═══════════════════════════════════════════════════════════════ */
 
-function KioskMonitorDetail({
-  kioskId,
-  onBack,
-}: {
-  kioskId: number;
-  onBack: () => void;
-}) {
+function KioskMonitorDetail() {
   const [searchParams] = useSearchParams();
-
-  /* Kiosk metadata from DB */
-  const [kioskInfo, setKioskInfo] = useState<RegisteredKiosk | null>(null);
 
   const [kioskStatus, setKioskStatus] = useState<string>("Connecting…");
   const [{ role }] = useState<{ role: Role }>(() => {
@@ -669,22 +657,6 @@ function KioskMonitorDetail({
   const selectedRoom = activeRooms.find((room) => room.roomCode === roomId);
   const validFoodId = selectedRoom?.foodId ?? null;
 
-<<<<<<< Updated upstream
-  /* Load kiosk metadata */
-  useEffect(() => {
-    let cancelled = false;
-    void apiFetch("/api/kiosks")
-      .then(async (res) => {
-        const payload = await res.json();
-        if (res.ok && payload?.ok) {
-          const match = (payload.kiosks ?? []).find((k: RegisteredKiosk) => k.id === kioskId);
-          if (!cancelled && match) setKioskInfo(match);
-        }
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [kioskId]);
-=======
   // ── Derived data ──
 
   const filteredKiosks = remoteKiosks.filter((k) => {
@@ -711,7 +683,6 @@ function KioskMonitorDetail({
   const spotlightKiosk = selectedKioskId ? remoteKiosks.find((k) => k.peerId === selectedKioskId) ?? null : null;
 
   // ── Data fetching (unchanged) ──
->>>>>>> Stashed changes
 
   useEffect(() => {
     if (role !== "viewer") return;
@@ -802,9 +773,6 @@ function KioskMonitorDetail({
     }
   };
 
-<<<<<<< Updated upstream
-  const createPeerConnectionFor = useCallback((peerId: string): RTCPeerConnection => {
-=======
   // ── WebRTC peer management ──
 
   const getKioskConnectionState = useCallback((pc: RTCPeerConnection, peerId: string): KioskConnectionState => {
@@ -818,7 +786,6 @@ function KioskMonitorDetail({
   }, []);
 
   const createPeerConnectionFor = (peerId: string): RTCPeerConnection => {
->>>>>>> Stashed changes
     const existing = peerConnectionsRef.current.get(peerId);
     if (existing) return existing;
 
@@ -864,37 +831,29 @@ function KioskMonitorDetail({
     };
 
     return pc;
-  }, [roomId]);
+  };
 
   const removeKiosk = useCallback((peerId: string) => {
     peerConnectionsRef.current.get(peerId)?.close();
     peerConnectionsRef.current.delete(peerId);
     sessionStatusByPeerRef.current.delete(peerId);
     setRemoteKiosks((prev) => prev.filter((k) => k.peerId !== peerId));
-<<<<<<< Updated upstream
-  }, []);
-=======
     setPinnedIds((prev) => { const next = new Set(prev); next.delete(peerId); return next; });
     setVisibleVideoIds((prev) => { const next = new Set(prev); next.delete(peerId); return next; });
     if (selectedKioskId === peerId) setSelectedKioskId(null);
     if (modalKioskId === peerId) setModalKioskId(null);
-  };
->>>>>>> Stashed changes
+  }, [modalKioskId, selectedKioskId]);
 
   const cleanupAllPeerConnections = useCallback(() => {
     peerConnectionsRef.current.forEach((pc) => pc.close());
     peerConnectionsRef.current.clear();
     sessionStatusByPeerRef.current.clear();
     setRemoteKiosks([]);
-<<<<<<< Updated upstream
-  }, []);
-=======
     setPinnedIds(new Set());
     setVisibleVideoIds(new Set());
     setSelectedKioskId(null);
     setModalKioskId(null);
-  };
->>>>>>> Stashed changes
+  }, []);
 
   // ── Socket connection (unchanged logic) ──
 
@@ -1035,53 +994,6 @@ function KioskMonitorDetail({
 
   return (
     <PageHeader variant="expanded">
-<<<<<<< Updated upstream
-      <main className="px-6 py-8">
-        <div className="max-w-6xl mx-auto">
-        {/* Back navigation */}
-        <div className="mb-6">
-          <button
-            type="button"
-            onClick={onBack}
-            className="inline-flex items-center gap-2 text-gray-500 hover:text-gray-800 mb-4 text-sm transition-colors group"
-          >
-            <span aria-hidden="true" className="group-hover:-translate-x-0.5 transition-transform">←</span>
-            Back to Kiosk Overview
-          </button>
-
-          <div className="flex items-start gap-4">
-            <div className="flex-1">
-              <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 leading-tight">
-                {kioskInfo?.name ?? `Kiosk #${kioskId}`}
-              </h1>
-              <div className="flex flex-wrap items-center gap-3 mt-1">
-                {kioskInfo?.location && (
-                  <span className="inline-flex items-center gap-1 text-sm text-gray-500">
-                    <LocationPinIcon className="w-3.5 h-3.5 text-gray-400" />
-                    {kioskInfo.location}
-                  </span>
-                )}
-                <span className="text-sm text-gray-400">
-                  ID: {kioskId}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <p className="text-[12px] text-gray-500 mt-2">
-            Open a food test, share its room code, then tasters log in, join, consent, and start recording. Their camera feed and captured frames go through the existing kiosk and FER pipeline.
-          </p>
-        </div>
-
-        <section className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-          <div className="flex justify-between items-center mb-4">
-            <p className="text-[14px] text-gray-500">
-              Status: <span className="font-semibold text-gray-700">{kioskStatus}</span>
-              {" · "}
-              <span className="font-semibold text-gray-700">
-                {remoteKiosks.length} kiosk{remoteKiosks.length === 1 ? "" : "s"} connected
-              </span>
-=======
       <main className="px-4 sm:px-6 py-6 sm:py-8">
         <div className="max-w-[1400px] mx-auto">
           {/* Title section */}
@@ -1089,7 +1001,6 @@ function KioskMonitorDetail({
             <PageTitle title="Monitor Kiosks" subtitle="Watch connected tasters while they record. Camera frames continue through the central FER pipeline." />
             <p className="text-[12px] text-gray-500 mt-1">
               Open a food test, share its room code, then tasters log in, join, consent, and start recording. Their camera feed and captured frames go through the existing kiosk and FER pipeline.
->>>>>>> Stashed changes
             </p>
           </div>
 
@@ -1190,10 +1101,10 @@ function KioskMonitorDetail({
                         kiosk={kiosk}
                         isSelected={selectedKioskId === kiosk.peerId}
                         isPinned={false}
-                        showVideo={false}
+                        showVideo={visibleVideoIds.has(kiosk.peerId)}
                         onSelect={() => handleTileClick(kiosk.peerId)}
                         onTogglePin={() => {}}
-                        onToggleVideo={() => {}}
+                        onToggleVideo={() => toggleVideoVisibility(kiosk.peerId)}
                         layoutMode={layoutMode}
                       />
                     ))}
@@ -1286,10 +1197,10 @@ function KioskMonitorDetail({
                       kiosk={kiosk}
                       isSelected={selectedKioskId === kiosk.peerId}
                       isPinned={pinnedIds.has(kiosk.peerId)}
-                      showVideo={false}
+                      showVideo={visibleVideoIds.has(kiosk.peerId)}
                       onSelect={() => handleTileClick(kiosk.peerId)}
                       onTogglePin={() => togglePin(kiosk.peerId)}
-                      onToggleVideo={() => {}}
+                      onToggleVideo={() => toggleVideoVisibility(kiosk.peerId)}
                       layoutMode={layoutMode}
                     />
                   ))}
@@ -1345,16 +1256,52 @@ function KioskMonitorDetail({
                       kiosk={kiosk}
                       isSelected={false}
                       isPinned={false}
-                      showVideo={false}
+                      showVideo={visibleVideoIds.has(kiosk.peerId)}
                       onSelect={() => handleTileClick(kiosk.peerId)}
                       onTogglePin={() => {}}
-                      onToggleVideo={() => {}}
+                      onToggleVideo={() => toggleVideoVisibility(kiosk.peerId)}
                       layoutMode={layoutMode}
                     />
                   ))}
                 </div>
               </div>
             )}
+
+            {visibleVideoIds.size > 0 ? (
+              <div className="border-t border-gray-100 p-4 sm:p-5">
+                <div className="mb-3 flex items-center justify-between">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+                    Live camera views ({visibleVideoIds.size})
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setVisibleVideoIds(new Set())}
+                    className="text-[11px] font-semibold text-gray-500 hover:text-gray-800 hover:underline"
+                  >
+                    Hide all
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  {remoteKiosks
+                    .filter((kiosk) => visibleVideoIds.has(kiosk.peerId))
+                    .map((kiosk) => (
+                      <div key={kiosk.peerId} className="relative aspect-video overflow-hidden rounded-xl bg-black">
+                        <LiveVideoView stream={kiosk.stream} />
+                        <span className="absolute left-2 top-2 rounded bg-black/60 px-2 py-0.5 text-[11px] font-semibold text-white">
+                          {kiosk.label}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => toggleVideoVisibility(kiosk.peerId)}
+                          className="absolute right-2 top-2 rounded bg-black/60 px-2 py-1 text-[10px] font-semibold text-white hover:bg-black/80"
+                        >
+                          Hide
+                        </button>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            ) : null}
           </section>
 
           {/* Public access URL info */}
@@ -1387,116 +1334,3 @@ function KioskMonitorDetail({
     </PageHeader>
   );
 }
-<<<<<<< Updated upstream
-
-/* ═══════════════════════════════════════════════════════════════
-   KioskVideoTile — unchanged from original
-   ═══════════════════════════════════════════════════════════════ */
-
-function KioskVideoTile({
-  kiosk,
-  onStop,
-}: {
-  kiosk: RemoteKiosk;
-  onStop: () => void;
-}) {
-  const { stream, label, sessionId, foodName } = kiosk;
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [paused, setPaused] = useState(false);
-
-  useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.srcObject = stream;
-      videoRef.current.play().catch(() => {
-        if (videoRef.current) {
-          videoRef.current.muted = true;
-          videoRef.current.play();
-        }
-      });
-    }
-  }, [stream]);
-
-  const togglePause = () => {
-    if (!videoRef.current) return;
-    if (paused) {
-      videoRef.current.play();
-    } else {
-      videoRef.current.pause();
-    }
-    setPaused((p) => !p);
-  };
-
-  return (
-    <div className="relative bg-black aspect-video rounded-lg overflow-hidden border border-gray-200 group">
-      <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
-
-      <span className="absolute top-2 left-2 text-[11px] text-white bg-black/50 px-2 py-0.5 rounded font-semibold">
-        {label}
-      </span>
-
-      {sessionId != null && (
-        <span className="absolute top-2 right-2 text-[10px] text-white bg-green-600/80 px-2 py-0.5 rounded font-semibold">
-          Recording{foodName ? ` · ${foodName}` : ""} · S-{sessionId}
-        </span>
-      )}
-
-      {paused && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/40">
-          <span className="text-white text-sm font-semibold">Paused</span>
-        </div>
-      )}
-
-      <div className="absolute bottom-0 left-0 right-0 flex gap-2 p-2 bg-gradient-to-t from-black/70 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
-        <button
-          type="button"
-          onClick={togglePause}
-          className="flex-1 bg-white/20 hover:bg-white/30 text-white text-[11px] font-semibold py-1 rounded transition-colors"
-        >
-          {paused ? "▶ Resume" : "⏸ Pause View"}
-        </button>
-        <button
-          type="button"
-          onClick={onStop}
-          className="flex-1 bg-red-500/80 hover:bg-red-600 text-white text-[11px] font-semibold py-1 rounded transition-colors"
-        >
-          ⏹ Stop Watching
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   SVG Icon Components
-   ═══════════════════════════════════════════════════════════════ */
-
-function KioskPlaceholderIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-      <rect x="3" y="3" width="18" height="14" rx="2" />
-      <path strokeLinecap="round" d="M8 21h8M12 17v4" />
-      <circle cx="12" cy="10" r="2.5" />
-      <path strokeLinecap="round" d="M7 7h.01" />
-    </svg>
-  );
-}
-
-function KioskEmptyIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-      <rect x="2" y="3" width="20" height="14" rx="2.5" />
-      <path strokeLinecap="round" d="M8 21h8M12 17v4" />
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9 10h6M12 7v6" />
-    </svg>
-  );
-}
-
-function LocationPinIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5z" />
-    </svg>
-  );
-}
-=======
->>>>>>> Stashed changes
