@@ -452,31 +452,29 @@ function RatingRow({
 }) {
   return (
     <div className="py-4 px-6">
-      <div className="flex items-center justify-between gap-4">
-        <p className="text-xs font-bold text-gray-700 flex items-center gap-1.5">
-          <span className="uppercase tracking-wide">{label}</span>
-          {infoTerm ? <InfoTip term={infoTerm} align="left" /> : null}
-        </p>
-        <div className="flex flex-wrap gap-3 justify-end">
-          {RATING_OPTIONS.map((rating) => {
-            const selected = value === rating;
-            return (
-              <button
-                key={rating}
-                type="button"
-                onClick={() => onChange(rating)}
-                className={`w-[44px] h-[36px] border rounded-none text-sm font-extrabold transition-colors flex items-center justify-center ${
-                  selected
-                    ? "bg-red-600 text-white border-red-600"
-                    : "bg-white text-gray-900 border-gray-700 hover:bg-gray-50"
-                }`}
-                aria-pressed={selected}
-              >
-                {rating}
-              </button>
-            );
-          })}
-        </div>
+      <p className="text-xs font-bold text-gray-700 flex items-center gap-1.5 mb-2">
+        <span className="uppercase tracking-wide">{label}</span>
+        {infoTerm ? <InfoTip term={infoTerm} align="left" /> : null}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {RATING_OPTIONS.map((rating) => {
+          const selected = value === rating;
+          return (
+            <button
+              key={rating}
+              type="button"
+              onClick={() => onChange(rating)}
+              className={`min-w-[36px] h-[36px] px-2 border rounded-none text-sm font-extrabold transition-colors flex items-center justify-center ${
+                selected
+                  ? "bg-red-600 text-white border-red-600"
+                  : "bg-white text-gray-900 border-gray-700 hover:bg-gray-50"
+              }`}
+              aria-pressed={selected}
+            >
+              {rating}
+            </button>
+          );
+        })}
       </div>
     </div>
   );

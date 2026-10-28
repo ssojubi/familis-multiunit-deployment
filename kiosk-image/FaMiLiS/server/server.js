@@ -261,10 +261,16 @@ io.on('connection', (socket) => {
 
     if (role === 'viewer') {
       socket.to(normalizedRoomId).emit('viewer-connected', socket.id);
+      rooms.get(normalizedRoomId).forEach((entry, peerId) => {
+        if (entry.role === 'host') {
+          socket.emit('host-connected', peerId);
+        }
+      });
     } else if (role === 'host') {
       rooms.get(normalizedRoomId).forEach((entry, peerId) => {
         if (entry.role === 'viewer') {
           socket.emit('viewer-connected', peerId);
+          io.to(peerId).emit('host-connected', socket.id);
         }
       });
     }
@@ -276,6 +282,22 @@ io.on('connection', (socket) => {
     const destination = rooms.get(roomId)?.get(to);
     if (roomId && to && destination) {
       io.to(to).emit('signal', { ...rest, from: socket.id });
+    }
+  });
+
+  socket.on('request-stream', (data) => {
+    if (socket.data.auth.role !== "admin" || !socket.data.roomId) return;
+    const destination = rooms.get(socket.data.roomId)?.get(data?.to);
+    if (data?.to && destination?.role === "host") {
+      io.to(data.to).emit("stream-request", { from: socket.id });
+    }
+  });
+
+  socket.on('stop-stream', (data) => {
+    if (socket.data.auth.role !== "admin" || !socket.data.roomId) return;
+    const destination = rooms.get(socket.data.roomId)?.get(data?.to);
+    if (data?.to && destination?.role === "host") {
+      io.to(data.to).emit("stream-stop", { from: socket.id });
     }
   });
 
