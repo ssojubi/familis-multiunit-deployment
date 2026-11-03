@@ -30,6 +30,7 @@ helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
   --namespace monitoring --create-namespace --values monitoring/values.yaml --wait
 kubectl apply -f monitoring/familis-monitors.yaml
 kubectl apply -f monitoring/dashboard-configmap.yaml
+kubectl apply -f monitoring/test-overview-configmap.yaml
 ```
 
 After changing application metrics, rebuild and restart the API and worker:
@@ -82,7 +83,9 @@ Run in another terminal and keep it open. Loopback binding keeps monitoring priv
 kubectl -n monitoring port-forward --address 127.0.0.1 service/monitoring-grafana 3000:80
 ```
 
-Open [FaMiLiS Stress Test](http://localhost:3000/d/familis-stress-test/familis-stress-test).
+Start with [FaMiLiS — Test Day Overview](http://localhost:3000/d/familis-test-overview). Read [the test-day checklist and metric guide](TEST-DAY.md) before collecting results.
+
+For detailed diagnostics, open [FaMiLiS Stress Test](http://localhost:3000/d/familis-stress-test/familis-stress-test).
 Select the test time range and refresh every `5s`. Keep Grafana and Prometheus as
 `ClusterIP` services; do not expose them through public tunnels or ingress.
 

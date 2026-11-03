@@ -6,6 +6,7 @@ import { apiFetch } from "../lib/api";
 import { isConnectionPause, pauseForInterruption, startSessionRecovery, type RecoveryResult } from "../lib/sessionRecovery";
 import { getSocketUrl } from "../apiConfig";
 import { WEBRTC_CONFIGURATION } from "../webrtcConfig";
+import { receivePeerSignal } from "../lib/peerSignaling";
 import { InfoTip } from "../components/InfoTip";
 import { confidenceToTier, confidenceTooltip } from "../lib/confidence";
 import { hedonicLabel } from "../lib/ratingLabels";
@@ -257,12 +258,18 @@ export default function Session() {
     const pc = new RTCPeerConnection(WEBRTC_CONFIGURATION);
     monitorPeersRef.current.set(viewerId, pc);
     pc.onicecandidate = (event) => {
-      if (event.candidate) socket.emit("signal", { room: roomCode, to: viewerId, candidate: event.candidate });
+      if (event.candidate && monitorPeersRef.current.get(viewerId) === pc) socket.emit("signal", { room: roomCode, to: viewerId, candidate: event.candidate });
     };
     stream.getTracks().forEach((track) => pc.addTrack(track, stream));
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    socket.emit("signal", { room: roomCode, to: viewerId, sdp: offer });
+    try {
+      const offer = await pc.createOffer();
+      if (monitorPeersRef.current.get(viewerId) !== pc) return;
+      await pc.setLocalDescription(offer);
+      if (monitorPeersRef.current.get(viewerId) !== pc) return;
+      socket.emit("signal", { room: roomCode, to: viewerId, sdp: pc.localDescription ?? offer });
+    } catch (error) {
+      if (monitorPeersRef.current.get(viewerId) === pc) console.warn("Could not offer monitor video", error);
+    }
   }
 
   const [isRecording, setIsRecording] = useState((initialSession?.status ?? "active") === "active");
@@ -367,10 +374,10 @@ export default function Session() {
       if (!data.from) return;
       const pc = monitorPeersRef.current.get(data.from);
       if (!pc) return;
-      if (data.sdp?.type === "answer" && pc.signalingState === "have-local-offer") {
-        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-      } else if (data.candidate) {
-        try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch { /* ignore stale candidates */ }
+      try {
+        await receivePeerSignal(pc, data);
+      } catch (error) {
+        console.warn("Monitor connection setup failed", error);
       }
     });
     return () => {

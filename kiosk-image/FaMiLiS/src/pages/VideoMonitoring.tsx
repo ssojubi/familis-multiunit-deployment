@@ -6,6 +6,7 @@ import { apiFetch } from "../lib/api";
 import { PageHeader, PageTitle } from "../components/PageHeader";
 import { getAdminRoomContext, saveAdminRoomContext } from "../adminRoomContext";
 import { WEBRTC_CONFIGURATION } from "../webrtcConfig";
+import { receivePeerSignal } from "../lib/peerSignaling";
 
 type RecordingStatus = "ready" | "recording" | "paused" | "completed";
 
@@ -18,6 +19,7 @@ const API_BASE = getApiBase();
 interface ServerToClientEvents {
   "room-error": (data: { error?: string }) => void;
   "viewer-connected": (viewerId: string) => void;
+  "host-connected": (peerId: string) => void;
   "user-disconnected": (peerId: string) => void;
   "host-disconnected": () => void;
   signal: (data: {
@@ -35,6 +37,7 @@ interface ServerToClientEvents {
 }
 
 interface ClientToServerEvents {
+  "request-stream": (data: { to: string }) => void;
   "join-room": (roomId: string) => void;
   signal: (data: {
     room: string;
@@ -251,25 +254,55 @@ function KioskStatusTile({
 
 function LiveVideoView({ stream }: { stream: MediaStream }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [message, setMessage] = useState<string | null>("Connecting to camera…");
 
   useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.srcObject = stream;
-      videoRef.current.play().catch(() => {
-        if (videoRef.current) {
-          videoRef.current.muted = true;
-          videoRef.current.play();
-        }
-      });
-    }
-    return () => {
-      if (videoRef.current) {
-        videoRef.current.srcObject = null;
+    const video = videoRef.current;
+    if (!video) return;
+    let disposed = false;
+    setMessage("Connecting to camera…");
+    video.muted = true;
+    video.srcObject = stream;
+    void video.play().catch(() => {
+      if (!disposed) setMessage("Playback paused by the browser. Select Play video.");
+    });
+    const timeout = window.setTimeout(() => {
+      if (video.readyState < 2 || video.videoWidth === 0) {
+        setMessage("No camera video received. Check the tester's camera and select Reconnect cameras. Wi-Fi device isolation may block the video connection.");
       }
+    }, 12000);
+    const ended = () => setMessage("Camera stream ended. Select Reconnect cameras.");
+    const muted = () => setMessage("Waiting for camera video…");
+    const tracks = stream.getVideoTracks();
+    tracks.forEach((track) => {
+      track.addEventListener("ended", ended);
+      track.addEventListener("mute", muted);
+    });
+    return () => {
+      disposed = true;
+      window.clearTimeout(timeout);
+      tracks.forEach((track) => {
+        track.removeEventListener("ended", ended);
+        track.removeEventListener("mute", muted);
+      });
+      video.srcObject = null;
     };
   }, [stream]);
 
-  return <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />;
+  return (
+    <div className="relative w-full h-full bg-black">
+      <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover"
+        onPlaying={() => setMessage(null)}
+        onWaiting={() => setMessage("Waiting for camera video…")}
+        onError={() => setMessage("Video playback failed. Select Reconnect cameras.")} />
+      {message && <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/75 p-4 text-center text-sm text-white">
+        <p role="status">{message}</p>
+        {message.includes("Play video") && <button type="button" className="underline" onClick={() => {
+          void videoRef.current?.play().catch(() => setMessage("Unable to play this stream. Select Reconnect cameras."));
+        }}>Play video</button>}
+      </div>}
+    </div>
+  );
 }
 
 /* ──────────────────────────── Video Modal ──────────────────────────── */
@@ -797,7 +830,7 @@ function KioskMonitorDetail() {
     peerConnectionsRef.current.set(peerId, pc);
 
     pc.onicecandidate = (event) => {
-      if (event.candidate && socketRef.current && roomId) {
+      if (event.candidate && socketRef.current && roomId && peerConnectionsRef.current.get(peerId) === pc) {
         socketRef.current.emit("signal", {
           room: roomId,
           to: peerId,
@@ -807,6 +840,7 @@ function KioskMonitorDetail() {
     };
 
     pc.onconnectionstatechange = () => {
+      if (peerConnectionsRef.current.get(peerId) !== pc) return;
       const connState = getKioskConnectionState(pc, peerId);
       setKioskStatus(`Kiosk ${peerId.slice(0, 6)}: ${pc.connectionState}`);
       setRemoteKiosks((prev) =>
@@ -817,8 +851,8 @@ function KioskMonitorDetail() {
     };
 
     pc.ontrack = (event) => {
-      const stream = event.streams[0];
-      if (!stream) return;
+      if (peerConnectionsRef.current.get(peerId) !== pc) return;
+      const stream = event.streams[0] ?? new MediaStream([event.track]);
       setRemoteKiosks((prev) => {
         if (prev.some((k) => k.peerId === peerId)) {
           return prev.map((k) => k.peerId === peerId ? { ...k, stream } : k);
@@ -831,7 +865,7 @@ function KioskMonitorDetail() {
           status: sessionStatus?.status ?? null,
           sessionId: sessionStatus?.sessionId ?? null,
           foodName: sessionStatus?.foodName ?? null,
-          connectionState: sessionStatus?.sessionId != null ? "streaming" : "idle",
+          connectionState: getKioskConnectionState(pc, peerId),
         }];
 
       });
@@ -895,6 +929,18 @@ function KioskMonitorDetail() {
       setKioskStatus(data.error || "This testing room is no longer active.");
     });
 
+    socket.on("host-connected", (peerId) => {
+      if (role !== "viewer") return;
+      createPeerConnectionFor(peerId);
+      setRemoteKiosks((previous) => previous.some((kiosk) => kiosk.peerId === peerId) ? previous : [...previous, {
+        peerId, label: `Kiosk ${peerId.slice(0, 6)}`, stream: new MediaStream(),
+        status: sessionStatusByPeerRef.current.get(peerId)?.status ?? null,
+        sessionId: sessionStatusByPeerRef.current.get(peerId)?.sessionId ?? null,
+        foodName: sessionStatusByPeerRef.current.get(peerId)?.foodName ?? null,
+        connectionState: "idle",
+      }]);
+    });
+
     socket.on("signal", async (data) => {
       if (role !== "viewer") return;
       const peerId = data.from;
@@ -902,20 +948,13 @@ function KioskMonitorDetail() {
 
       const pc = createPeerConnectionFor(peerId);
 
-      if (data.sdp) {
-        if (data.sdp.type === "offer") {
-          setKioskStatus("Receiving stream…");
-          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
+      try {
+        await receivePeerSignal(pc, data, (answer) => {
           socket.emit("signal", { room: roomId, to: peerId, sdp: answer });
-        }
-      } else if (data.candidate) {
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-        } catch (e) {
-          console.error("ICE candidate error:", e);
-        }
+        });
+      } catch (error) {
+        console.warn("Video connection setup failed", error);
+        setKioskStatus("Camera connection failed. Select Reconnect cameras to retry.");
       }
     });
 
@@ -1023,6 +1062,17 @@ function KioskMonitorDetail() {
               <div className="flex flex-wrap justify-between items-center gap-3">
                 <p className="text-[13px] text-gray-500">
                   Status: <span className="font-semibold text-gray-700">{kioskStatus}</span>
+                  {role === "viewer" && <button type="button" className="ml-3 underline font-semibold text-gray-700" onClick={() => {
+                    const peers = new Set([...peerConnectionsRef.current.keys(), ...sessionStatusByPeerRef.current.keys()]);
+                    for (const peerId of peers) {
+                      peerConnectionsRef.current.get(peerId)?.close();
+                      peerConnectionsRef.current.delete(peerId);
+                      createPeerConnectionFor(peerId);
+                      socketRef.current?.emit("request-stream", { to: peerId });
+                    }
+                    setRemoteKiosks((previous) => previous.map((kiosk) => ({ ...kiosk, stream: new MediaStream(), connectionState: "idle" })));
+                    setKioskStatus(peers.size ? "Reconnecting cameras…" : "Waiting for a tester to join this room.");
+                  }}>Reconnect cameras</button>}
                   {" · "}
                   <span className="font-semibold text-gray-700">
                     {remoteKiosks.length} kiosk{remoteKiosks.length === 1 ? "" : "s"} connected

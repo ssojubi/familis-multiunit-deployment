@@ -1,0 +1,977 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: familis-test-overview-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  familis-test-overview.json: |
+    {
+      "uid": "familis-test-overview",
+      "title": "FaMiLiS \u2014 Test Day Overview",
+      "schemaVersion": 41,
+      "version": 1,
+      "refresh": "5s",
+      "time": {
+        "from": "now-30m",
+        "to": "now"
+      },
+      "tags": [
+        "familis",
+        "test-day"
+      ],
+      "panels": [
+        {
+          "id": 1,
+          "type": "text",
+          "title": "Start here \u2014 tomorrow\u2019s test run",
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 24,
+            "h": 5
+          },
+          "options": {
+            "mode": "markdown",
+            "content": "Set an **absolute start and end time** for one run. Record the kiosk count, physical/simulated mode and run ID separately. Summary panels use that selected interval; trends use rolling windows. Prometheus counts and p95 are estimates. Export request logs for the handout\u2019s exact counts and p95.\n\n**Zero** = observed no events. **Not measured / No data** = no usable samples; do not enter zero in the results table. With healthy collection, latency is undefined until frames are processed. Run a one-kiosk smoke test before scaling."
+          }
+        },
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "API metrics collection",
+          "description": "UP means the metrics endpoint is scraped; it does not prove successful user sessions.",
+          "gridPos": {
+            "x": 0,
+            "y": 5,
+            "w": 6,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "min(up{namespace=\"familis\",container=\"central-api\"}) or vector(-1)",
+              "refId": "A",
+              "legendFormat": "central-api: metrics collection",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "Not measured",
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "1": {
+                      "text": "UP",
+                      "color": "green"
+                    },
+                    "0": {
+                      "text": "DOWN",
+                      "color": "red"
+                    },
+                    "-1": {
+                      "text": "MISSING",
+                      "color": "red"
+                    }
+                  }
+                }
+              ]
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          }
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Worker metrics collection",
+          "description": "UP means the worker metrics endpoint is scraped.",
+          "gridPos": {
+            "x": 6,
+            "y": 5,
+            "w": 6,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "min(up{namespace=\"familis\",container=\"fer-worker\"}) or vector(-1)",
+              "refId": "A",
+              "legendFormat": "fer-worker: metrics collection",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "Not measured",
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "1": {
+                      "text": "UP",
+                      "color": "green"
+                    },
+                    "0": {
+                      "text": "DOWN",
+                      "color": "red"
+                    },
+                    "-1": {
+                      "text": "MISSING",
+                      "color": "red"
+                    }
+                  }
+                }
+              ]
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          }
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Ready shared processing workers",
+          "description": "Workers are shared across kiosks. One kiosk does not mean one total pod; replicas scale with CPU demand, not connected kiosk count.",
+          "gridPos": {
+            "x": 12,
+            "y": 5,
+            "w": 6,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "kube_deployment_status_replicas_available{namespace=\"familis\",deployment=\"fer-worker\"}",
+              "legendFormat": "",
+              "refId": "A",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "noValue": "Not measured",
+              "mappings": [
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "null",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                },
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "nan",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none"
+          }
+        },
+        {
+          "id": 5,
+          "type": "stat",
+          "title": "All application service pods",
+          "description": "Includes web, API, database, queue services and workers. Six pods with one worker is the baseline.",
+          "gridPos": {
+            "x": 18,
+            "y": 5,
+            "w": 6,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "sum(kube_pod_status_phase{namespace=\"familis\",phase=\"Running\"})",
+              "legendFormat": "",
+              "refId": "A",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "noValue": "Not measured",
+              "mappings": [
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "null",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                },
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "nan",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none"
+          }
+        },
+        {
+          "id": 6,
+          "type": "stat",
+          "title": "API acceptance success \u2014 selected interval (%)",
+          "description": "2xx / all requests that reached central API. Excludes client network failures and later processing failures. This is NOT the handout\u2019s kiosk request success rate.",
+          "gridPos": {
+            "x": 0,
+            "y": 10,
+            "w": 6,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "100 * sum(rate(familis_ingest_requests_total{namespace=\"familis\",container=\"central-api\",status_class=\"2xx\"}[$__range])) / sum(rate(familis_ingest_requests_total{namespace=\"familis\",container=\"central-api\"}[$__range]))",
+              "refId": "A",
+              "legendFormat": "Frame ingest HTTP success (%)",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "noValue": "Not measured",
+              "mappings": [
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "null",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                },
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "nan",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                }
+              ]
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          }
+        },
+        {
+          "id": 7,
+          "type": "stat",
+          "title": "Mean API acceptance latency (ms)",
+          "description": "Server-side ingest timing including queue acknowledgement. Excludes kiosk network time and asynchronous inference. Selected interval.",
+          "gridPos": {
+            "x": 6,
+            "y": 10,
+            "w": 6,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "1000 * (sum(rate(familis_ingest_request_seconds_sum{namespace=\"familis\",container=\"central-api\"}[$__range])) / sum(rate(familis_ingest_request_seconds_count{namespace=\"familis\",container=\"central-api\"}[$__range])))",
+              "refId": "A",
+              "legendFormat": "API ingest response time (mean, s)",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms",
+              "noValue": "Not measured",
+              "mappings": [
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "null",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                },
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "nan",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                }
+              ]
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          }
+        },
+        {
+          "id": 8,
+          "type": "stat",
+          "title": "Mean inference latency (ms)",
+          "description": "Successful prediction calls including decode and face detection, excluding database storage. Includes retry attempts. Selected interval.",
+          "gridPos": {
+            "x": 12,
+            "y": 10,
+            "w": 6,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "1000 * (sum(rate(familis_frame_inference_seconds_sum{namespace=\"familis\",container=\"fer-worker\"}[$__range])) / sum(rate(familis_frame_inference_seconds_count{namespace=\"familis\",container=\"fer-worker\"}[$__range])))",
+              "refId": "A",
+              "legendFormat": "Inference latency (mean, s)",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms",
+              "noValue": "Not measured",
+              "mappings": [
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "null",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                },
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "nan",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                }
+              ]
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          }
+        },
+        {
+          "id": 9,
+          "type": "stat",
+          "title": "Saved-result throughput (frames/s)",
+          "description": "New saved results per second averaged over the selected interval. A frame is not an entire kiosk session.",
+          "gridPos": {
+            "x": 18,
+            "y": 10,
+            "w": 6,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(familis_frames_processed_total{namespace=\"familis\",container=\"fer-worker\"}[$__range]))",
+              "refId": "A",
+              "legendFormat": "Saved-result throughput (frames/s)",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "noValue": "Not measured",
+              "mappings": [
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "null",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                },
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "nan",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                }
+              ]
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          }
+        },
+        {
+          "id": 10,
+          "type": "timeseries",
+          "title": "p95 queue-to-saved result (ms)",
+          "description": "Histogram estimate: 95% of observed API-acceptance-to-storage durations fall below this. Excludes kiosk upload and response delivery; NOT kiosk end-to-end p95.",
+          "gridPos": {
+            "x": 0,
+            "y": 15,
+            "w": 12,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "1000 * (histogram_quantile(0.95, sum by (le) (rate(familis_frame_queue_to_result_seconds_bucket{namespace=\"familis\",container=\"fer-worker\"}[$__range]))))",
+              "legendFormat": "Upload to result",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms",
+              "min": 0,
+              "noValue": "Not measured",
+              "mappings": [
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "null",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                },
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "nan",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": 11,
+          "type": "stat",
+          "title": "Container restarts \u2014 selected interval",
+          "description": "Counter increase for application namespace. Investigate nonzero values and save logs; not a pass/fail conclusion alone.",
+          "gridPos": {
+            "x": 12,
+            "y": 15,
+            "w": 12,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"familis\"}[$__range])) or vector(0)",
+              "legendFormat": "Restarts",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "min": 0,
+              "noValue": "Not measured",
+              "mappings": [
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "null",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                },
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "nan",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": 12,
+          "type": "timeseries",
+          "title": "Accepted and saved frames/min \u2014 rolling 1 min",
+          "description": "Compare trends; a gap can mean queue delay or failure. These are different event populations, not proof of exact loss or integrity.",
+          "gridPos": {
+            "x": 0,
+            "y": 20,
+            "w": 12,
+            "h": 7
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(familis_frames_accepted_total{namespace=\"familis\",container=\"central-api\"}[1m])) * 60",
+              "legendFormat": "Frames received",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(rate(familis_frames_processed_total{namespace=\"familis\",container=\"fer-worker\"}[1m])) * 60",
+              "legendFormat": "Frames finished",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "min": 0,
+              "noValue": "Not measured",
+              "mappings": [
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "null",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                },
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "nan",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": 13,
+          "type": "timeseries",
+          "title": "Processing failures and dead-letter frames \u2014 rolling 1 min",
+          "description": "Failures count attempts, including retries. Dead-letter frames require investigation. Do not sum these as distinct failed requests.",
+          "gridPos": {
+            "x": 12,
+            "y": 20,
+            "w": 12,
+            "h": 7
+          },
+          "targets": [
+            {
+              "expr": "sum(increase(familis_frames_failed_total{namespace=\"familis\",container=\"fer-worker\"}[1m]))",
+              "legendFormat": "Failed attempts",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(increase(familis_frames_dead_lettered_total{namespace=\"familis\",container=\"fer-worker\"}[1m]))",
+              "legendFormat": "Moved to failure queue",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "min": 0,
+              "noValue": "Not measured",
+              "mappings": [
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "null",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                },
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "nan",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": 14,
+          "type": "timeseries",
+          "title": "Application CPU per pod (cores)",
+          "description": "Rolling 1-minute CPU usage; 1.0 equals one CPU core. Namespace workload only, not host CPU percentage.",
+          "gridPos": {
+            "x": 0,
+            "y": 27,
+            "w": 12,
+            "h": 7
+          },
+          "targets": [
+            {
+              "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"familis\",job=\"kubelet\",metrics_path=\"/metrics/cadvisor\",pod!=\"\",id=~\".*pod[^/]+\"}[1m]))",
+              "legendFormat": "{{pod}}",
+              "refId": "A",
+              "instant": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "cores",
+              "min": 0,
+              "noValue": "Not measured",
+              "mappings": [
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "null",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                },
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "nan",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "id": 15,
+          "type": "timeseries",
+          "title": "Application RAM per pod",
+          "description": "Working-set memory per application pod. This is not whole-host RAM; report the measurement scope.",
+          "gridPos": {
+            "x": 12,
+            "y": 27,
+            "w": 12,
+            "h": 7
+          },
+          "targets": [
+            {
+              "expr": "max by (pod) (container_memory_working_set_bytes{namespace=\"familis\",job=\"kubelet\",metrics_path=\"/metrics/cadvisor\",pod!=\"\",id=~\".*pod[^/]+\"})",
+              "legendFormat": "{{pod}}",
+              "refId": "A",
+              "instant": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "min": 0,
+              "noValue": "Not measured",
+              "mappings": [
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "null",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                },
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "nan",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "id": 16,
+          "type": "timeseries",
+          "title": "Shared workers \u2014 current vs requested",
+          "description": "HPA target is 65% of requested worker CPU, min 1 / max 6. Scale-down can take five minutes; more kiosks need not immediately add pods.",
+          "gridPos": {
+            "x": 0,
+            "y": 34,
+            "w": 12,
+            "h": 7
+          },
+          "targets": [
+            {
+              "expr": "kube_horizontalpodautoscaler_status_current_replicas{namespace=\"familis\",horizontalpodautoscaler=\"fer-worker\"}",
+              "legendFormat": "Current",
+              "refId": "A",
+              "instant": false
+            },
+            {
+              "expr": "kube_horizontalpodautoscaler_status_desired_replicas{namespace=\"familis\",horizontalpodautoscaler=\"fer-worker\"}",
+              "legendFormat": "Desired",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "noValue": "Not measured",
+              "mappings": [
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "null",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                },
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "nan",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "id": 17,
+          "type": "stat",
+          "title": "Worker scaling signal (% of CPU request)",
+          "description": "Rolling 5-minute average; compare against 65% HPA target. Not percent of whole server capacity.",
+          "gridPos": {
+            "x": 12,
+            "y": 34,
+            "w": 12,
+            "h": 5
+          },
+          "targets": [
+            {
+              "expr": "100 * sum(rate(container_cpu_usage_seconds_total{namespace=\"familis\",container=\"fer-worker\",job=\"kubelet\",metrics_path=\"/metrics/cadvisor\"}[5m])) / sum(kube_pod_container_resource_requests{namespace=\"familis\",container=\"fer-worker\",resource=\"cpu\"})",
+              "refId": "A",
+              "legendFormat": "Worker CPU / requested CPU (%)",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "noValue": "Not measured",
+              "mappings": [
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "null",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                },
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "nan",
+                    "result": {
+                      "text": "No samples",
+                      "color": "gray"
+                    }
+                  }
+                }
+              ]
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          }
+        },
+        {
+          "id": 18,
+          "type": "text",
+          "title": "Measurements you must collect separately",
+          "gridPos": {
+            "x": 0,
+            "y": 41,
+            "w": 24,
+            "h": 8
+          },
+          "options": {
+            "mode": "markdown",
+            "content": "**Table A:** client requests sent/succeeded/timed out, client submission-to-completed-result timings, and backend-host CPU/RAM. API HTTP 202 means queued, not completed inference. Never substitute server acceptance latency for client end-to-end latency.\n\n**Table B:** reconcile an independent expected manifest against stored records, including kiosk/session/participant/product links, missing records and duplicates. Graphs cannot prove session isolation.\n\n**Table C:** log fault and restoration times; measure recovery until the first successful transaction. Verify the same session ID resumes and other kiosks remain usable. Frames captured during a disconnection are not buffered for replay.\n\n**Table D:** keep duration and workload fixed, retain logs and compare early/late trends. Use N/T for unperformed scenarios and Not measured for missing evidence. See monitoring/TEST-DAY.md."
+          }
+        }
+      ],
+      "links": [
+        {
+          "title": "Detailed diagnostics",
+          "type": "link",
+          "url": "/d/familis-stress-test/familis-stress-test",
+          "targetBlank": false
+        }
+      ]
+    }

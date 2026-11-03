@@ -13,6 +13,7 @@ import {
   getOrCreateBrowserKioskId,
 } from "../testerContext";
 import { WEBRTC_CONFIGURATION } from "../webrtcConfig";
+import { receivePeerSignal } from "../lib/peerSignaling";
 
 const SESSIONS_API_BASE = getApiBase();
 const SOCKET_SERVER_URL = getSocketUrl();
@@ -137,6 +138,7 @@ export default function TesterSession() {
 
     socket.on("viewer-connected", (viewerId) => {
       viewerIdsRef.current.add(viewerId);
+      if (isRecordingRef.current) void publishCameraStream(viewerId);
     });
 
     socket.on("stream-request", (data) => {
@@ -160,14 +162,10 @@ export default function TesterSession() {
       const pc = peerConnectionsRef.current.get(peerId);
       if (!pc) return;
 
-      if (data.sdp?.type === "answer" && pc.signalingState === "have-local-offer") {
-        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-      } else if (data.candidate) {
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-        } catch (err) {
-          console.error("ICE candidate error:", err);
-        }
+      try {
+        await receivePeerSignal(pc, data);
+      } catch (error) {
+        console.warn("Monitor connection setup failed", error);
       }
     });
 
@@ -218,7 +216,7 @@ export default function TesterSession() {
     peerConnectionsRef.current.set(viewerId, pc);
 
     pc.onicecandidate = (event) => {
-      if (event.candidate && socketRef.current && roomId) {
+      if (event.candidate && socketRef.current && roomId && peerConnectionsRef.current.get(viewerId) === pc) {
         socketRef.current.emit("signal", {
           room: roomId,
           to: viewerId,
@@ -242,17 +240,20 @@ export default function TesterSession() {
     const socket = socketRef.current;
     if (!socket) return;
 
-    const stream = await ensureCameraStream();
-    cleanupPeerConnection(viewerId);
-    const pc = createPeerConnection(viewerId);
-    stream.getTracks().forEach((track) => {
-      pc.addTrack(track, stream);
-    });
-
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    socket.emit("signal", { room: roomId, to: viewerId, sdp: offer });
-    console.log("[TesterSession] Sent WebRTC offer", { roomId, viewerId });
+    try {
+      const stream = await ensureCameraStream();
+      if (!socket.connected || !isRecordingRef.current || !viewerIdsRef.current.has(viewerId)) return;
+      cleanupPeerConnection(viewerId);
+      const pc = createPeerConnection(viewerId);
+      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+      const offer = await pc.createOffer();
+      if (peerConnectionsRef.current.get(viewerId) !== pc) return;
+      await pc.setLocalDescription(offer);
+      if (peerConnectionsRef.current.get(viewerId) !== pc) return;
+      socket.emit("signal", { room: roomId, to: viewerId, sdp: pc.localDescription ?? offer });
+    } catch (error) {
+      console.warn("Could not offer monitor video", error);
+    }
   }
 
   function cleanupPeerConnection(peerId?: string) {

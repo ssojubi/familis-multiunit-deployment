@@ -507,9 +507,43 @@ kubectl -n familis rollout status deployment/familis --timeout=180s
 The public address appears under **Manage Kiosks** as the mobile access URL.
 It uses publicly trusted HTTPS, so mobile devices do not need the local
 FaMiLiS certificate. The address remains valid only while the `cloudflared`
-process is running. Live monitoring uses direct WebRTC between the tester and
-administrator devices. Use the same phone hotspot when the school network
-blocks peer-to-peer media.
+process is running. Open this same public address on both the tester and
+administrator devices, log in separately, and select the same testing room.
+Camera permission is specific to the address: allow it again on the Cloudflare
+address if prompted. A working local camera preview verifies capture, not
+successful delivery to the monitor.
+
+Live monitoring uses WebRTC between the tester and administrator devices.
+Cloudflare Tunnel carries the website and Socket.IO signaling; it does not make
+this application's direct WebRTC media into a relayed video connection. The
+current ICE configuration has STUN servers only, with no TURN relay. Even on the
+same Wi-Fi, guest/client isolation or firewall rules can prevent video.
+
+### If a monitoring camera is blank
+
+- First confirm the tester sees a local camera preview and both users joined the
+  same room. Reload both pages after deploying camera fixes.
+- The monitor now reports waiting/ended/playback failure instead of silently
+  showing a black video. Use **Reconnect cameras** to request fresh connections;
+  use **Play video** if the browser blocks playback.
+- Incoming ICE candidates are buffered until the remote description is installed,
+  and SDP operations are serialized. A tester already recording also sends a
+  fresh offer when a monitor joins or reconnects.
+- Test both devices on one phone hotspot, with Wi-Fi client isolation disabled.
+  If it works there but not on school/guest Wi-Fi, investigate network isolation.
+  For networks that cannot establish a direct connection, deploy a reachable TURN
+  service and configure authenticated ICE relay credentials; restarting the
+  Cloudflare tunnel alone will not supply that relay.
+- For diagnosis, record the monitor's connection message and browser WebRTC
+  connection/ICE status. Do not publish raw SDP, credentials, or participant video.
+
+Validate remote video with two actual devices before claiming the Cloudflare
+camera issue is resolved. Automated signaling tests exercise ordering and retries,
+not the Wi-Fi/network path. Keep monitoring traffic/workload consistent during
+stress-test repetitions.
+
+For Grafana metrics access and its local port-forward, see
+[monitoring/README.md](monitoring/README.md).
 
 ## Food Testing Workflow
 
