@@ -259,7 +259,11 @@ io.on('connection', (socket) => {
     if (!rooms.has(normalizedRoomId)) rooms.set(normalizedRoomId, new Map());
     rooms.get(normalizedRoomId).set(socket.id, { role });
 
+    socket.emit('room-joined');
     if (role === 'viewer') {
+      rooms.get(normalizedRoomId).forEach((entry, peerId) => {
+        if (entry.status) socket.emit('tester-session-status', { ...entry.status, from: peerId });
+      });
       socket.to(normalizedRoomId).emit('viewer-connected', socket.id);
       rooms.get(normalizedRoomId).forEach((entry, peerId) => {
         if (entry.role === 'host') {
@@ -314,8 +318,12 @@ io.on('connection', (socket) => {
 
   socket.on('tester-session-status', (data) => {
     if (socket.data.auth.role !== "tester" || !socket.data.roomId) return;
-    const { room: _room, ...rest } = data ?? {};
-    socket.to(socket.data.roomId).emit('tester-session-status', { ...rest, from: socket.id });
+    const { status, sessionId, foodName } = data ?? {};
+    if (!['ready', 'recording', 'paused', 'completed'].includes(status)) return;
+    const entry = rooms.get(socket.data.roomId)?.get(socket.id);
+    if (!entry) return;
+    entry.status = { status, sessionId, foodName };
+    socket.to(socket.data.roomId).emit('tester-session-status', { ...entry.status, from: socket.id });
   });
 
   socket.on('disconnect', () => {
@@ -2581,6 +2589,7 @@ async function start() {
           s.participant_id,
           s.food_id,
           s.status,
+          s.invalidated_at,
           s.start_time,
           s.end_time,
           tr.room_code,
@@ -2612,6 +2621,7 @@ async function start() {
           participantId: r.participant_id == null ? null : Number(r.participant_id),
           foodId: Number(r.food_id),
           status: r.status,
+          invalidatedAt: toIsoOrNull(r.invalidated_at),
           startTime: toIsoOrNull(r.start_time),
           endTime: toIsoOrNull(r.end_time),
           roomCode: r.room_code == null ? null : String(r.room_code),
@@ -2635,7 +2645,7 @@ async function start() {
   // Processing health used by the recording screens.
   app.get("/api/emotion/health", async (_req, res) => {
     try {
-      const r = await fetch(`${CENTRAL_SERVER_URL}/api/health`);
+      const r = await fetch(`${CENTRAL_SERVER_URL}/api/health`, { signal: AbortSignal.timeout(3000) });
       const j = await r.json().catch(() => null);
       const ok = r.ok && j?.status === "ok" && j?.kafka_ready === true;
       return res.status(ok ? 200 : 503).json({
@@ -2693,6 +2703,7 @@ async function start() {
           String(req.body?.kiosk_id || req.body?.kioskId || `session-${sessionId}`).trim();
         const centralResponse = await fetch(`${CENTRAL_SERVER_URL}/api/ingest/frame`, {
           method: "POST",
+          signal: AbortSignal.timeout(6000),
           headers: {
             "Content-Type": "application/json",
             ...(INTERNAL_API_TOKEN
@@ -3006,7 +3017,7 @@ async function start() {
       const [result] = await pool.query(
         `
         UPDATE sessions
-        SET end_time = NOW(),
+        SET end_time = COALESCE(end_time, NOW()),
             status = 'completed'
         WHERE session_id = ?
       `,

@@ -61,6 +61,7 @@ class WorkerReliabilityTests(IsolatedAsyncioTestCase):
             patch.object(worker.asyncio, "sleep", new=AsyncMock()),
             patch.object(worker.FRAMES_FAILED, "inc") as failed,
             patch.object(worker.FRAMES_PROCESSED, "inc") as processed,
+            patch.object(worker.FRAME_INFERENCE_SECONDS, "observe") as inference,
         ):
             await worker.start_fer_consumer()
 
@@ -68,6 +69,9 @@ class WorkerReliabilityTests(IsolatedAsyncioTestCase):
         self.assertEqual(store.await_count, 2)
         failed.assert_called_once()
         processed.assert_called_once()
+        # Prediction timings include the successful prediction before a storage retry.
+        self.assertEqual(inference.call_count, 2)
+        self.assertTrue(all(call.args[0] >= 0 for call in inference.call_args_list))
         failed_producer.send_and_wait.assert_not_awaited()
         consumer.commit.assert_awaited_once_with(
             {worker.TopicPartition("video-frames", 0): 8}
@@ -123,10 +127,12 @@ class WorkerReliabilityTests(IsolatedAsyncioTestCase):
             patch.object(worker, "predict_frame", side_effect=ValueError("bad image")),
             patch.object(worker.asyncio, "sleep", new=AsyncMock()),
             patch.object(worker.FRAMES_DEAD_LETTERED, "inc") as dead_lettered,
+            patch.object(worker.FRAME_INFERENCE_SECONDS, "observe") as inference,
         ):
             await worker.start_fer_consumer()
 
         self.assertEqual(failed_producer.send_and_wait.await_count, 1)
         self.assertEqual(failed_producer.send_and_wait.call_args.args[0], "video-frames-failed")
         dead_lettered.assert_called_once()
+        inference.assert_not_called()
         consumer.commit.assert_awaited_once()

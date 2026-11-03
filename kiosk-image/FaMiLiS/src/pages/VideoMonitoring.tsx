@@ -7,7 +7,8 @@ import { PageHeader, PageTitle } from "../components/PageHeader";
 import { getAdminRoomContext, saveAdminRoomContext } from "../adminRoomContext";
 import { WEBRTC_CONFIGURATION } from "../webrtcConfig";
 
-/* ───────────────────────── Shared types ───────────────────────── */
+type RecordingStatus = "ready" | "recording" | "paused" | "completed";
+
 
 type Role = "host" | "viewer" | null;
 
@@ -27,7 +28,7 @@ interface ServerToClientEvents {
   
   "tester-session-status": (data: {
     from?: string;
-    status: "recording" | "completed";
+    status: RecordingStatus;
     sessionId?: number;
     foodName?: string;
   }) => void;
@@ -47,8 +48,9 @@ type KioskConnectionState = "streaming" | "idle" | "offline";
 
 type RemoteKiosk = {
   peerId: string;
-  stream: MediaStream;
   label: string;
+  stream: MediaStream;
+  status: RecordingStatus | null;
   sessionId: number | null;
   foodName: string | null;
   connectionState: KioskConnectionState;
@@ -200,6 +202,7 @@ function KioskStatusTile({
               <span className="text-sm font-bold text-gray-900 truncate">{kiosk.label}</span>
             </div>
             <StatusBadge state={kiosk.connectionState} />
+            <span className="ml-2 text-xs text-gray-600">{kiosk.status === "paused" ? "Recording paused" : kiosk.status === "recording" ? "Recording" : kiosk.status === "completed" ? "Session completed" : "Ready"}</span>
             {kiosk.foodName ? (
               <p className="text-[11px] text-gray-500 mt-1.5 truncate">
                 🍽️ {kiosk.foodName}
@@ -293,6 +296,7 @@ function VideoModal({
               <h3 className="text-sm font-bold text-gray-900 truncate">{kiosk.label}</h3>
               <div className="flex items-center gap-2 mt-0.5">
                 <StatusBadge state={kiosk.connectionState} />
+            <span className="ml-2 text-xs text-gray-600">{kiosk.status === "paused" ? "Recording paused" : kiosk.status === "recording" ? "Recording" : kiosk.status === "completed" ? "Session completed" : "Ready"}</span>
                 {kiosk.foodName ? (
                   <span className="text-[11px] text-gray-500">
                     🍽️ {kiosk.foodName}
@@ -639,7 +643,7 @@ function KioskMonitorDetail() {
   const [roomId, setRoomId] = useState(() => searchParams.get("room") || getAdminRoomContext().roomId);
   const [publicAccessUrl, setPublicAccessUrl] = useState<string>("");
   const [remoteKiosks, setRemoteKiosks] = useState<RemoteKiosk[]>([]);
-  const sessionStatusByPeerRef = useRef<Map<string, { sessionId: number | null; foodName: string | null }>>(new Map());
+  const sessionStatusByPeerRef = useRef<Map<string, { status: RecordingStatus; sessionId: number | null; foodName: string | null }>>(new Map());
   const socketRef = useRef<Socket<ServerToClientEvents, ClientToServerEvents> | null>(
     null,
   );
@@ -816,17 +820,20 @@ function KioskMonitorDetail() {
       const stream = event.streams[0];
       if (!stream) return;
       setRemoteKiosks((prev) => {
-        if (prev.find((k) => k.peerId === peerId)) return prev;
-        const label = `Kiosk ${prev.length + 1}`;
+        if (prev.some((k) => k.peerId === peerId)) {
+          return prev.map((k) => k.peerId === peerId ? { ...k, stream } : k);
+        }
         const sessionStatus = sessionStatusByPeerRef.current.get(peerId);
         return [...prev, {
           peerId,
           stream,
-          label,
+          label: `Kiosk ${peerId.slice(0, 6)}`,
+          status: sessionStatus?.status ?? null,
           sessionId: sessionStatus?.sessionId ?? null,
           foodName: sessionStatus?.foodName ?? null,
           connectionState: sessionStatus?.sessionId != null ? "streaming" : "idle",
         }];
+
       });
     };
 
@@ -875,6 +882,11 @@ function KioskMonitorDetail() {
       socket.emit("join-room", roomId);
     });
 
+    socket.on("disconnect", () => {
+      cleanupAllPeerConnections();
+      setKioskStatus("Disconnected. Reconnecting…");
+    });
+
     socket.on("connect_error", () => {
       setKioskStatus("Connection failed — check that server.js is running.");
     });
@@ -911,18 +923,18 @@ function KioskMonitorDetail() {
       const { from, status, sessionId, foodName } = data;
       if (!from) return;
 
-      sessionStatusByPeerRef.current.set(from, status === "recording"
-        ? { sessionId: sessionId ?? null, foodName: foodName ?? null }
-        : { sessionId: null, foodName: null });
+      sessionStatusByPeerRef.current.set(from, { status, sessionId: sessionId ?? null, foodName: foodName ?? null });
 
       setRemoteKiosks((prev) =>
         prev.map((k) =>
           k.peerId === from
             ? {
                 ...k,
-                sessionId: status === "recording" ? sessionId ?? null : null,
-                foodName: status === "recording" ? foodName ?? null : null,
-                connectionState: status === "recording" ? "streaming" : "idle",
+                status,
+                sessionId: sessionId ?? null,
+                foodName: foodName ?? null,
+                connectionState: k.connectionState,
+
               }
             : k,
         ),
@@ -933,7 +945,7 @@ function KioskMonitorDetail() {
           ? foodName
             ? `Tester started tasting: ${foodName} (session #${sessionId ?? "?"})`
             : `Tester started their session (session #${sessionId ?? "?"})`
-          : "Tester completed their session.",
+          : `Tester status: ${status}.`,
       );
     });
 
@@ -1121,6 +1133,7 @@ function KioskMonitorDetail() {
                           <h3 className="text-sm font-bold text-gray-900 truncate">{spotlightKiosk.label}</h3>
                           <div className="flex items-center gap-2 mt-0.5">
                             <StatusBadge state={spotlightKiosk.connectionState} />
+                            <span className="ml-2 text-xs text-gray-600">{spotlightKiosk.status === "paused" ? "Recording paused" : spotlightKiosk.status === "recording" ? "Recording" : spotlightKiosk.status === "completed" ? "Session completed" : "Ready"}</span>
                             {spotlightKiosk.foodName ? (
                               <span className="text-[11px] text-gray-500">
                                 🍽️ {spotlightKiosk.foodName}
@@ -1162,6 +1175,7 @@ function KioskMonitorDetail() {
                             {kiosk.label}
                           </span>
                           <StatusBadge state={kiosk.connectionState} />
+            <span className="ml-2 text-xs text-gray-600">{kiosk.status === "paused" ? "Recording paused" : kiosk.status === "recording" ? "Recording" : kiosk.status === "completed" ? "Session completed" : "Ready"}</span>
                           {kiosk.sessionId != null && (
                             <span className="absolute top-2 right-2 text-[10px] text-white bg-green-600/80 px-2 py-0.5 rounded font-semibold">
                               Recording{kiosk.foodName ? ` · ${kiosk.foodName}` : ""} · S-{kiosk.sessionId}
@@ -1303,6 +1317,7 @@ function KioskMonitorDetail() {
               </div>
             ) : null}
           </section>
+
 
           {/* Public access URL info */}
           <div className="mt-4">

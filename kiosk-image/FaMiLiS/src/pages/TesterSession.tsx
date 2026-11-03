@@ -20,6 +20,7 @@ const FRAME_CAPTURE_MS = 750;
 const MAX_FRAME_WIDTH = 960;
 
 type ServerToClientEvents = {
+  "room-joined": () => void;
   "viewer-connected": (viewerId: string) => void;
   "stream-request": (data: { from?: string }) => void;
   "stream-stop": (data: { from?: string }) => void;
@@ -81,6 +82,7 @@ export default function TesterSession() {
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(document.createElement("canvas"));
   const isRecordingRef = useRef(false);
+  const latestStatusRef = useRef<Parameters<ClientToServerEvents["tester-session-status"]>[0] | null>(null);
   const sessionIdRef = useRef<number | null>(null);
   const frameInFlightRef = useRef(false);
 
@@ -123,6 +125,14 @@ export default function TesterSession() {
         `[TesterSession] Socket.IO connected. Joining room "${roomId}" as host`,
       );
       socket.emit("join-room", roomId);
+    });
+
+    socket.on("room-joined", () => {
+      if (latestStatusRef.current) socket.emit("tester-session-status", latestStatusRef.current);
+    });
+    socket.on("disconnect", () => {
+      cleanupPeerConnection();
+      viewerIdsRef.current.clear();
     });
 
     socket.on("viewer-connected", (viewerId) => {
@@ -260,12 +270,9 @@ export default function TesterSession() {
     sid?: number,
     fName?: string,
   ) {
-    socketRef.current?.emit("tester-session-status", {
-      room: roomId,
-      status: statusValue,
-      sessionId: sid,
-      foodName: fName,
-    });
+    const payload = { room: roomId, status: statusValue, sessionId: sid, foodName: fName };
+    latestStatusRef.current = payload;
+    if (socketRef.current?.connected) socketRef.current.emit("tester-session-status", payload);
   }
 
   const handleStartSession = async () => {

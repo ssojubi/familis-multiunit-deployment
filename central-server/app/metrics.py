@@ -17,6 +17,11 @@ FRAME_PROCESSING_SECONDS = Histogram(
     "familis_frame_processing_seconds", "FER processing and storage duration",
     buckets=(0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 60),
 )
+FRAME_INFERENCE_SECONDS = Histogram(
+    "familis_frame_inference_seconds",
+    "Successful prediction call duration including image decoding and face detection; excludes storage",
+    buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10),
+)
 FRAME_END_TO_END_SECONDS = Histogram(
     "familis_frame_end_to_end_seconds", "Capture to database commit duration",
     buckets=(0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300),
@@ -33,6 +38,9 @@ INGEST_REQUESTS = Counter(
     "familis_ingest_requests_total", "Frame ingest HTTP requests",
     ["status_class"],
 )
+# Export idle outcomes as zero; absent series must not look like missing scrapes.
+for status_class in ("2xx", "3xx", "4xx", "5xx"):
+    INGEST_REQUESTS.labels(status_class=status_class)
 INGEST_REQUEST_SECONDS = Histogram(
     "familis_ingest_request_seconds", "Frame ingest request duration",
     buckets=(0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10),

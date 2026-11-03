@@ -95,7 +95,8 @@ Verify metrics before recording results:
 - Frames received and finished: increase after a normal session.
 - Scrape targets: both `UP`. Investigate `N/A`, query errors, or frames held after retries.
 
-Run 2, 5, 10, 20, and 30 kiosks for a fixed duration per load level.
+Follow [the evaluation protocol](STRESS-TEST-PROTOCOL.md) for definitions, integrity and recovery checks, the results table, and graph requirements.
+Run 1, 2, 3, 4, 5, 10, 15, 20, and 30 kiosks for a fixed duration per load level.
 Record machine resources, capture rate, actual client count, and start/end times.
 For each run, record accepted/processed frames, failures, p95 processing time,
 CPU, RAM, worker replicas, and restarts. Let the queue drain, then calculate
@@ -126,7 +127,7 @@ sudo systemctl stop docker
 | Port 3000 occupied | Use `3300:80` in the Grafana command; open `http://localhost:3300`. |
 | Kubernetes unavailable | Check Docker and run `docker start familis-control-plane`. |
 | Dashboard missing | Run `kubectl apply -f monitoring/dashboard-configmap.yaml`, then refresh. |
-| Blank charts | Generate traffic and check the selected time range. |
+| Blank charts | Check the two metrics collection panels first. DOWN/MISSING indicates collection trouble. If UP, verify real frame uploads return 202 with a frameId, then allow two scrapes. Latency remains undefined until observations exist. |
 
 To inspect scrape targets or queries in Prometheus:
 
@@ -136,3 +137,29 @@ kubectl -n monitoring port-forward --address 127.0.0.1 \
 ```
 
 Open `http://localhost:9090`. Stop the tunnel with `Ctrl+C` when done.
+
+Useful Prometheus checks (run before each experiment):
+
+```promql
+up{namespace="familis",container=~"central-api|fer-worker"}
+familis_frames_accepted_total{namespace="familis",container="central-api"}
+familis_frames_processed_total{namespace="familis",container="fer-worker"}
+familis_ingest_requests_total{namespace="familis",container="central-api"}
+```
+
+Both processes import the shared metric definitions, so filter by the producing
+container as above. An API counter on the worker is an unused zero, not API traffic.
+HTTP outcome series are initialized to zero in the updated image. Inference timing
+also requires rebuilding and restarting the worker; applying the dashboard alone
+does not install application instrumentation.
+
+If collection is UP but accepted frames stay zero during a session, check browser
+Network requests to `/api/sessions/:sessionId/frames`: successful forwarding returns
+202 and a `frameId`. A 4xx/5xx, camera failure, inactive capture, or an old web image
+can prevent processing load. Verify the actual test deployment; these checks do not
+establish the cause of an older screenshot after pods have restarted.
+
+Six running pods with one FER worker is the expected shared-service baseline.
+Inspect `kubectl -n familis get hpa fer-worker` for the current CPU/target values.
+Do not lower the target just to make replica graphs move; assess latency and saved
+throughput under active frame capture first.

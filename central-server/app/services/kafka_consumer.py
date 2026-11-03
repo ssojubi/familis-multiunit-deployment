@@ -14,7 +14,7 @@ import os
 import time
 
 from ..metrics import (FRAMES_PROCESSED, FRAMES_FAILED,
-                       FRAME_PROCESSING_SECONDS, FRAME_END_TO_END_SECONDS,
+                       FRAME_PROCESSING_SECONDS, FRAME_INFERENCE_SECONDS, FRAME_END_TO_END_SECONDS,
                        FRAME_QUEUE_TO_RESULT_SECONDS, FRAMES_DEAD_LETTERED)
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -349,7 +349,9 @@ async def start_fer_consumer():
                         captured_at = captured_at.replace(tzinfo=timezone.utc)
                     captured_at = captured_at.astimezone(timezone.utc)
 
+                    inference_started = time.monotonic()
                     result = predict_frame(session_id, frame_bytes)
+                    FRAME_INFERENCE_SECONDS.observe(time.monotonic() - inference_started)
                     frame_image_url = await save_frame_to_storage(
                         session_id, frame_id, frame_bytes
                     )

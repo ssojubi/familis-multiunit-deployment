@@ -3,13 +3,13 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { io, type Socket } from "socket.io-client";
 import { PageHeader, PageTitle } from "../components/PageHeader";
 import { apiFetch } from "../lib/api";
+import { isConnectionPause, pauseForInterruption, startSessionRecovery, type RecoveryResult } from "../lib/sessionRecovery";
 import { getSocketUrl } from "../apiConfig";
 import { WEBRTC_CONFIGURATION } from "../webrtcConfig";
 import { InfoTip } from "../components/InfoTip";
 import { confidenceToTier, confidenceTooltip } from "../lib/confidence";
 import { hedonicLabel } from "../lib/ratingLabels";
 import {
-  FAMILIS_CURRENT_SESSION_KEY,
   getStoredRole,
   hasSessionConsent,
   markSessionConsented,
@@ -20,12 +20,11 @@ const FRAME_CAPTURE_MS = 750;
 // Seconds without a detected face before auto-pausing; increase to reduce sensitivity.
 const NO_FACE_PAUSE_MS = 20000;
 // Consecutive frame-upload failures before treating the emotion service as offline.
-const INFERENCE_FAILURE_PAUSE_COUNT = 8;
+const FRAME_UPLOAD_TIMEOUT_MS = 8000;
 // Set false to prevent alt-tab / window blur from auto-pausing the session.
 const FOCUS_AUTO_PAUSE_ENABLED = false;
 // Grace period (ms) before a focus-based pause fires when FOCUS_AUTO_PAUSE_ENABLED is true; set 0 for immediate.
 const AUTO_PAUSE_GRACE_MS = 0;
-const USE_DB = true;
 
 type PauseReason =
   | "initial"
@@ -35,6 +34,7 @@ type PauseReason =
   | "camera-error"
   | "camera-ended"
   | "emotion-offline"
+  | "session-unavailable"
   | "offline"
   | "no-face"
   | "confirm-stop";
@@ -54,8 +54,9 @@ const PAUSE_MESSAGES: Record<PauseReason, string> = {
   "window-blur": "Window lost focus — recording paused. Resume when ready.",
   "camera-error": "Camera unavailable — recording paused. Resume after fixing camera access.",
   "camera-ended": "Camera stream ended — refresh or re-enable the camera, then resume.",
-  "emotion-offline": "Emotion service offline — recording paused. Start the service, then resume.",
-  offline: "Network offline — recording paused. Reconnect, then resume.",
+  "emotion-offline": "Reconnecting — your session is preserved. Recording will resume automatically when the service is available.",
+  offline: "Reconnecting — your session is preserved. Recording will resume automatically when the connection returns.",
+  "session-unavailable": "This session is no longer available for recording. Please ask the administrator.",
   "no-face": "Face not visible — recording paused. Position yourself in frame, then resume.",
   "confirm-stop": "Confirm stop dialog open — recording paused.",
 };
@@ -111,11 +112,11 @@ function computeInitialPause(sessionId: number | null) {
   }
 
   return {
-    isPaused: false,
-    pauseReason: null,
+    isPaused: true,
+    pauseReason: "offline" as PauseReason,
     totalPausedMs: stored.totalPausedMs ?? 0,
     hasEverResumed: stored.hasEverResumed ?? true,
-    pauseStartMs: null,
+    pauseStartMs: Date.now(),
   };
 }
 
@@ -133,6 +134,7 @@ type SessionRow = {
   startTime: string | null;
   endTime: string | null;
   hasConsent?: boolean;
+  invalidatedAt?: string | null;
   roomCode?: string | null;
 };
 
@@ -146,6 +148,8 @@ type StoredSession = {
 };
 
 type MonitorServerEvents = {
+  "room-joined": () => void;
+  "user-disconnected": (peerId: string) => void;
   "viewer-connected": (viewerId: string) => void;
   "stream-request": (data: { from?: string }) => void;
   "stream-stop": (data: { from?: string }) => void;
@@ -158,12 +162,13 @@ type MonitorClientEvents = {
   "stop-stream": (data: { to: string }) => void;
   "tester-session-status": (data: {
     room: string;
-    status: "recording" | "completed";
+    status: "ready" | "recording" | "paused" | "completed";
     sessionId?: number;
     foodName?: string;
     sentiment?: string | null;
     confidence?: number | null;
   }) => void;
+
 };
 
 function formatMmSs(totalSeconds: number) {
@@ -227,9 +232,10 @@ export default function Session() {
   const [session, setSession] = useState<SessionRow | null>(initialSession ?? null);
   const [food, setFood] = useState<Food | null>(initialFood ?? null);
 
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -270,6 +276,11 @@ export default function Session() {
   const [stopPending, setStopPending] = useState(false);
   const [stopError, setStopError] = useState<string | null>(null);
 
+  const [recoveryMessage, setRecoveryMessage] = useState<string | null>(null);
+  const [sessionVerified, setSessionVerified] = useState(false);
+  const recoveryRef = useRef<ReturnType<typeof startSessionRecovery> | null>(null);
+  const pauseReasonRef = useRef<PauseReason | null>(initialPause.pauseReason);
+  const uploadAbortRef = useRef<AbortController | null>(null);
   const [emotionServiceOk, setEmotionServiceOk] = useState<boolean | null>(null);
   const [framesCaptured, setFramesCaptured] = useState(0);
   const [liveHedonic01, setLiveHedonic01] = useState<number | null>(null);
@@ -311,6 +322,10 @@ export default function Session() {
   const consentBlocked = isTester && !loading && session != null && !hasConsent;
   const sessionReady = !isTester || hasConsent;
 
+  const monitorStatusRef = useRef<Parameters<MonitorClientEvents["tester-session-status"]>[0] | null>(null);
+  const publishMonitorRef = useRef(publishMonitorStream);
+  useEffect(() => { publishMonitorRef.current = publishMonitorStream; });
+
   useEffect(() => {
     if (!isTester || !roomCode) return;
     const socket: Socket<MonitorServerEvents, MonitorClientEvents> = io(getSocketUrl(), {
@@ -320,19 +335,33 @@ export default function Session() {
     });
     monitorSocketRef.current = socket;
     socket.on("connect", () => socket.emit("join-room", roomCode));
+    socket.on("room-joined", () => {
+      if (monitorStatusRef.current) socket.emit("tester-session-status", monitorStatusRef.current);
+    });
+    socket.on("disconnect", () => {
+      monitorPeersRef.current.forEach((peer) => peer.close());
+      monitorPeersRef.current.clear();
+      monitorViewersRef.current.clear();
+    });
+    socket.on("user-disconnected", (peerId) => {
+      monitorViewersRef.current.delete(peerId);
+      closeMonitorPeer(peerId);
+    });
     socket.on("viewer-connected", (viewerId) => {
       monitorViewersRef.current.add(viewerId);
+      void publishMonitorRef.current(viewerId);
     });
     socket.on("stream-request", (data) => {
       if (!data.from) return;
       monitorViewersRef.current.add(data.from);
-      void publishMonitorStream(data.from);
+      void publishMonitorRef.current(data.from);
     });
     socket.on("stream-stop", (data) => {
       if (data.from) {
         monitorViewersRef.current.delete(data.from);
         closeMonitorPeer(data.from);
       }
+
     });
     socket.on("signal", async (data) => {
       if (!data.from) return;
@@ -358,16 +387,12 @@ export default function Session() {
   useEffect(() => {
     const socket = monitorSocketRef.current;
     if (!socket || !roomCode || sessionId == null) return;
-    const status = isRecording && hasConsent ? "recording" : "completed";
-    socket.emit("tester-session-status", {
-      room: roomCode,
-      status,
-      sessionId,
-      foodName: food?.name ?? undefined,
-      sentiment: liveSentiment,
-      confidence: liveConfidence01,
-    });
-  }, [food?.name, hasConsent, isRecording, liveConfidence01, liveSentiment, roomCode, sessionId]);
+    const status = !isRecording ? "completed" : !hasConsent ? "ready" : isPaused || cameraError ? "paused" : "recording";
+    const payload = { room: roomCode, status, sessionId, foodName: food?.name ?? undefined, sentiment: liveSentiment, confidence: liveConfidence01 } as Parameters<MonitorClientEvents["tester-session-status"]>[0];
+    monitorStatusRef.current = payload;
+    if (socket.connected) socket.emit("tester-session-status", payload);
+  }, [liveSentiment, liveConfidence01, food?.name, hasConsent, isRecording, isPaused, cameraError, roomCode, sessionId]);
+
 
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   useEffect(() => {
@@ -398,24 +423,30 @@ export default function Session() {
       pauseStartMs: pauseStartRef.current,
       hasEverResumed: hasEverResumedRef.current,
     };
-    sessionStorage.setItem(pauseStorageKey(sessionId), JSON.stringify(state));
+    try { sessionStorage.setItem(pauseStorageKey(sessionId), JSON.stringify(state)); } catch { /* storage may be unavailable */ }
   }, [sessionId, pauseReason]);
 
   const pauseRecording = useCallback((reason: PauseReason) => {
     if (!isRecordingRef.current) return;
+    if (isConnectionPause(reason) && !pauseForInterruption(isPausedRef.current, pauseReasonRef.current)) return;
     if (!isPausedRef.current) {
+      isPausedRef.current = true;
       pauseStartRef.current = Date.now();
       setIsPaused(true);
     }
+    pauseReasonRef.current = reason;
     setPauseReason(reason);
   }, []);
 
   const resumeBlocked =
+    !sessionVerified || !sessionReady || !cameraReady || confirmOpen || stopPending ||
     Boolean(cameraError) ||
     (typeof navigator !== "undefined" && !navigator.onLine) ||
-    emotionServiceOk === false;
+    emotionServiceOk !== true;
 
-  const resumeBlockedTooltip = cameraError
+  const resumeBlockedTooltip = !sessionVerified
+    ? "Checking that your session is still active. Please wait."
+    : cameraError
     ? "Fix camera access before resuming."
     : typeof navigator !== "undefined" && !navigator.onLine
       ? "Reconnect to the network before resuming."
@@ -433,6 +464,8 @@ export default function Session() {
     }
     consecutiveNoFaceRef.current = 0;
     consecutiveInferenceFailuresRef.current = 0;
+    isPausedRef.current = false;
+    pauseReasonRef.current = null;
     setIsPaused(false);
     setPauseReason(null);
     hasEverResumedRef.current = true;
@@ -464,6 +497,7 @@ export default function Session() {
   }, [isPaused, pauseReason, hasEverResumed, persistPauseState]);
 
   const stopCamera = () => {
+    setCameraReady(false);
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
@@ -488,10 +522,12 @@ export default function Session() {
         return;
       }
       streamRef.current = stream;
+      setCameraReady(true);
       const videoTrack = stream.getVideoTracks()[0];
       if (videoTrack) {
         videoTrack.onended = () => {
           if (!cameraSessionActiveRef.current) return;
+          setCameraReady(false);
           setCameraError("Camera stream ended. Refresh or re-enable the camera.");
           pauseRecording("camera-ended");
         };
@@ -510,63 +546,54 @@ export default function Session() {
     }
   };
 
-  useEffect(() => {
-    if (!USE_DB) return;
-    if (sessionId == null) return;
-    setLoading(true);
+  const onRecoveryResultRef = useRef<(result: RecoveryResult) => void>(() => {});
+  onRecoveryResultRef.current = (result) => {
+    if (!isRecordingRef.current) return;
+    setLoading(false);
+    if (result.kind !== "ready") {
+      setSessionVerified(false);
+      setEmotionServiceOk(false);
+      setRecoveryMessage(result.message);
+      uploadAbortRef.current?.abort();
+      pauseRecording(result.kind === "blocked" ? "session-unavailable" : "offline");
+      return;
+    }
+    const loaded = result.session as SessionRow;
+    setSession(loaded);
+    setFood((prev) => prev ?? (result.food as Food | null));
+    if (loaded.hasConsent) markSessionConsented(loaded.id);
     setLoadError(null);
-
-    async function loadSession() {
-      try {
-        const res = await apiFetch(`/api/sessions/${sessionId}`);
-        const json = await res.json();
-        if (!res.ok || !json?.ok) throw new Error(json?.error || "Failed to load session.");
-        const loaded = json.session as SessionRow;
-        if (loaded.hasConsent && loaded.id) {
-          markSessionConsented(loaded.id);
-        }
-        setSession(loaded);
-        setFood((prev) => prev ?? (json.food as Food | null));
-        setIsRecording((loaded.status ?? "active") === "active");
-
-        if (loaded.startTime) {
-          try {
-            const raw = localStorage.getItem(FAMILIS_CURRENT_SESSION_KEY);
-            if (raw) {
-              const stored = JSON.parse(raw) as Record<string, unknown>;
-              stored.startTime = loaded.startTime;
-              localStorage.setItem(FAMILIS_CURRENT_SESSION_KEY, JSON.stringify(stored));
-            }
-          } catch {
-            /* ignore */
-          }
-        }
-      } catch (err: any) {
-        setLoadError(err?.message || "Failed to load session.");
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    void loadSession();
-  }, [sessionId]);
+    setSessionVerified(true);
+    setEmotionServiceOk(true);
+    setRecoveryMessage(null);
+    setLastInferenceError(null);
+  };
 
   useEffect(() => {
-    async function checkEmotion() {
-      try {
-        const res = await apiFetch(`/api/emotion/health`);
-        const json = await res.json();
-        const loaded = Boolean(json?.emotion?.modelLoaded);
-        setEmotionServiceOk(Boolean(json?.ok && loaded));
-      } catch {
-        setEmotionServiceOk(false);
-      }
-    }
-    void checkEmotion();
-  }, []);
+    if (sessionId == null || !isRecording) return;
+    const recovery = startSessionRecovery({
+      request: apiFetch, sessionId, requireConsent: isTester,
+      online: () => navigator.onLine, events: window,
+      onResult: (result) => onRecoveryResultRef.current(result),
+    });
+    recoveryRef.current = recovery;
+    return () => {
+      recovery.stop();
+      recoveryRef.current = null;
+      uploadAbortRef.current?.abort();
+    };
+  }, [sessionId, isRecording, isTester]);
 
   useEffect(() => {
-    if (!sessionReady) return;
+    if (sessionVerified && emotionServiceOk === true && isPaused &&
+        isConnectionPause(pauseReasonRef.current) && !resumeBlocked &&
+        streamRef.current?.getVideoTracks().some((track) => track.readyState === "live")) {
+      resumeRecording();
+    }
+  }, [sessionVerified, emotionServiceOk, isPaused, resumeBlocked, resumeRecording, cameraError, cameraReady]);
+
+  useEffect(() => {
+    if (!sessionReady || loading) return;
     cameraSessionActiveRef.current = true;
     void startCamera();
     return () => {
@@ -574,7 +601,7 @@ export default function Session() {
       stopCamera();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionReady]);
+  }, [sessionReady, loading]);
 
   useLayoutEffect(() => {
     return () => {
@@ -588,7 +615,7 @@ export default function Session() {
   }, []);
 
   const sendFrame = useCallback(async () => {
-    if (sessionId == null || frameInFlightRef.current) return;
+    if (sessionId == null || frameInFlightRef.current || isPausedRef.current || !isRecordingRef.current) return;
     const video = videoRef.current;
     if (!video || video.readyState < 2) return;
     const vw = video.videoWidth;
@@ -596,6 +623,9 @@ export default function Session() {
     if (!vw || !vh) return;
 
     frameInFlightRef.current = true;
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
+    const timeout = window.setTimeout(() => controller.abort(), FRAME_UPLOAD_TIMEOUT_MS);
     try {
       const w = Math.min(vw, 960);
       const h = Math.round((vh / vw) * w);
@@ -612,7 +642,7 @@ export default function Session() {
       const blob = await new Promise<Blob | null>((resolve) => {
         canvas.toBlob((b) => resolve(b), "image/jpeg", 0.82);
       });
-      if (!blob) return;
+      if (!blob || isPausedRef.current || !isRecordingRef.current || controller.signal.aborted) return;
 
       const fd = new FormData();
       fd.append("frame", blob, "frame.jpg");
@@ -620,14 +650,14 @@ export default function Session() {
       const res = await apiFetch(`/api/sessions/${sessionId}/frames`, {
         method: "POST",
         body: fd,
+        signal: controller.signal,
       });
       const json = await res.json().catch(() => null);
       if (!res.ok || !json?.ok) {
         setLastInferenceError(json?.error || `Frame upload failed (${res.status})`);
-        consecutiveInferenceFailuresRef.current += 1;
-        if (consecutiveInferenceFailuresRef.current >= INFERENCE_FAILURE_PAUSE_COUNT) {
-          pauseRecording("emotion-offline");
-        }
+        setSessionVerified(false);
+        pauseRecording(res.status >= 400 && res.status < 500 ? "manual" : "emotion-offline");
+        recoveryRef.current?.check();
         return;
       }
 
@@ -651,11 +681,12 @@ export default function Session() {
       }
     } catch (e: any) {
       setLastInferenceError(e?.message || "Frame capture failed.");
-      consecutiveInferenceFailuresRef.current += 1;
-      if (consecutiveInferenceFailuresRef.current >= INFERENCE_FAILURE_PAUSE_COUNT) {
-        pauseRecording("emotion-offline");
-      }
+      setSessionVerified(false);
+      pauseRecording("offline");
+      recoveryRef.current?.check();
     } finally {
+      window.clearTimeout(timeout);
+      if (uploadAbortRef.current === controller) uploadAbortRef.current = null;
       frameInFlightRef.current = false;
     }
   }, [sessionId, pauseRecording]);
@@ -695,6 +726,7 @@ export default function Session() {
 
   useEffect(() => {
     if (!confirmOpen && isPaused && pauseReason === "confirm-stop") {
+      pauseReasonRef.current = "manual";
       setPauseReason("manual");
     }
   }, [confirmOpen, isPaused, pauseReason]);
@@ -750,29 +782,30 @@ export default function Session() {
   const handleStopClick = () => {
     if (!sessionId) return;
     setStopError(null);
+    pauseRecording("confirm-stop");
     setConfirmOpen(true);
   };
 
   const handleConfirmStop = async () => {
     if (!sessionId) return;
     setStopPending(true);
-    setConfirmOpen(false);
     setStopError(null);
+    pauseRecording("confirm-stop");
     try {
+      const res = await apiFetch(`/api/sessions/${sessionId}/stop`, { method: "POST", signal: AbortSignal.timeout(8000) });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.ok) throw new Error(json?.error || "Unable to stop the session. Reconnect and try again.");
+      isRecordingRef.current = false;
+      setConfirmOpen(false);
       stopCamera();
       setIsRecording(false);
       setIsPaused(false);
       setPauseReason(null);
       pauseStartRef.current = null;
       if (sessionId != null) {
-        sessionStorage.removeItem(pauseStorageKey(sessionId));
+        try { sessionStorage.removeItem(pauseStorageKey(sessionId)); } catch { /* storage may be unavailable */ }
       }
 
-      const res = await apiFetch(`/api/sessions/${sessionId}/stop`, { method: "POST" });
-      const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.ok) {
-        throw new Error(json?.error || "Unable to stop the session in the database.");
-      }
       navigate("/survey", { state: { sessionId } });
     } catch (err: any) {
       setStopError(err?.message || "Unable to stop the session.");
@@ -796,9 +829,9 @@ export default function Session() {
     hedonicDisplay == null ? null : hedonicLabel(hedonicDisplay);
 
   const pauseBannerMessage =
-    pauseReason != null
+    (recoveryMessage ? `${recoveryMessage}${pauseReason === "session-unavailable" ? "" : isConnectionPause(pauseReason) ? " Recording will resume automatically." : " Resume manually when ready."}` : null) ?? (pauseReason != null
       ? PAUSE_MESSAGES[pauseReason]
-      : "Data collection paused — no frames are being captured.";
+      : "Data collection paused — no frames are being captured.");
 
   return (
     <PageHeader
@@ -819,7 +852,8 @@ export default function Session() {
           {isRecording && isPaused && (
             <div className="mb-4 flex items-center gap-3 bg-amber-50 border border-amber-300 rounded-lg px-4 py-3">
               <span className="w-2.5 h-2.5 rounded-full bg-amber-500 flex-shrink-0" aria-hidden="true" />
-              <p className="text-sm font-semibold text-amber-800">{pauseBannerMessage}</p>
+              <p role="status" className="text-sm font-semibold text-amber-800">{pauseBannerMessage}</p>
+              {isConnectionPause(pauseReason) && <button type="button" onClick={() => pauseRecording("manual")} className="text-xs underline">Stay paused</button>}
               <button
                 type="button"
                 onClick={togglePause}
@@ -876,13 +910,7 @@ export default function Session() {
 
                   {emotionServiceOk === false && (
                     <div className="mb-3 text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded-md p-2.5">
-                      Start the emotion service:{" "}
-                      <code className="text-[10px] bg-amber-100 px-1 py-0.5 rounded">npm run emotion-service</code>{" "}
-                      (run{" "}
-                      <code className="text-[10px] bg-amber-100 px-1 py-0.5 rounded">python backend/emotion_service.py</code>{" "}
-                      after training{" "}
-                      <code className="text-[10px] bg-amber-100 px-1 py-0.5 rounded">*.pkl</code>{" "}
-                      in <code className="text-[10px] bg-amber-100 px-1 py-0.5 rounded">backend/</code>).
+                      Reconnecting to the processing service. Your session is preserved; frames are not captured while paused.
                     </div>
                   )}
 
