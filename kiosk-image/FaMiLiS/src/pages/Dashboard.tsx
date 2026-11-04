@@ -179,6 +179,51 @@ export default function Dashboard() {
   const [tab, setTab] = useState<TabKey>(tabFromUrl);
   const [statsCategory, setStatsCategory] = useState<StatsCategory>("overall");
   const [foods, setFoods] = useState<Food[]>([]);
+  const [rooms, setRooms] = useState<{ id: number; foodId: number; roomCode: string }[]>([]);
+  const [roomsReady, setRoomsReady] = useState(false);
+  const [roomBusy, setRoomBusy] = useState<number | null>(null);
+  const [roomError, setRoomError] = useState<string | null>(null);
+  const roomMutationRef = useRef(false);
+
+  const loadRooms = async () => {
+    setRoomError(null);
+    try {
+      const response = await apiFetch("/api/testing-rooms?status=active");
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) throw new Error(payload.error || "Could not load room status.");
+      setRooms(payload.rooms ?? []);
+      setRoomsReady(true);
+    } catch (error) {
+      setRoomsReady(false);
+      setRoomError(error instanceof Error ? error.message : "Could not load room status.");
+    }
+  };
+  useEffect(() => { void loadRooms(); }, []);
+
+  const toggleFoodRoom = async (food: Food) => {
+    if (!roomsReady || roomMutationRef.current) return;
+    const room = rooms.find((item) => item.foodId === food.id);
+    if (room && !window.confirm(`Deactivate room ${room.roomCode} for ${food.name}? New testers will no longer be able to join.`)) return;
+    roomMutationRef.current = true;
+    setRoomBusy(food.id);
+    setRoomError(null);
+    try {
+      const response = await apiFetch(room ? `/api/testing-rooms/${room.id}/complete` : "/api/testing-rooms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(room ? {} : { foodId: food.id }),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) throw new Error(payload.error || "Could not update room.");
+      await loadRooms();
+    } catch (error) {
+      setRoomError(error instanceof Error ? error.message : "Could not update room.");
+    } finally {
+      roomMutationRef.current = false;
+      setRoomBusy(null);
+    }
+  };
+
   const [expandedFoodId, setExpandedFoodId] = useState<number | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [newFood, setNewFood] = useState({
@@ -431,7 +476,7 @@ export default function Dashboard() {
   };
 
   const totalFoods = foods.length;
-  const activeFoods = foods.filter((f) => f.sessionsActive > 0).length;
+  const activeFoods = new Set(rooms.map((room) => room.foodId)).size;
   const categories = new Set(foods.map((f) => f.category)).size;
 
   const selectedFood = useMemo(() => {
@@ -835,10 +880,11 @@ export default function Dashboard() {
           {/* Stat cards */}
           <div className="grid grid-cols-3 gap-4 mb-5">
             <MetricCard icon="🍽️" iconBg="bg-red-50 text-[#e8174a]" title="Total Foods" value={String(totalFoods)} />
-            <MetricCard icon="✅" iconBg="bg-green-50 text-green-600" title="Active Foods" value={String(activeFoods)} />
+            <MetricCard icon="✅" iconBg="bg-green-50 text-green-600" title="Active Foods" value={roomsReady ? String(activeFoods) : "—"} />
             <MetricCard icon="🏷️" iconBg="bg-blue-50 text-blue-600" title="Categories" value={String(categories)} />
           </div>
 
+          {roomError ? <p role="alert" className="mb-4 text-sm text-red-700">{roomError} <button type="button" disabled={roomBusy !== null} onClick={() => void loadRooms()} className="underline">Refresh room status</button></p> : null}
           {tab === "food" ? (
             <section className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
               <h2 className="text-gray-900 font-bold mb-4">Food Management</h2>
@@ -871,6 +917,11 @@ export default function Dashboard() {
                       onEdit={() => openEditFoodModal(food)}
                       onImageClick={() => openImageModal(food)}
                       onDelete={() => setFoodToDelete(food)}
+                      roomCode={rooms.find((room) => room.foodId === food.id)?.roomCode ?? null}
+                      roomReady={roomsReady}
+                      roomBusy={roomBusy === food.id}
+                      roomDisabled={roomBusy !== null}
+                      onToggleRoom={() => void toggleFoodRoom(food)}
                       onStartSession={() => navigate("/setup", { state: { foodId: food.id } })}
                       onSessionStats={() => void onOpenLatestSession(food)}
                       sessionStatsLoading={sessionStatsLoadingFoodId === food.id}

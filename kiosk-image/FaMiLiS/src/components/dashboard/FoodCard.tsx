@@ -17,6 +17,11 @@ type FoodCardProps = {
   onEdit: () => void;
   onImageClick: () => void;
   onDelete: () => void;
+  roomCode: string | null;
+  roomReady: boolean;
+  roomBusy: boolean;
+  roomDisabled: boolean;
+  onToggleRoom: () => void;
   onStartSession: () => void;
   onSessionStats: () => void;
   sessionStatsLoading?: boolean;
@@ -32,6 +37,7 @@ export function FoodCard({
   onEdit,
   onImageClick,
   onDelete,
+  roomCode, roomReady, roomBusy, roomDisabled, onToggleRoom,
   onStartSession,
   onSessionStats,
   sessionStatsLoading = false,
@@ -72,7 +78,7 @@ export function FoodCard({
           </div>
         </button>
         <div className="absolute top-2 right-2 z-10 flex items-center gap-1">
-          {food.sessionsActive > 0 ? (
+          {roomReady && roomCode ? (
             <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-green-50 text-green-700 border border-green-100">
               Active
             </span>
@@ -125,12 +131,18 @@ export function FoodCard({
           </div>
           <div className="w-px h-8 bg-gray-200" aria-hidden="true" />
           <div className="text-center flex-1">
-            <p className="text-[11px] text-gray-400 font-medium">Active</p>
+            <p className="text-[11px] text-gray-400 font-medium">Active Sessions</p>
             <p className="text-lg font-bold text-gray-900">{food.sessionsActive}</p>
           </div>
         </div>
       </button>
 
+      <div className="border-t border-gray-200 px-4 py-3 space-y-2">
+        <p className="text-sm text-gray-700">{!roomReady ? "Room status unavailable" : roomCode ? `Active room: ${roomCode}` : "Room inactive"}</p>
+        <button type="button" onClick={onToggleRoom} disabled={!roomReady || roomDisabled} className="w-full rounded-[10px] border border-[#e8174a] px-3 py-2 text-sm font-semibold text-[#e8174a] hover:bg-pink-50 disabled:opacity-40 disabled:cursor-not-allowed">
+          {roomBusy ? "Updating room…" : roomCode ? "Deactivate Room" : "Activate Room"}
+        </button>
+      </div>
       <div className="border-t border-gray-200 px-4 py-3 flex items-center gap-2">
         <button
           type="button"
