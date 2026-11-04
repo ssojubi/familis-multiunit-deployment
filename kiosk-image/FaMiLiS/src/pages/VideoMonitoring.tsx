@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { io, Socket } from "socket.io-client";
 import { useSearchParams } from "react-router-dom";
-import { getApiBase, getSocketUrl, toApiUrl } from "../apiConfig";
+import { getApiBase, getSocketUrl } from "../apiConfig";
 import { apiFetch } from "../lib/api";
 import { PageHeader, PageTitle } from "../components/PageHeader";
 import { getAdminRoomContext, saveAdminRoomContext } from "../adminRoomContext";
@@ -33,10 +33,13 @@ interface ServerToClientEvents {
     status: RecordingStatus;
     sessionId?: number;
     foodName?: string;
+    testerName?: string;
+    testerId?: number;
   }) => void;
 }
 
 interface ClientToServerEvents {
+  "monitor-all-rooms": () => void;
   "request-stream": (data: { to: string }) => void;
   "join-room": (roomId: string) => void;
   signal: (data: {
@@ -50,6 +53,7 @@ interface ClientToServerEvents {
 type KioskConnectionState = "streaming" | "idle" | "offline";
 
 type RemoteKiosk = {
+  testerId?: number;
   peerId: string;
   label: string;
   stream: MediaStream;
@@ -60,15 +64,6 @@ type RemoteKiosk = {
 };
 
 type ActiveRoom = { id: number; roomCode: string; foodId: number; foodName: string; sessionsActive: number };
-type MonitorFood = { id: number; name: string };
-type RegisteredKiosk = {
-  id: number;
-  name: string;
-  location: string | null;
-  imageUrl: string | null;
-  createdAt: string | null;
-};
-
 type LayoutMode = "icon-grid" | "sidebar-spotlight" | "pinned-grid" | "show-all";
 type StatusFilter = "all" | "streaming" | "idle" | "offline";
 
@@ -128,22 +123,6 @@ function IconSearch({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 20 20" fill="currentColor" className={className ?? "w-4 h-4"}>
       <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
-    </svg>
-  );
-}
-
-function KioskEmptyIcon({ className }: { className?: string }) {
-  return <IconCamera className={className} />;
-}
-
-function KioskPlaceholderIcon({ className }: { className?: string }) {
-  return <IconCamera className={className} />;
-}
-
-function LocationPinIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 20 20" fill="currentColor" className={className ?? "w-4 h-4"} aria-hidden="true">
-      <path fillRule="evenodd" d="M10 18s6-5.2 6-10A6 6 0 1 0 4 8c0 4.8 6 10 6 10Zm0-7a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" clipRule="evenodd" />
     </svg>
   );
 }
@@ -456,207 +435,13 @@ function StatusFilterBar({
    ══════════════════════════════════════════════════════════════════════ */
 
 export default function VideoMonitoring() {
-  const [selectedKioskId, setSelectedKioskId] = useState<number | null>(null);
-
-  if (selectedKioskId !== null) {
-    return (
-      <KioskMonitorDetail />
-    );
-  }
-
-  return <KioskOverviewDashboard onSelectKiosk={setSelectedKioskId} />;
+  // Browser sessions are discovered through signaling, not the manual kiosk registry.
+  return <KioskMonitorDetail />;
 }
-
-/* ═══════════════════════════════════════════════════════════════
-   VIEW 1 — Kiosk Overview Dashboard
-   Lightweight grid of kiosk cards. No WebRTC / live streams.
-   ═══════════════════════════════════════════════════════════════ */
-
-function KioskOverviewDashboard({
-  onSelectKiosk,
-}: {
-  onSelectKiosk: (kioskId: number) => void;
-}) {
-  const [kiosks, setKiosks] = useState<RegisteredKiosk[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [activeRoomCount, setActiveRoomCount] = useState(0);
-
-  /* Fetch registered kiosks from DB */
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    void apiFetch("/api/kiosks")
-      .then(async (res) => {
-        const payload = await res.json();
-        if (!res.ok || !payload?.ok) throw new Error(payload?.error || "Failed to load kiosks.");
-        if (!cancelled) setKiosks(payload.kiosks ?? []);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load kiosks.");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  /* Fetch active room count for status indicator */
-  useEffect(() => {
-    let cancelled = false;
-    void apiFetch("/api/testing-rooms?status=active")
-      .then(async (res) => {
-        const payload = await res.json();
-        if (res.ok && payload?.ok) {
-          if (!cancelled) setActiveRoomCount((payload.rooms ?? []).length);
-        }
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
-
-  return (
-    <PageHeader variant="expanded">
-      <main className="px-6 py-8">
-        <div className="max-w-6xl mx-auto">
-          <div className="mb-6">
-            <PageTitle
-              title="Monitor Kiosks"
-              subtitle="Select a kiosk to view its live camera stream. Camera frames continue through the central FER pipeline."
-            />
-            <p className="text-[12px] text-gray-500 mt-1">
-              Click a kiosk card to open its monitoring view. Live video streams are only loaded when you select a specific kiosk.
-            </p>
-          </div>
-
-          {/* Summary bar */}
-          <div className="flex flex-wrap items-center gap-4 mb-6">
-            <div className="inline-flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-4 py-2.5 shadow-sm">
-              <span className="w-2 h-2 rounded-full bg-gray-400 shrink-0" />
-              <span className="text-[13px] font-semibold text-gray-700">
-                {kiosks.length} kiosk{kiosks.length === 1 ? "" : "s"} registered
-              </span>
-            </div>
-            <div className="inline-flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-4 py-2.5 shadow-sm">
-              <span className={`w-2 h-2 rounded-full shrink-0 ${activeRoomCount > 0 ? "bg-green-500 animate-pulse" : "bg-gray-300"}`} />
-              <span className="text-[13px] font-semibold text-gray-700">
-                {activeRoomCount} active room{activeRoomCount === 1 ? "" : "s"}
-              </span>
-            </div>
-          </div>
-
-          {/* Loading / Error states */}
-          {loading && (
-            <div className="flex items-center justify-center py-20">
-              <div className="flex flex-col items-center gap-3">
-                <div className="w-8 h-8 border-3 border-gray-300 border-t-[#e8174a] rounded-full animate-spin" />
-                <p className="text-sm text-gray-500 font-medium">Loading kiosks…</p>
-              </div>
-            </div>
-          )}
-          {error && !loading && (
-            <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700">
-              {error}
-            </div>
-          )}
-
-          {/* Kiosk grid */}
-          {!loading && !error && kiosks.length === 0 && (
-            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-12 text-center">
-              <KioskEmptyIcon className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-              <p className="text-gray-500 text-sm font-medium">
-                No kiosks registered yet.
-              </p>
-              <p className="text-gray-400 text-xs mt-1">
-                Add kiosks in the Food Management &rarr; Setup section.
-              </p>
-            </div>
-          )}
-
-          {!loading && !error && kiosks.length > 0 && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {kiosks.map((kiosk) => (
-                <KioskCard
-                  key={kiosk.id}
-                  kiosk={kiosk}
-                  onClick={() => onSelectKiosk(kiosk.id)}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      </main>
-    </PageHeader>
-  );
-}
-
-/* ─── Kiosk Card ─── */
-
-function KioskCard({
-  kiosk,
-  onClick,
-}: {
-  kiosk: RegisteredKiosk;
-  onClick: () => void;
-}) {
-  const resolvedImage = toApiUrl(kiosk.imageUrl);
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="group relative bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-gray-200 transition-all duration-200 text-left overflow-hidden focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30 focus:ring-offset-2"
-    >
-      {/* Thumbnail / Icon area */}
-      <div className="aspect-[16/10] bg-gradient-to-br from-gray-100 to-gray-50 flex items-center justify-center relative overflow-hidden">
-        {resolvedImage ? (
-          <img
-            src={resolvedImage}
-            alt={kiosk.name}
-            className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-300"
-          />
-        ) : (
-          <KioskPlaceholderIcon className="w-12 h-12 text-gray-300 group-hover:text-gray-400 transition-colors" />
-        )}
-        {/* Hover overlay */}
-        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors duration-200 flex items-center justify-center">
-          <span className="opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-white/90 backdrop-blur-sm text-gray-800 text-xs font-semibold px-3 py-1.5 rounded-full shadow-sm">
-            Open Monitor →
-          </span>
-        </div>
-      </div>
-
-      {/* Info area */}
-      <div className="px-4 py-3">
-        <h3 className="text-sm font-bold text-gray-900 truncate group-hover:text-[#e8174a] transition-colors">
-          {kiosk.name}
-        </h3>
-        {kiosk.location && (
-          <p className="text-xs text-gray-500 mt-0.5 truncate flex items-center gap-1">
-            <LocationPinIcon className="w-3 h-3 text-gray-400 shrink-0" />
-            {kiosk.location}
-          </p>
-        )}
-        <div className="flex items-center gap-1.5 mt-2">
-          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-gray-500 bg-gray-100 rounded-full px-2 py-0.5">
-            ID: {kiosk.id}
-          </span>
-        </div>
-      </div>
-    </button>
-  );
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   VIEW 2 — Individual Kiosk Monitoring Detail
-   Opens the WebRTC stream for the selected room. Reuses all
-   existing Socket.IO signaling and peer connection logic.
-   ═══════════════════════════════════════════════════════════════ */
 
 function KioskMonitorDetail() {
   const [searchParams] = useSearchParams();
 
-  const [kioskStatus, setKioskStatus] = useState<string>("Connecting…");
   const [{ role }] = useState<{ role: Role }>(() => {
     const storedUser =
       localStorage.getItem("familis.user") || localStorage.getItem("user");
@@ -668,16 +453,14 @@ function KioskMonitorDetail() {
     }
     return { role: null };
   });
+  const [testerAccounts, setTesterAccounts] = useState<{ id: number; username: string }[]>([]);
   const [activeRooms, setActiveRooms] = useState<ActiveRoom[]>([]);
-  const [foods, setFoods] = useState<MonitorFood[]>([]);
-  const [newRoomFoodId, setNewRoomFoodId] = useState("");
-  const [creatingRoom, setCreatingRoom] = useState(false);
   const [deactivatingRoom, setDeactivatingRoom] = useState(false);
   const [roomMessage, setRoomMessage] = useState<string | null>(null);
   const [roomId, setRoomId] = useState(() => searchParams.get("room") || getAdminRoomContext().roomId);
   const [publicAccessUrl, setPublicAccessUrl] = useState<string>("");
   const [remoteKiosks, setRemoteKiosks] = useState<RemoteKiosk[]>([]);
-  const sessionStatusByPeerRef = useRef<Map<string, { status: RecordingStatus; sessionId: number | null; foodName: string | null }>>(new Map());
+  const sessionStatusByPeerRef = useRef<Map<string, { status: RecordingStatus; sessionId: number | null; foodName: string | null; testerId?: number; testerName: string | null }>>(new Map());
   const socketRef = useRef<Socket<ServerToClientEvents, ClientToServerEvents> | null>(
     null,
   );
@@ -691,13 +474,21 @@ function KioskMonitorDetail() {
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
   const [visibleVideoIds, setVisibleVideoIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
+  const [foodFilter, setFoodFilter] = useState("");
+  const [foodSort, setFoodSort] = useState("food-asc");
 
   const selectedRoom = activeRooms.find((room) => room.roomCode === roomId);
   const validFoodId = selectedRoom?.foodId ?? null;
 
   // ── Derived data ──
 
-  const filteredKiosks = remoteKiosks.filter((k) => {
+  const allKiosks: RemoteKiosk[] = [...remoteKiosks, ...testerAccounts
+    .filter((account) => !remoteKiosks.some((kiosk) => kiosk.testerId === account.id))
+    .map((account): RemoteKiosk => ({ peerId: `account:${account.id}`, testerId: account.id,
+      label: account.username, stream: new MediaStream(), status: "ready", sessionId: null,
+      foodName: null, connectionState: "idle" }))];
+  const filteredKiosks = allKiosks.filter((k) => {
+    if (foodFilter && k.foodName !== foodFilter) return false;
     if (statusFilter !== "all" && k.connectionState !== statusFilter) return false;
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
@@ -710,48 +501,50 @@ function KioskMonitorDetail() {
     return true;
   });
 
+  filteredKiosks.sort((a, b) => {
+    const order = (a.foodName ?? "").localeCompare(b.foodName ?? "");
+    return (foodSort === "food-desc" ? -order : order) || a.label.localeCompare(b.label);
+  });
+  const foodOptions = [...new Set([...activeRooms.map((room) => room.foodName), ...remoteKiosks.map((kiosk) => kiosk.foodName)].filter((name): name is string => Boolean(name)))].sort((a, b) => a.localeCompare(b));
+
   const statusCounts: Record<StatusFilter, number> = {
-    all: remoteKiosks.length,
+    all: allKiosks.length,
     streaming: remoteKiosks.filter((k) => k.connectionState === "streaming").length,
-    idle: remoteKiosks.filter((k) => k.connectionState === "idle").length,
+    idle: allKiosks.filter((k) => k.connectionState === "idle").length,
     offline: remoteKiosks.filter((k) => k.connectionState === "offline").length,
   };
 
-  const modalKiosk = modalKioskId ? remoteKiosks.find((k) => k.peerId === modalKioskId) ?? null : null;
-  const spotlightKiosk = selectedKioskId ? remoteKiosks.find((k) => k.peerId === selectedKioskId) ?? null : null;
+  const modalKiosk = modalKioskId ? allKiosks.find((k) => k.peerId === modalKioskId) ?? null : null;
+  const spotlightKiosk = selectedKioskId ? allKiosks.find((k) => k.peerId === selectedKioskId) ?? null : null;
 
   // ── Data fetching (unchanged) ──
 
   useEffect(() => {
     if (role !== "viewer") return;
     let cancelled = false;
-    void apiFetch("/api/testing-rooms?status=active")
-      .then(async (response) => {
+    let timer: number;
+    const refresh = async () => {
+      try {
+        const response = await apiFetch("/api/testing-rooms?status=active");
         const payload = await response.json();
-        if (!response.ok || !payload?.ok) throw new Error(payload?.error || "Could not load active testing rooms.");
-        const rooms = (payload.rooms ?? []) as ActiveRoom[];
-        if (cancelled) return;
-        setActiveRooms(rooms);
-        setRoomId((current) => rooms.some((room) => room.roomCode === current) ? current : rooms[0]?.roomCode ?? "");
-      })
-      .catch(() => { if (!cancelled) setActiveRooms([]); });
-    return () => { cancelled = true; };
-  }, [role]);
-
-  useEffect(() => {
-    if (role !== "viewer") return;
-    let cancelled = false;
-    void apiFetch("/api/foods")
-      .then(async (response) => {
-        const payload = await response.json();
-        if (!response.ok || !payload?.ok) throw new Error(payload?.error || "Could not load foods.");
-        const list = (payload.foods ?? []).map((food: { id: number; name: string }) => ({ id: Number(food.id), name: String(food.name) })) as MonitorFood[];
-        if (cancelled) return;
-        setFoods(list);
-        setNewRoomFoodId((current) => current || String(list[0]?.id ?? ""));
-      })
-      .catch(() => { if (!cancelled) setFoods([]); });
-    return () => { cancelled = true; };
+        if (!response.ok || !payload.ok) throw new Error(payload.error || "Could not load rooms.");
+        if (!cancelled) {
+          const rooms = (payload.rooms ?? []) as ActiveRoom[];
+          setActiveRooms(rooms);
+          setRoomId(current => rooms.some(room => room.roomCode === current) ? current : rooms[0]?.roomCode ?? "");
+        }
+        const testerResponse = await apiFetch("/api/kiosks/testers");
+        const testers = await testerResponse.json();
+        if (!testerResponse.ok || !testers.ok) throw new Error(testers.error || "Could not load testers.");
+        if (!cancelled) setTesterAccounts(testers.testers ?? []);
+      } catch (error) {
+        if (!cancelled) setRoomMessage(error instanceof Error ? error.message : "Could not refresh monitoring.");
+      } finally {
+        if (!cancelled) timer = window.setTimeout(refresh, 5000);
+      }
+    };
+    void refresh();
+    return () => { cancelled = true; window.clearTimeout(timer); };
   }, [role]);
 
   useEffect(() => {
@@ -789,7 +582,7 @@ function KioskMonitorDetail() {
   };
 
   const deactivateTestingRoom = async () => {
-    if (!selectedRoom || deactivatingRoom || creatingRoom) return;
+    if (!selectedRoom || deactivatingRoom) return;
     const closingRoom = selectedRoom;
     if (!window.confirm(`Deactivate room ${closingRoom.roomCode} for ${closingRoom.foodName}? New testers will no longer be able to join this room.`)) return;
     setDeactivatingRoom(true);
@@ -805,29 +598,6 @@ function KioskMonitorDetail() {
       setRoomMessage(error instanceof Error ? error.message : "Could not deactivate the room.");
     } finally {
       setDeactivatingRoom(false);
-    }
-  };
-
-  const createTestingRoom = async () => {
-    if (!newRoomFoodId || creatingRoom || deactivatingRoom) return;
-    setCreatingRoom(true);
-    setRoomMessage(null);
-    try {
-      const response = await apiFetch("/api/testing-rooms", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ foodId: Number(newRoomFoodId) }),
-      });
-      const payload = await response.json();
-      if (!response.ok || !payload?.ok || !payload.room) throw new Error(payload?.error || "Could not create the testing room.");
-      const room = payload.room as ActiveRoom;
-      setActiveRooms((rooms) => [room, ...rooms.filter((item) => item.id !== room.id)]);
-      setRoomId(room.roomCode);
-      setRoomMessage(`Room ready for ${room.foodName}. Share code ${room.roomCode} with tasters.`);
-    } catch (error) {
-      setRoomMessage(error instanceof Error ? error.message : "Could not create the testing room.");
-    } finally {
-      setCreatingRoom(false);
     }
   };
 
@@ -851,7 +621,7 @@ function KioskMonitorDetail() {
     peerConnectionsRef.current.set(peerId, pc);
 
     pc.onicecandidate = (event) => {
-      if (event.candidate && socketRef.current && roomId && peerConnectionsRef.current.get(peerId) === pc) {
+      if (event.candidate && socketRef.current && peerConnectionsRef.current.get(peerId) === pc) {
         socketRef.current.emit("signal", {
           room: roomId,
           to: peerId,
@@ -863,7 +633,7 @@ function KioskMonitorDetail() {
     pc.onconnectionstatechange = () => {
       if (peerConnectionsRef.current.get(peerId) !== pc) return;
       const connState = getKioskConnectionState(pc, peerId);
-      setKioskStatus(`Kiosk ${peerId.slice(0, 6)}: ${pc.connectionState}`);
+
       setRemoteKiosks((prev) =>
         prev.map((k) =>
           k.peerId === peerId ? { ...k, connectionState: connState } : k
@@ -881,8 +651,9 @@ function KioskMonitorDetail() {
         const sessionStatus = sessionStatusByPeerRef.current.get(peerId);
         return [...prev, {
           peerId,
+          testerId: sessionStatusByPeerRef.current.get(peerId)?.testerId,
           stream,
-          label: `Kiosk ${peerId.slice(0, 6)}`,
+          label: sessionStatusByPeerRef.current.get(peerId)?.testerName || `Tester ${peerConnectionsRef.current.size}`,
           status: sessionStatus?.status ?? null,
           sessionId: sessionStatus?.sessionId ?? null,
           foodName: sessionStatus?.foodName ?? null,
@@ -920,7 +691,7 @@ function KioskMonitorDetail() {
   // ── Socket connection (unchanged logic) ──
 
   useEffect(() => {
-    if (!roomId || !role) return;
+    if (!role || (role !== "viewer" && !roomId)) return;
 
     const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io(
       SOCKET_SERVER_URL,
@@ -933,28 +704,33 @@ function KioskMonitorDetail() {
     socketRef.current = socket;
 
     socket.on("connect", () => {
-      setKioskStatus(`Connected as ${role}. Room: ${roomId}`);
-      socket.emit("join-room", roomId);
+
+      if (role === "viewer") socket.emit("monitor-all-rooms");
+      else socket.emit("join-room", roomId);
     });
+    const refreshRooms = window.setInterval(() => {
+      if (role === "viewer" && socket.connected) socket.emit("monitor-all-rooms");
+    }, 5000);
 
     socket.on("disconnect", () => {
       cleanupAllPeerConnections();
-      setKioskStatus("Disconnected. Reconnecting…");
+
     });
 
     socket.on("connect_error", () => {
-      setKioskStatus("Connection failed — check that server.js is running.");
+
     });
 
     socket.on("room-error", (data) => {
-      setKioskStatus(data.error || "This testing room is no longer active.");
+
     });
 
     socket.on("host-connected", (peerId) => {
       if (role !== "viewer") return;
       createPeerConnectionFor(peerId);
       setRemoteKiosks((previous) => previous.some((kiosk) => kiosk.peerId === peerId) ? previous : [...previous, {
-        peerId, label: `Kiosk ${peerId.slice(0, 6)}`, stream: new MediaStream(),
+        testerId: sessionStatusByPeerRef.current.get(peerId)?.testerId,
+        peerId, label: sessionStatusByPeerRef.current.get(peerId)?.testerName || `Tester ${peerConnectionsRef.current.size}`, stream: new MediaStream(),
         status: sessionStatusByPeerRef.current.get(peerId)?.status ?? null,
         sessionId: sessionStatusByPeerRef.current.get(peerId)?.sessionId ?? null,
         foodName: sessionStatusByPeerRef.current.get(peerId)?.foodName ?? null,
@@ -975,21 +751,23 @@ function KioskMonitorDetail() {
         });
       } catch (error) {
         console.warn("Video connection setup failed", error);
-        setKioskStatus("Camera connection failed. Select Reconnect cameras to retry.");
+
       }
     });
 
     socket.on("tester-session-status", (data) => {
-      const { from, status, sessionId, foodName } = data;
+      const { from, status, sessionId, foodName, testerName, testerId } = data;
       if (!from) return;
 
-      sessionStatusByPeerRef.current.set(from, { status, sessionId: sessionId ?? null, foodName: foodName ?? null });
+      sessionStatusByPeerRef.current.set(from, { status, sessionId: sessionId ?? null, foodName: foodName ?? null, testerId, testerName: testerName ?? null });
 
       setRemoteKiosks((prev) =>
         prev.map((k) =>
           k.peerId === from
             ? {
                 ...k,
+                testerId,
+                label: testerName || k.label,
                 status,
                 sessionId: sessionId ?? null,
                 foodName: foodName ?? null,
@@ -1000,31 +778,25 @@ function KioskMonitorDetail() {
         ),
       );
 
-      setKioskStatus(
-        status === "recording"
-          ? foodName
-            ? `Tester started tasting: ${foodName} (session #${sessionId ?? "?"})`
-            : `Tester started their session (session #${sessionId ?? "?"})`
-          : `Tester status: ${status}.`,
-      );
     });
 
     socket.on("user-disconnected", (peerId) => {
       removeKiosk(peerId);
-      setKioskStatus("A kiosk disconnected.");
+
     });
 
     socket.on("host-disconnected", () => {
-      setKioskStatus("Host disconnected.");
+
     });
 
     return () => {
+      window.clearInterval(refreshRooms);
       socket.disconnect();
       cleanupAllPeerConnections();
     };
-    // Reconnect only when the selected room or role changes.
+    // Admin monitoring spans all rooms; management selection must not disconnect feeds.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomId, role]);
+  }, [role, role === "viewer" ? "all" : roomId]);
 
   // ── Layout action handlers ──
 
@@ -1062,7 +834,7 @@ function KioskMonitorDetail() {
 
   // ── Render ──
 
-  const pinnedKiosks = remoteKiosks.filter((k) => pinnedIds.has(k.peerId));
+  const pinnedKiosks = filteredKiosks.filter((k) => pinnedIds.has(k.peerId));
 
   return (
     <PageHeader variant="expanded">
@@ -1072,7 +844,7 @@ function KioskMonitorDetail() {
           <div className="mb-5">
             <PageTitle title="Monitor Kiosks" subtitle="Watch connected tasters while they record. Camera frames continue through the central FER pipeline." />
             <p className="text-[12px] text-gray-500 mt-1">
-              Open a food test, share its room code, then tasters log in, join, consent, and start recording. Their camera feed and captured frames go through the existing kiosk and FER pipeline.
+              Activate a food on the dashboard, share its room code, then tasters log in, join, consent, and start recording. Their camera feed and captured frames go through the existing kiosk and FER pipeline.
             </p>
           </div>
 
@@ -1082,26 +854,14 @@ function KioskMonitorDetail() {
               {/* Row 1: Status & room controls */}
               <div className="flex flex-wrap justify-between items-center gap-3">
                 <p className="text-[13px] text-gray-500">
-                  Status: <span className="font-semibold text-gray-700">{kioskStatus}</span>
-                  {role === "viewer" && <button type="button" className="ml-3 underline font-semibold text-gray-700" onClick={() => {
-                    const peers = new Set([...peerConnectionsRef.current.keys(), ...sessionStatusByPeerRef.current.keys()]);
-                    for (const peerId of peers) {
-                      peerConnectionsRef.current.get(peerId)?.close();
-                      peerConnectionsRef.current.delete(peerId);
-                      createPeerConnectionFor(peerId);
-                      socketRef.current?.emit("request-stream", { to: peerId });
-                    }
-                    setRemoteKiosks((previous) => previous.map((kiosk) => ({ ...kiosk, stream: new MediaStream(), connectionState: "idle" })));
-                    setKioskStatus(peers.size ? "Reconnecting cameras…" : "Waiting for a tester to join this room.");
-                  }}>Reconnect cameras</button>}
-                  {" · "}
                   <span className="font-semibold text-gray-700">
                     {remoteKiosks.length} kiosk{remoteKiosks.length === 1 ? "" : "s"} connected
                   </span>
                 </p>
 
                 <div className="inline-flex items-center gap-2 flex-wrap">
-                  <select aria-label="Active food test" value={roomId} onChange={(event) => setRoomId(event.target.value)} className="max-w-[260px] rounded-md border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700" disabled={!activeRooms.length || deactivatingRoom || creatingRoom}>
+                  <span className="text-xs text-gray-500">Manage room:</span>
+                  <select aria-label="Active food test" value={roomId} onChange={(event) => setRoomId(event.target.value)} className="max-w-[260px] rounded-md border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700" disabled={!activeRooms.length || deactivatingRoom}>
                     {activeRooms.length ? activeRooms.map((room) => <option key={room.id} value={room.roomCode}>{room.foodName} · {room.roomCode}</option>) : <option value="">No active food tests</option>}
                   </select>
                   <button
@@ -1120,26 +880,12 @@ function KioskMonitorDetail() {
                   >
                     Copy Room Code
                   </button>
-                  {role === "viewer" ? <button type="button" onClick={() => void deactivateTestingRoom()} disabled={!selectedRoom || creatingRoom || deactivatingRoom} className="rounded-md border border-red-200 bg-white px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed">
+                  {role === "viewer" ? <button type="button" onClick={() => void deactivateTestingRoom()} disabled={!selectedRoom || deactivatingRoom} className="rounded-md border border-red-200 bg-white px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed">
                     {deactivatingRoom ? "Deactivating…" : "Deactivate Room"}
                   </button> : null}
                 </div>
               </div>
 
-              {/* Row 2: Create room */}
-              {role === "viewer" ? (
-                <div className="flex flex-col gap-3 rounded-lg border border-gray-200 bg-gray-50 p-4 sm:flex-row sm:items-end">
-                  <label className="flex-1 text-xs font-semibold text-gray-700">
-                    Open a food test for tasters
-                    <select value={newRoomFoodId} onChange={(event) => setNewRoomFoodId(event.target.value)} disabled={!foods.length || creatingRoom || deactivatingRoom} className="mt-1.5 block w-full rounded-md border border-gray-200 bg-white px-3 py-2.5 text-sm font-normal">
-                      {foods.length ? foods.map((food) => <option key={food.id} value={food.id}>{food.name}</option>) : <option value="">No foods available</option>}
-                    </select>
-                  </label>
-                  <button type="button" onClick={() => void createTestingRoom()} disabled={!newRoomFoodId || creatingRoom || deactivatingRoom} className="rounded-md border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40">
-                    {creatingRoom ? "Activating…" : "Activate Room"}
-                  </button>
-                </div>
-              ) : null}
               {roomMessage ? <p role="status" className={`text-xs ${(roomMessage.startsWith("Room ready") || roomMessage.startsWith("Room deactivated")) ? "text-green-700" : "text-red-600"}`}>{roomMessage}</p> : null}
             </div>
           </section>
@@ -1147,6 +893,15 @@ function KioskMonitorDetail() {
           {/* Layout toolbar */}
           <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
             <LayoutSwitcher value={layoutMode} onChange={setLayoutMode} />
+            <label className="text-xs text-gray-700">Food
+              <select aria-label="Filter kiosks by food" value={foodFilter} onChange={(event) => setFoodFilter(event.target.value)} className="ml-2 rounded-md border border-gray-200 px-3 py-2">
+                <option value="">All foods</option>
+                {foodOptions.map((name) => <option key={name} value={name}>{name}</option>)}
+              </select>
+            </label>
+            <select aria-label="Sort kiosks by food" value={foodSort} onChange={(event) => setFoodSort(event.target.value)} className="rounded-md border border-gray-200 px-3 py-2 text-xs">
+              <option value="food-asc">Food A–Z</option><option value="food-desc">Food Z–A</option>
+            </select>
 
             <div className="flex items-center gap-3">
               <StatusFilterBar value={statusFilter} onChange={setStatusFilter} counts={statusCounts} />
@@ -1165,11 +920,11 @@ function KioskMonitorDetail() {
 
           {/* Main content area */}
           <section className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-            {remoteKiosks.length === 0 ? (
+            {filteredKiosks.length === 0 ? (
               <div className="p-12 flex flex-col items-center justify-center text-center">
                 <IconCamera className="w-12 h-12 text-gray-300 mb-3" />
                 <p className="text-gray-500 text-sm font-semibold">
-                  {roomId ? "Waiting for tasters to connect…" : "Start a food test to monitor its kiosks."}
+                  {allKiosks.length ? "No testers match these filters." : "Waiting for tasters across all active food rooms…"}
                 </p>
                 <p className="text-gray-400 text-xs mt-1">
                   Connected kiosks will appear here as status tiles.

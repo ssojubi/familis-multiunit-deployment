@@ -232,12 +232,31 @@ io.use((socket, next) => {
 io.on('connection', (socket) => {
   console.log(`User connected: ${socket.id}`);
 
-  socket.on('join-room', async (roomId) => {
-    const normalizedRoomId = String(roomId || "").trim();
+  const joinRoom = async (roomId) => {
+    let normalizedRoomId = String(roomId || "").trim();
     if (!normalizedRoomId) return;
     const role = socket.data.auth.role === "admin" ? "viewer" : "host";
     try {
       const pool = await poolPromise;
+      if (normalizedRoomId.startsWith("session:")) {
+        if (socket.data.auth.role !== "tester") return;
+        const sessionId = Number(normalizedRoomId.slice(8));
+        if (!Number.isSafeInteger(sessionId) || sessionId <= 0) return;
+        const [assigned] = await pool.query(
+          `SELECT s.session_id, tr.testing_room_id, tr.room_code
+           FROM sessions s JOIN testing_rooms tr ON tr.food_id = s.food_id AND tr.status = 'active'
+             AND (s.testing_room_id IS NULL OR s.testing_room_id = tr.testing_room_id)
+           WHERE s.session_id = ? AND s.user_id = ? AND s.status = 'active' AND s.invalidated_at IS NULL
+           ORDER BY tr.testing_room_id DESC LIMIT 1`,
+          [sessionId, socket.data.auth.id],
+        );
+        if (!assigned.length) {
+          socket.emit("room-error", { error: "Activate a room for this session's food before monitoring." });
+          return;
+        }
+        await pool.query("UPDATE sessions SET testing_room_id = ? WHERE session_id = ? AND user_id = ? AND testing_room_id IS NULL AND status = 'active'", [assigned[0].testing_room_id, sessionId, socket.data.auth.id]);
+        normalizedRoomId = String(assigned[0].room_code);
+      }
       const [activeRooms] = await pool.query(
         "SELECT testing_room_id FROM testing_rooms WHERE room_code = ? AND status = 'active' LIMIT 1",
         [normalizedRoomId],
@@ -252,12 +271,18 @@ io.on('connection', (socket) => {
       return;
     }
 
+    if (socket.disconnected || rooms.get(normalizedRoomId)?.has(socket.id)) return;
+    socket.data.roomIds ??= new Set();
+    socket.data.roomIds.add(normalizedRoomId);
     socket.join(normalizedRoomId);
     socket.data.roomId = normalizedRoomId;
     socket.data.role = role;
 
     if (!rooms.has(normalizedRoomId)) rooms.set(normalizedRoomId, new Map());
-    rooms.get(normalizedRoomId).set(socket.id, { role });
+    rooms.get(normalizedRoomId).set(socket.id, {
+      role,
+      ...(role === 'host' ? { status: { status: 'ready', testerId: socket.data.auth.id, testerName: socket.data.auth.username || `Tester ${socket.data.auth.id}` } } : {}),
+    });
 
     socket.emit('room-joined');
     if (role === 'viewer') {
@@ -274,15 +299,31 @@ io.on('connection', (socket) => {
       rooms.get(normalizedRoomId).forEach((entry, peerId) => {
         if (entry.role === 'viewer') {
           socket.emit('viewer-connected', peerId);
+          io.to(peerId).emit('tester-session-status', { ...rooms.get(normalizedRoomId).get(socket.id).status, from: socket.id });
           io.to(peerId).emit('host-connected', socket.id);
         }
       });
     }
+  };
+  socket.on('join-room', joinRoom);
+  socket.on('monitor-all-rooms', async () => {
+    if (socket.data.auth.role !== "admin" || socket.data.refreshingRooms) return;
+    socket.data.refreshingRooms = true;
+    try {
+      const pool = await poolPromise;
+      const [active] = await pool.query("SELECT room_code FROM testing_rooms WHERE status = 'active'");
+      for (const room of active) await joinRoom(String(room.room_code));
+    } catch (err) {
+      socket.emit("room-error", { error: "Could not refresh monitoring rooms." });
+    } finally {
+      socket.data.refreshingRooms = false;
+    }
   });
+  const sharedRoom = (peerId) => [...(socket.data.roomIds ?? [])].find((id) => rooms.get(id)?.has(socket.id) && rooms.get(id)?.has(peerId));
 
   socket.on('signal', (data) => {
     const { to, ...rest } = data ?? {};
-    const roomId = socket.data.roomId;
+    const roomId = sharedRoom(to);
     const destination = rooms.get(roomId)?.get(to);
     if (roomId && to && destination) {
       io.to(to).emit('signal', { ...rest, from: socket.id });
@@ -291,7 +332,7 @@ io.on('connection', (socket) => {
 
   socket.on('request-stream', (data) => {
     if (socket.data.auth.role !== "admin" || !socket.data.roomId) return;
-    const destination = rooms.get(socket.data.roomId)?.get(data?.to);
+    const destination = rooms.get(sharedRoom(data?.to))?.get(data?.to);
     if (data?.to && destination?.role === "host") {
       io.to(data.to).emit("stream-request", { from: socket.id });
     }
@@ -299,7 +340,7 @@ io.on('connection', (socket) => {
 
   socket.on('stop-stream', (data) => {
     if (socket.data.auth.role !== "admin" || !socket.data.roomId) return;
-    const destination = rooms.get(socket.data.roomId)?.get(data?.to);
+    const destination = rooms.get(sharedRoom(data?.to))?.get(data?.to);
     if (data?.to && destination?.role === "host") {
       io.to(data.to).emit("stream-stop", { from: socket.id });
     }
@@ -322,13 +363,13 @@ io.on('connection', (socket) => {
     if (!['ready', 'recording', 'paused', 'completed'].includes(status)) return;
     const entry = rooms.get(socket.data.roomId)?.get(socket.id);
     if (!entry) return;
-    entry.status = { status, sessionId, foodName };
+    entry.status = { status, sessionId, foodName, testerId: socket.data.auth.id, testerName: socket.data.auth.username || `Tester ${socket.data.auth.id}` };
     socket.to(socket.data.roomId).emit('tester-session-status', { ...entry.status, from: socket.id });
   });
 
   socket.on('disconnect', () => {
-    const roomId = socket.data.roomId;
-    if (roomId && rooms.has(roomId)) {
+    for (const roomId of socket.data.roomIds ?? []) {
+    if (rooms.has(roomId)) {
       const room = rooms.get(roomId);
       const entry = room.get(socket.id);
       room.delete(socket.id);
@@ -338,6 +379,7 @@ io.on('connection', (socket) => {
         socket.to(roomId).emit('host-disconnected');
       }
       socket.to(roomId).emit('user-disconnected', socket.id);
+    }
     }
     console.log(`User disconnected: ${socket.id}`);
   });
@@ -608,6 +650,15 @@ async function start() {
     } catch (err) {
       console.error("Login error:", err);
       return res.status(500).json({ ok: false, error: "Server error." });
+    }
+  });
+
+  app.get("/api/kiosks/testers", requireAuth, requireTabAccess("monitor"), async (_req, res) => {
+    try {
+      const [rows] = await pool.query("SELECT user_id, username FROM users WHERE role = 'tester' AND is_active = 1 ORDER BY username, user_id");
+      res.json({ ok: true, testers: rows.map(row => ({ id: Number(row.user_id), username: String(row.username) })) });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: "Could not load tester accounts." });
     }
   });
 
@@ -2345,7 +2396,7 @@ async function start() {
         : typeof agentKioskId === "string" && agentKioskId.trim()
           ? agentKioskId.trim()
           : null;
-    const normalizedRoomCode =
+    let normalizedRoomCode =
       typeof roomCode === "string" ? roomCode.trim() : "";
     let testerConsentPreferences = null;
 
@@ -2363,6 +2414,10 @@ async function start() {
       }
 
       let testingRoomId = null;
+      if (!normalizedRoomCode && req.auth.role !== "tester") {
+        const [active] = await pool.query("SELECT room_code FROM testing_rooms WHERE food_id = ? AND status = 'active' ORDER BY testing_room_id DESC LIMIT 1", [fId]);
+        if (active.length) normalizedRoomCode = String(active[0].room_code);
+      }
       if (normalizedRoomCode) {
         const [roomRows] = await pool.query(
           `

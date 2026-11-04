@@ -243,7 +243,7 @@ export default function Session() {
   const monitorSocketRef = useRef<Socket<MonitorServerEvents, MonitorClientEvents> | null>(null);
   const monitorPeersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const monitorViewersRef = useRef<Set<string>>(new Set());
-  const roomCode = session?.roomCode ?? storedCurrent?.roomCode ?? null;
+  const roomCode = session?.roomCode ?? storedCurrent?.roomCode ?? (sessionId != null ? `session:${sessionId}` : null);
 
   function closeMonitorPeer(viewerId: string) {
     monitorPeersRef.current.get(viewerId)?.close();
@@ -341,8 +341,13 @@ export default function Session() {
       withCredentials: true,
     });
     monitorSocketRef.current = socket;
-    socket.on("connect", () => socket.emit("join-room", roomCode));
+    let roomJoined = false;
+    socket.on("connect", () => { roomJoined = false; socket.emit("join-room", roomCode); });
+    const retryRoom = window.setInterval(() => {
+      if (socket.connected && !roomJoined) socket.emit("join-room", roomCode);
+    }, 5000);
     socket.on("room-joined", () => {
+      roomJoined = true;
       if (monitorStatusRef.current) socket.emit("tester-session-status", monitorStatusRef.current);
     });
     socket.on("disconnect", () => {
@@ -381,6 +386,7 @@ export default function Session() {
       }
     });
     return () => {
+      window.clearInterval(retryRoom);
       socket.disconnect();
       monitorPeersRef.current.forEach((peer) => peer.close());
       monitorPeersRef.current.clear();
