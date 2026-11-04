@@ -445,7 +445,7 @@ export default function Signup() {
                     autoComplete="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder="you@example.com"
+                    placeholder="Enter email address"
                     className="w-full h-[50px] px-7 border border-[#bfbfbf] rounded-[10px] text-[16px] text-black placeholder:text-[#bdb4b4] focus:outline-none focus:border-red-400"
                     style={{ fontFamily: "'Albert Sans', sans-serif" }}
                   />

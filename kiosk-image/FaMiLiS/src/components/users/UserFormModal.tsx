@@ -95,7 +95,7 @@ export function UserFormModal({
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="e.g. alex@lab.local"
+              placeholder="Enter email address"
               className={inputClass}
             />
           </div>
