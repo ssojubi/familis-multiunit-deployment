@@ -672,6 +672,7 @@ function KioskMonitorDetail() {
   const [foods, setFoods] = useState<MonitorFood[]>([]);
   const [newRoomFoodId, setNewRoomFoodId] = useState("");
   const [creatingRoom, setCreatingRoom] = useState(false);
+  const [deactivatingRoom, setDeactivatingRoom] = useState(false);
   const [roomMessage, setRoomMessage] = useState<string | null>(null);
   const [roomId, setRoomId] = useState(() => searchParams.get("room") || getAdminRoomContext().roomId);
   const [publicAccessUrl, setPublicAccessUrl] = useState<string>("");
@@ -787,8 +788,28 @@ function KioskMonitorDetail() {
     alert("Room code copied.");
   };
 
+  const deactivateTestingRoom = async () => {
+    if (!selectedRoom || deactivatingRoom || creatingRoom) return;
+    const closingRoom = selectedRoom;
+    if (!window.confirm(`Deactivate room ${closingRoom.roomCode} for ${closingRoom.foodName}? New testers will no longer be able to join this room.`)) return;
+    setDeactivatingRoom(true);
+    setRoomMessage(null);
+    try {
+      const response = await apiFetch(`/api/testing-rooms/${closingRoom.id}/complete`, { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error || "Could not deactivate the room.");
+      setActiveRooms((rooms) => rooms.filter((room) => room.id !== closingRoom.id));
+      setRoomId((current) => current === closingRoom.roomCode ? "" : current);
+      setRoomMessage(`Room deactivated: ${closingRoom.foodName}. Activate a room to start another food test.`);
+    } catch (error) {
+      setRoomMessage(error instanceof Error ? error.message : "Could not deactivate the room.");
+    } finally {
+      setDeactivatingRoom(false);
+    }
+  };
+
   const createTestingRoom = async () => {
-    if (!newRoomFoodId || creatingRoom) return;
+    if (!newRoomFoodId || creatingRoom || deactivatingRoom) return;
     setCreatingRoom(true);
     setRoomMessage(null);
     try {
@@ -1080,7 +1101,7 @@ function KioskMonitorDetail() {
                 </p>
 
                 <div className="inline-flex items-center gap-2 flex-wrap">
-                  <select aria-label="Active food test" value={roomId} onChange={(event) => setRoomId(event.target.value)} className="max-w-[260px] rounded-md border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700" disabled={!activeRooms.length}>
+                  <select aria-label="Active food test" value={roomId} onChange={(event) => setRoomId(event.target.value)} className="max-w-[260px] rounded-md border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700" disabled={!activeRooms.length || deactivatingRoom || creatingRoom}>
                     {activeRooms.length ? activeRooms.map((room) => <option key={room.id} value={room.roomCode}>{room.foodName} · {room.roomCode}</option>) : <option value="">No active food tests</option>}
                   </select>
                   <button
@@ -1099,6 +1120,9 @@ function KioskMonitorDetail() {
                   >
                     Copy Room Code
                   </button>
+                  {role === "viewer" ? <button type="button" onClick={() => void deactivateTestingRoom()} disabled={!selectedRoom || creatingRoom || deactivatingRoom} className="rounded-md border border-red-200 bg-white px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed">
+                    {deactivatingRoom ? "Deactivating…" : "Deactivate Room"}
+                  </button> : null}
                 </div>
               </div>
 
@@ -1107,16 +1131,16 @@ function KioskMonitorDetail() {
                 <div className="flex flex-col gap-3 rounded-lg border border-gray-200 bg-gray-50 p-4 sm:flex-row sm:items-end">
                   <label className="flex-1 text-xs font-semibold text-gray-700">
                     Open a food test for tasters
-                    <select value={newRoomFoodId} onChange={(event) => setNewRoomFoodId(event.target.value)} disabled={!foods.length || creatingRoom} className="mt-1.5 block w-full rounded-md border border-gray-200 bg-white px-3 py-2.5 text-sm font-normal">
+                    <select value={newRoomFoodId} onChange={(event) => setNewRoomFoodId(event.target.value)} disabled={!foods.length || creatingRoom || deactivatingRoom} className="mt-1.5 block w-full rounded-md border border-gray-200 bg-white px-3 py-2.5 text-sm font-normal">
                       {foods.length ? foods.map((food) => <option key={food.id} value={food.id}>{food.name}</option>) : <option value="">No foods available</option>}
                     </select>
                   </label>
-                  <button type="button" onClick={() => void createTestingRoom()} disabled={!newRoomFoodId || creatingRoom} className="rounded-md border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40">
-                    {creatingRoom ? "Opening…" : "Open / Create Room"}
+                  <button type="button" onClick={() => void createTestingRoom()} disabled={!newRoomFoodId || creatingRoom || deactivatingRoom} className="rounded-md border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40">
+                    {creatingRoom ? "Activating…" : "Activate Room"}
                   </button>
                 </div>
               ) : null}
-              {roomMessage ? <p role="status" className={`text-xs ${roomMessage.startsWith("Room ready") ? "text-green-700" : "text-red-600"}`}>{roomMessage}</p> : null}
+              {roomMessage ? <p role="status" className={`text-xs ${(roomMessage.startsWith("Room ready") || roomMessage.startsWith("Room deactivated")) ? "text-green-700" : "text-red-600"}`}>{roomMessage}</p> : null}
             </div>
           </section>
 
