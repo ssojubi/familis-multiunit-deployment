@@ -229,6 +229,59 @@ io.use((socket, next) => {
   next();
 });
 
+const ADMIN_PRESENCE_ROOM = "__familis_admin_presence__";
+const testerPresenceSockets = new Map();
+const TESTER_RECONNECT_TIMEOUT_MS = 90_000;
+const testerReconnectTimers = new Map();
+
+function clearTesterReconnectTimer(testerId) {
+  const pending = testerReconnectTimers.get(Number(testerId));
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  testerReconnectTimers.delete(Number(testerId));
+}
+
+function scheduleTesterReconnectTimeout(entry) {
+  const testerId = Number(entry?.status?.testerId);
+  const sessionId = Number(entry?.status?.sessionId);
+  if (!Number.isFinite(testerId) || !Number.isFinite(sessionId) || entry?.status?.status !== "recording") return;
+  clearTesterReconnectTimer(testerId);
+  const deadline = Date.now() + TESTER_RECONNECT_TIMEOUT_MS;
+  io.to(ADMIN_PRESENCE_ROOM).emit("tester-reconnecting", { testerId, sessionId, deadline });
+  const timer = setTimeout(async () => {
+    testerReconnectTimers.delete(testerId);
+    try {
+      const pool = await poolPromise;
+      await pool.query(
+        `UPDATE sessions
+         SET status = 'pending', end_time = COALESCE(end_time, NOW())
+         WHERE session_id = ? AND user_id = ? AND status = 'active'`,
+        [sessionId, testerId],
+      );
+    } catch (err) {
+      console.error("Reconnect timeout could not end session:", err);
+    }
+    io.to(ADMIN_PRESENCE_ROOM).emit("tester-reconnect-expired", { testerId, sessionId });
+  }, TESTER_RECONNECT_TIMEOUT_MS);
+  timer.unref?.();
+  testerReconnectTimers.set(testerId, { timer, sessionId, deadline });
+}
+
+function currentTesterPresence() {
+  const byTester = new Map();
+  for (const presence of testerPresenceSockets.values()) {
+    const previous = byTester.get(presence.testerId);
+    if (!previous || presence.updatedAt >= previous.updatedAt) {
+      byTester.set(presence.testerId, presence);
+    }
+  }
+  return [...byTester.values()].map(({ updatedAt: _updatedAt, ...presence }) => presence);
+}
+
+function emitTesterPresenceSnapshot(target = io.to(ADMIN_PRESENCE_ROOM)) {
+  target.emit("tester-presence-snapshot", currentTesterPresence());
+}
+
 io.on('connection', (socket) => {
   console.log(`User connected: ${socket.id}`);
 
@@ -272,6 +325,7 @@ io.on('connection', (socket) => {
     }
 
     if (socket.disconnected || rooms.get(normalizedRoomId)?.has(socket.id)) return;
+    if (role === "host") clearTesterReconnectTimer(socket.data.auth.id);
     socket.data.roomIds ??= new Set();
     socket.data.roomIds.add(normalizedRoomId);
     socket.join(normalizedRoomId);
@@ -308,6 +362,8 @@ io.on('connection', (socket) => {
   socket.on('join-room', joinRoom);
   socket.on('monitor-all-rooms', async () => {
     if (socket.data.auth.role !== "admin" || socket.data.refreshingRooms) return;
+    socket.join(ADMIN_PRESENCE_ROOM);
+    emitTesterPresenceSnapshot(socket);
     socket.data.refreshingRooms = true;
     try {
       const pool = await poolPromise;
@@ -318,6 +374,42 @@ io.on('connection', (socket) => {
     } finally {
       socket.data.refreshingRooms = false;
     }
+  });
+  socket.on('tester-presence-update', async (data) => {
+    if (socket.data.auth.role !== "tester") return;
+    const allowedStages = new Set(["logged_in", "consent_pending", "ready", "survey"]);
+    const stage = allowedStages.has(data?.stage) ? data.stage : "logged_in";
+    const requestedRoomCode = String(data?.roomCode || "").trim();
+    let roomCode = null;
+    let foodName = null;
+    if (requestedRoomCode) {
+      try {
+        const pool = await poolPromise;
+        const [active] = await pool.query(
+          `SELECT tr.room_code, fp.name AS food_name
+           FROM testing_rooms tr
+           JOIN food_products fp ON fp.food_id = tr.food_id
+           WHERE tr.room_code = ? AND tr.status = 'active'
+           LIMIT 1`,
+          [requestedRoomCode],
+        );
+        if (active.length) {
+          roomCode = String(active[0].room_code);
+          foodName = String(active[0].food_name);
+        }
+      } catch (err) {
+        console.error("Tester presence room lookup failed:", err);
+      }
+    }
+    testerPresenceSockets.set(socket.id, {
+      testerId: Number(socket.data.auth.id),
+      testerName: socket.data.auth.username || `Tester ${socket.data.auth.id}`,
+      stage,
+      roomCode,
+      foodName,
+      updatedAt: Date.now(),
+    });
+    emitTesterPresenceSnapshot();
   });
   const sharedRoom = (peerId) => [...(socket.data.roomIds ?? [])].find((id) => rooms.get(id)?.has(socket.id) && rooms.get(id)?.has(peerId));
 
@@ -357,10 +449,26 @@ io.on('connection', (socket) => {
     socket.to(socket.data.roomId).emit('admin-stop-stream');
   });
 
-  socket.on('tester-session-status', (data) => {
+  socket.on('tester-session-status', async (data) => {
     if (socket.data.auth.role !== "tester" || !socket.data.roomId) return;
     const { status, sessionId, foodName } = data ?? {};
     if (!['ready', 'recording', 'paused', 'completed'].includes(status)) return;
+    if (status === "recording") {
+      try {
+        const pool = await poolPromise;
+        const [active] = await pool.query(
+          "SELECT session_id FROM sessions WHERE session_id = ? AND user_id = ? AND status = 'active' LIMIT 1",
+          [Number(sessionId), Number(socket.data.auth.id)],
+        );
+        if (!active.length) {
+          socket.emit("session-reconnect-expired", { sessionId: Number(sessionId) });
+          return;
+        }
+      } catch (err) {
+        console.error("Could not validate tester recording status:", err);
+        return;
+      }
+    }
     const entry = rooms.get(socket.data.roomId)?.get(socket.id);
     if (!entry) return;
     entry.status = { status, sessionId, foodName, testerId: socket.data.auth.id, testerName: socket.data.auth.username || `Tester ${socket.data.auth.id}` };
@@ -368,6 +476,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    const hadPresence = testerPresenceSockets.delete(socket.id);
     for (const roomId of socket.data.roomIds ?? []) {
     if (rooms.has(roomId)) {
       const room = rooms.get(roomId);
@@ -376,11 +485,13 @@ io.on('connection', (socket) => {
       if (room.size === 0) rooms.delete(roomId);
 
       if (entry?.role === 'host') {
+        scheduleTesterReconnectTimeout(entry);
         socket.to(roomId).emit('host-disconnected');
       }
       socket.to(roomId).emit('user-disconnected', socket.id);
     }
     }
+    if (hadPresence) emitTesterPresenceSnapshot();
     console.log(`User disconnected: ${socket.id}`);
   });
 });
@@ -525,7 +636,7 @@ async function start() {
           FROM frame_logs
           GROUP BY session_id
         ) fl ON fl.session_id = s.session_id
-        SET s.status = 'completed',
+        SET s.status = 'pending',
             s.end_time = COALESCE(s.end_time, fl.last_frame_at, s.start_time, NOW())
         WHERE s.status = 'active'
           AND COALESCE(fl.last_frame_at, s.start_time, s.created_at) < ?
@@ -1137,6 +1248,19 @@ async function start() {
     }
   });
 
+  // Consent copy is safe to read before authentication. Keeping this endpoint
+  // separate prevents a transient login-cookie check from blanking the form.
+  app.get("/api/consent-form", async (_req, res) => {
+    try {
+      const preferences = await readPreferences();
+      const consentVersion = `1.1-${crypto.createHash("sha256").update(JSON.stringify(preferences.consent)).digest("hex").slice(0, 12)}`;
+      return res.json({ ok: true, consent: preferences.consent, consentVersion });
+    } catch (err) {
+      console.error("Read consent form failed:", err);
+      return res.status(500).json({ ok: false, error: "Could not load the current consent form." });
+    }
+  });
+
   app.use("/api", requireAuth);
 
   app.get("/api/auth/me", (req, res) => {
@@ -1144,6 +1268,14 @@ async function start() {
   });
 
   app.post("/api/logout", (req, res) => {
+    const testerId = Number(req.auth?.id);
+    if (req.auth?.role === "tester" && Number.isFinite(testerId)) {
+      for (const [socketId, presence] of testerPresenceSockets) {
+        if (presence.testerId === testerId) testerPresenceSockets.delete(socketId);
+      }
+      emitTesterPresenceSnapshot();
+      io.to(ADMIN_PRESENCE_ROOM).emit("tester-logged-out", { testerId });
+    }
     const forwardedProto = String(req.headers["x-forwarded-proto"] || "")
       .split(",")[0]
       .trim();
@@ -1166,7 +1298,7 @@ async function start() {
         : routePath.startsWith("/sessions") && (/^\/sessions\/\d+\/(details|status|invalidate|revalidate|export)$/.test(routePath) || (req.method === "DELETE" && /^\/sessions\/\d+(?:\/frames\/\d+)?$/.test(routePath)))
           ? "stats"
           : routePath.startsWith("/foods")
-            ? routePath.includes("/analytics") || routePath.endsWith("/export") || /^\/foods\/\d+\/sessions$/.test(routePath) ? "stats" : "food"
+            ? routePath.includes("/analytics") || routePath.endsWith("/export") || /^\/foods\/\d+\/(sessions|incomplete-sessions)$/.test(routePath) ? "stats" : "food"
             : null;
     if (permissionTab && req.auth.role !== "admin") {
       try {
@@ -1614,7 +1746,19 @@ async function start() {
               WHEN s.start_time IS NOT NULL AND s.end_time IS NOT NULL THEN TIMESTAMPDIFF(SECOND, s.start_time, s.end_time) / 60.0
               ELSE NULL
             END
-          ) AS avg_duration_min
+          ) AS avg_duration_min,
+          (
+            SELECT CASE
+              WHEN latest.status = 'pending' OR (latest.status = 'completed' AND NOT EXISTS (
+                SELECT 1 FROM survey_results latest_sr WHERE latest_sr.session_id = latest.session_id
+              )) THEN 'incomplete'
+              ELSE latest.status
+            END
+            FROM sessions latest
+            WHERE latest.food_id = fp.food_id
+            ORDER BY latest.session_id DESC
+            LIMIT 1
+          ) AS latest_session_status
         FROM food_products fp
         LEFT JOIN sessions s ON s.food_id = fp.food_id
         GROUP BY fp.food_id, fp.name, fp.category, fp.image_url, fp.created_at
@@ -1630,6 +1774,7 @@ async function start() {
         createdAt: toIsoOrNull(r.created_at),
         sessionsTotal: Number(r.sessions_total ?? 0),
         sessionsActive: Number(r.sessions_active ?? 0),
+        latestSessionStatus: r.latest_session_status == null ? null : String(r.latest_session_status),
         avgDurationMin: r.avg_duration_min == null ? null : Number(r.avg_duration_min),
       }));
 
@@ -1826,16 +1971,22 @@ async function start() {
         `
         SELECT
           s.session_id,
+          (SELECT COUNT(*) FROM sessions numbered WHERE numbered.food_id = s.food_id AND numbered.session_id <= s.session_id) AS display_number,
           s.user_id,
+          COALESCE(p.tester_label, p.name, u.username) AS tester_label,
           s.start_time,
           s.end_time,
           s.status,
+          MAX(CASE WHEN sr.session_id IS NOT NULL THEN 1 ELSE 0 END) AS has_survey,
           COUNT(fl.frame_log_id) AS frames,
           AVG(fl.confidence_score) AS mean_confidence
         FROM sessions s
+        LEFT JOIN users u ON u.user_id = s.user_id
+        LEFT JOIN participants p ON p.participant_id = s.participant_id
+        LEFT JOIN survey_results sr ON sr.session_id = s.session_id
         LEFT JOIN frame_logs fl ON fl.session_id = s.session_id
         WHERE s.food_id = ?
-        GROUP BY s.session_id, s.user_id, s.start_time, s.end_time, s.status
+        GROUP BY s.session_id, s.user_id, p.tester_label, p.name, u.username, s.start_time, s.end_time, s.status
         ORDER BY COALESCE(s.start_time, s.created_at) DESC, s.session_id DESC
       `,
         [foodId]
@@ -1843,10 +1994,14 @@ async function start() {
 
       const sessions = rows.map((r) => ({
         id: Number(r.session_id),
+        displayNumber: Number(r.display_number),
         userId: Number(r.user_id),
+        testerLabel: r.tester_label == null ? null : String(r.tester_label),
         startTime: toIsoOrNull(r.start_time),
         endTime: toIsoOrNull(r.end_time),
         status: r.status, // 'pending' | 'active' | 'completed' | 'cancelled'
+        completionStatus: r.status === "pending" || (r.status === "completed" && !Boolean(r.has_survey)) ? "incomplete" : r.status,
+        hasSurvey: Boolean(r.has_survey),
         frames: Number(r.frames ?? 0),
         meanConfidence: r.mean_confidence == null ? null : Number(r.mean_confidence),
       }));
@@ -1858,6 +2013,44 @@ async function start() {
     }
   });
 
+  // Permanently remove ended sessions that never received a survey for one food.
+  app.delete("/api/foods/:foodId/incomplete-sessions", async (req, res) => {
+    const foodId = Number.parseInt(req.params.foodId, 10);
+    if (!Number.isFinite(foodId)) {
+      return res.status(400).json({ ok: false, error: "Invalid foodId." });
+    }
+    let connection;
+    try {
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
+      const [frames] = await connection.query(
+        `SELECT fl.frame_image_url
+         FROM frame_logs fl
+         JOIN sessions s ON s.session_id = fl.session_id
+         WHERE s.food_id = ? AND s.invalidated_at IS NULL
+           AND (s.status = 'pending' OR (s.status = 'completed'
+             AND NOT EXISTS (SELECT 1 FROM survey_results sr WHERE sr.session_id = s.session_id)))`,
+        [foodId],
+      );
+      const [result] = await connection.query(
+        `DELETE s FROM sessions s
+         WHERE s.food_id = ? AND s.invalidated_at IS NULL
+           AND (s.status = 'pending' OR (s.status = 'completed'
+             AND NOT EXISTS (SELECT 1 FROM survey_results sr WHERE sr.session_id = s.session_id)))`,
+        [foodId],
+      );
+      await connection.commit();
+      await removeUploadedFiles(frames.map((frame) => frame.frame_image_url));
+      return res.json({ ok: true, deletedCount: Number(result.affectedRows ?? 0) });
+    } catch (err) {
+      if (connection) await connection.rollback();
+      console.error("DELETE /api/foods/:foodId/incomplete-sessions error:", err);
+      return res.status(500).json({ ok: false, error: "Could not delete incomplete sessions." });
+    } finally {
+      connection?.release();
+    }
+  });
+
   // Analytics for a specific food
   app.get("/api/foods/:foodId/analytics", async (req, res) => {
     const foodId = Number.parseInt(req.params.foodId, 10);
@@ -1865,12 +2058,34 @@ async function start() {
       return res.status(400).json({ ok: false, error: "Invalid foodId." });
     }
 
+    const completion = String(req.query.completion || "all").toLowerCase();
+    if (!["all", "complete", "incomplete"].includes(completion)) {
+      return res.status(400).json({ ok: false, error: "completion must be all, complete, or incomplete." });
+    }
+    // These fragments are selected from a fixed allowlist above. A submitted
+    // survey makes a session complete; an ended session without one is incomplete.
+    const completionSql = completion === "complete"
+      ? " AND s.invalidated_at IS NULL AND EXISTS (SELECT 1 FROM survey_results completion_sr WHERE completion_sr.session_id = s.session_id)"
+      : completion === "incomplete"
+        ? " AND s.invalidated_at IS NULL AND (s.status = 'pending' OR (s.status = 'completed' AND NOT EXISTS (SELECT 1 FROM survey_results completion_sr WHERE completion_sr.session_id = s.session_id)))"
+        : " AND s.invalidated_at IS NULL";
+
     try {
+      const [[completionCountsRow]] = await pool.query(
+        `
+        SELECT
+          SUM(CASE WHEN EXISTS (SELECT 1 FROM survey_results sr WHERE sr.session_id = s.session_id) THEN 1 ELSE 0 END) AS complete_count,
+          SUM(CASE WHEN s.status = 'pending' OR (s.status = 'completed' AND NOT EXISTS (SELECT 1 FROM survey_results sr WHERE sr.session_id = s.session_id)) THEN 1 ELSE 0 END) AS incomplete_count
+        FROM sessions s
+        WHERE s.food_id = ? AND s.invalidated_at IS NULL
+      `,
+        [foodId]
+      );
       const [[sessionCountRow]] = await pool.query(
         `
         SELECT COUNT(*) AS session_count
-        FROM sessions
-        WHERE food_id = ?
+        FROM sessions s
+        WHERE s.food_id = ?${completionSql}
       `,
         [foodId]
       );
@@ -1880,7 +2095,7 @@ async function start() {
         SELECT AVG(fl.confidence_score) AS mean_confidence
         FROM frame_logs fl
         INNER JOIN sessions s ON s.session_id = fl.session_id
-        WHERE s.food_id = ? AND fl.confidence_score IS NOT NULL
+        WHERE s.food_id = ? AND fl.confidence_score IS NOT NULL${completionSql}
       `,
         [foodId]
       );
@@ -1890,7 +2105,7 @@ async function start() {
         SELECT AVG(fl.hedonic_score) AS mean_hedonic
         FROM frame_logs fl
         INNER JOIN sessions s ON s.session_id = fl.session_id
-        WHERE s.food_id = ? AND fl.hedonic_score IS NOT NULL
+        WHERE s.food_id = ? AND fl.hedonic_score IS NOT NULL${completionSql}
       `,
         [foodId]
       );
@@ -1904,7 +2119,7 @@ async function start() {
           COUNT(fl.frame_log_id) AS total_count
         FROM frame_logs fl
         INNER JOIN sessions s ON s.session_id = fl.session_id
-        WHERE s.food_id = ? AND fl.hedonic_score IS NOT NULL
+        WHERE s.food_id = ? AND fl.hedonic_score IS NOT NULL${completionSql}
       `,
         [foodId]
       );
@@ -1918,7 +2133,7 @@ async function start() {
       ];
       // Fix rounding drift to keep a stable 100% in the UI.
       const drift = 100 - distribution.reduce((a, b) => a + b.value, 0);
-      if (drift !== 0) distribution[0].value = Math.max(0, distribution[0].value + drift);
+      if (totalCount > 0 && drift !== 0) distribution[0].value = Math.max(0, distribution[0].value + drift);
 
       const [[radarRow]] = await pool.query(
         `
@@ -1930,7 +2145,7 @@ async function start() {
           AVG(sr.final_overall_rating) AS final_overall_rating
         FROM survey_results sr
         INNER JOIN sessions s ON s.session_id = sr.session_id
-        WHERE s.food_id = ?
+        WHERE s.food_id = ?${completionSql}
       `,
         [foodId]
       );
@@ -1962,7 +2177,7 @@ async function start() {
             SELECT fl.hedonic_score, fl.timestamp
             FROM frame_logs fl
             INNER JOIN sessions s ON s.session_id = fl.session_id
-            WHERE s.food_id = ? AND fl.hedonic_score IS NOT NULL
+            WHERE s.food_id = ? AND fl.hedonic_score IS NOT NULL${completionSql}
           ),
           bucketed AS (
             SELECT hedonic_score, NTILE(3) OVER (ORDER BY timestamp) AS bucket
@@ -2001,7 +2216,7 @@ async function start() {
         FROM survey_results sr
         INNER JOIN sessions s ON s.session_id = sr.session_id
         LEFT JOIN participants p ON p.participant_id = s.participant_id
-        WHERE s.food_id = ?
+        WHERE s.food_id = ?${completionSql}
         GROUP BY age_group
       `,
         [foodId]
@@ -2015,7 +2230,7 @@ async function start() {
         FROM survey_results sr
         INNER JOIN sessions s ON s.session_id = sr.session_id
         LEFT JOIN participants p ON p.participant_id = s.participant_id
-        WHERE s.food_id = ?
+        WHERE s.food_id = ?${completionSql}
         GROUP BY gender
       `,
         [foodId]
@@ -2035,7 +2250,7 @@ async function start() {
         SELECT COUNT(*) AS survey_count
         FROM survey_results sr
         INNER JOIN sessions s ON s.session_id = sr.session_id
-        WHERE s.food_id = ?
+        WHERE s.food_id = ?${completionSql}
       `,
         [foodId]
       );
@@ -2047,7 +2262,7 @@ async function start() {
                 AVG(salt_sweet_rating) AS salt_mean, STDDEV_SAMP(salt_sweet_rating) AS salt_std, COUNT(salt_sweet_rating) AS salt_n,
                 AVG(texture_rating) AS texture_mean, STDDEV_SAMP(texture_rating) AS texture_std, COUNT(texture_rating) AS texture_n,
                 AVG(final_overall_rating) AS overall_mean, STDDEV_SAMP(final_overall_rating) AS overall_std, COUNT(final_overall_rating) AS overall_n
-         FROM survey_results sr JOIN sessions s ON s.session_id = sr.session_id WHERE s.food_id = ?`, [foodId]);
+         FROM survey_results sr JOIN sessions s ON s.session_id = sr.session_id WHERE s.food_id = ?${completionSql}`, [foodId]);
       const aspect = (mean, stdDev, n) => ({ mean: mean == null ? 0 : Number(mean), stdDev: stdDev == null ? 0 : Number(stdDev), n: Number(n ?? 0) });
       const aspectStats = {
         color: aspect(aspects.color_mean, aspects.color_std, aspects.color_n),
@@ -2061,7 +2276,7 @@ async function start() {
                 sr.texture_rating, sr.final_overall_rating, AVG(fl.hedonic_score) AS mean_fer_hedonic
          FROM sessions s LEFT JOIN survey_results sr ON sr.session_id = s.session_id
          LEFT JOIN frame_logs fl ON fl.session_id = s.session_id AND fl.hedonic_score IS NOT NULL
-         WHERE s.food_id = ?
+         WHERE s.food_id = ?${completionSql}
          GROUP BY s.session_id, s.start_time, sr.color_rating, sr.flavor_aroma_rating, sr.salt_sweet_rating, sr.texture_rating, sr.final_overall_rating
          ORDER BY s.start_time ASC, s.session_id ASC`, [foodId]);
       const sessionTrends = trendRows.map((row) => ({
@@ -2093,6 +2308,8 @@ async function start() {
           sessionCount,
           frameLogCount: totalCount,
           surveyCount,
+          completeSessionCount: Number(completionCountsRow?.complete_count ?? 0),
+          incompleteSessionCount: Number(completionCountsRow?.incomplete_count ?? 0),
           aspectStats,
           sessionTrends,
         },
@@ -2460,6 +2677,42 @@ async function start() {
         }
       }
 
+      // A reconnect, refresh, or repeated Start click must resume the same
+      // active room session instead of splitting one tasting into duplicates.
+      const [existingSessions] = await pool.query(
+        `SELECT s.session_id, s.start_time, fp.name AS food_name
+         FROM sessions s
+         JOIN food_products fp ON fp.food_id = s.food_id
+         WHERE s.user_id = ?
+           AND s.food_id = ?
+           AND s.testing_room_id <=> ?
+           AND s.status = 'active'
+           AND s.invalidated_at IS NULL
+         ORDER BY s.session_id DESC
+         LIMIT 1`,
+        [uId, fId, testingRoomId],
+      );
+      if (existingSessions.length) {
+        const existing = existingSessions[0];
+        return res.json({
+          ok: true,
+          resumed: true,
+          session: {
+            id: Number(existing.session_id),
+            userId: uId,
+            kioskId: kId,
+            participantId: pId,
+            foodId: fId,
+            testingRoomId,
+            roomCode: normalizedRoomCode || null,
+            browserKioskId: browserKiosk,
+            status: "active",
+            startTime: toIsoOrNull(existing.start_time),
+          },
+          food: { id: fId, name: String(existing.food_name) },
+        });
+      }
+
       const [result] = await pool.query(
         `
         INSERT INTO sessions
@@ -2499,6 +2752,7 @@ async function start() {
 
       return res.json({
         ok: true,
+        resumed: false,
         session: {
           id: sessionId,
           userId: uId,
@@ -2511,6 +2765,9 @@ async function start() {
           status: "active",
           startTime: new Date().toISOString(),
         },
+        food: testerConsentPreferences
+          ? { id: fId, name: String((await pool.query("SELECT name FROM food_products WHERE food_id = ? LIMIT 1", [fId]))[0][0]?.name || "") }
+          : undefined,
       });
     } catch (err) {
       console.error("POST /api/sessions/start error:", err);
@@ -2640,6 +2897,7 @@ async function start() {
         `
         SELECT
           s.session_id,
+          (SELECT COUNT(*) FROM sessions numbered WHERE numbered.food_id = s.food_id AND numbered.session_id <= s.session_id) AS display_number,
           s.user_id,
           s.participant_id,
           s.food_id,
@@ -2852,6 +3110,7 @@ async function start() {
         `
         SELECT
           s.session_id,
+          (SELECT COUNT(*) FROM sessions numbered WHERE numbered.food_id = s.food_id AND numbered.session_id <= s.session_id) AS display_number,
           s.user_id,
           s.participant_id,
           s.food_id,
@@ -2861,9 +3120,13 @@ async function start() {
           s.end_time,
           fp.name AS food_name,
           fp.category AS food_category,
-          fp.image_url AS food_image_url
+          fp.image_url AS food_image_url,
+          COALESCE(p.tester_label, p.name, u.username) AS tester_label,
+          p.dietary_restrictions AS participant_dietary_restrictions
         FROM sessions s
         LEFT JOIN food_products fp ON fp.food_id = s.food_id
+        LEFT JOIN users u ON u.user_id = s.user_id
+        LEFT JOIN participants p ON p.participant_id = s.participant_id
         WHERE s.session_id = ?
         LIMIT 1
         `,
@@ -2939,6 +3202,7 @@ async function start() {
         ok: true,
         session: {
           id: Number(sessionRow.session_id),
+          displayNumber: Number(sessionRow.display_number),
           userId: Number(sessionRow.user_id),
           participantId: sessionRow.participant_id == null ? null : Number(sessionRow.participant_id),
           foodId: Number(sessionRow.food_id),
@@ -2956,6 +3220,13 @@ async function start() {
               imageUrl: sessionRow.food_image_url == null ? null : String(sessionRow.food_image_url),
             }
           : null,
+        participant: {
+          id: sessionRow.participant_id == null ? null : Number(sessionRow.participant_id),
+          testerLabel: sessionRow.tester_label == null ? `Tester ${sessionRow.user_id}` : String(sessionRow.tester_label),
+          dietaryRestrictions: sessionRow.participant_dietary_restrictions == null
+            ? null
+            : String(sessionRow.participant_dietary_restrictions),
+        },
         metrics: {
           totalFrames: Number(frameStatsRow?.total_frames ?? 0),
           meanConfidence:
@@ -3073,7 +3344,7 @@ async function start() {
         `
         UPDATE sessions
         SET end_time = COALESCE(end_time, NOW()),
-            status = 'completed'
+            status = 'pending'
         WHERE session_id = ?
       `,
         [sessionId]
@@ -3264,28 +3535,21 @@ async function start() {
 
     const remarksVal = toTrimmedOrNull(remarks);
 
+    let connection;
     try {
-      const [[sessionRow]] = await pool.query(
-        `SELECT session_id FROM sessions WHERE session_id = ? LIMIT 1`,
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
+      const [[sessionRow]] = await connection.query(
+        `SELECT session_id FROM sessions WHERE session_id = ? LIMIT 1 FOR UPDATE`,
         [sessionId]
       );
 
       if (!sessionRow) {
+        await connection.rollback();
         return res.status(404).json({ ok: false, error: "Session not found." });
       }
 
-      // Ensure the session is marked completed even if stop endpoint wasn't called.
-      await pool.query(
-        `
-        UPDATE sessions
-        SET status = 'completed',
-            end_time = COALESCE(end_time, NOW())
-        WHERE session_id = ?
-      `,
-        [sessionId]
-      );
-
-      await pool.query(
+      await connection.query(
         `
         INSERT INTO survey_results (
           session_id,
@@ -3313,10 +3577,23 @@ async function start() {
         ]
       );
 
+      // Completion and the required survey commit together. A failed survey
+      // can never leave the session marked complete.
+      await connection.query(
+        `UPDATE sessions
+         SET status = 'completed', end_time = COALESCE(end_time, NOW())
+         WHERE session_id = ?`,
+        [sessionId],
+      );
+      await connection.commit();
+
       return res.json({ ok: true, sessionId });
     } catch (err) {
+      if (connection) await connection.rollback();
       console.error("POST /api/sessions/:sessionId/survey error:", err);
       return res.status(500).json({ ok: false, error: "Server error." });
+    } finally {
+      connection?.release();
     }
   });
 

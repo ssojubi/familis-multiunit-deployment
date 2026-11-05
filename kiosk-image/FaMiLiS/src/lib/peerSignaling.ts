@@ -29,7 +29,8 @@ export function receivePeerSignal(
       if (signal.sdp.type === "answer" && pc.signalingState !== "have-local-offer") return;
       await pc.setRemoteDescription(signal.sdp);
       for (const candidate of queue.candidates.splice(0)) {
-        await pc.addIceCandidate(candidate);
+        // A stale candidate from a replaced connection must not prevent the SDP answer.
+        try { await pc.addIceCandidate(candidate); } catch { /* Continue with other candidates. */ }
       }
       if (signal.sdp.type === "offer" && sendAnswer) {
         const answer = await pc.createAnswer();

@@ -5,13 +5,14 @@ import test from 'node:test';
 
 // Exercise the production Socket.IO handlers without starting HTTP or MySQL.
 const source = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
-const handlersSource = source.slice(source.indexOf("io.on('connection'"), source.indexOf("\n});", source.indexOf("io.on('connection'")) + 4);
+const handlersSource = source.slice(source.indexOf("const ADMIN_PRESENCE_ROOM"), source.indexOf("\n});", source.indexOf("io.on('connection'")) + 4);
 function setup(query = async () => [[{ testing_room_id: 1 }]]) {
   const rooms = new Map();
   let connect;
   const delivered = [];
   runInNewContext(handlersSource, {
     rooms, console: { log() {}, error() {} },
+    setTimeout: () => ({ unref() {} }), clearTimeout() {},
     poolPromise: Promise.resolve({ query }),
     io: { on: (_event, handler) => { connect = handler; }, to: (id) => ({ emit: (event, data) => delivered.push({ id, event, data }) }) },
   });
@@ -30,13 +31,33 @@ function setup(query = async () => [[{ testing_room_id: 1 }]]) {
   return { socket, rooms, delivered };
 }
 
+test('tester presence distinguishes login, room consent and disconnect', async () => {
+  const { socket, delivered } = setup(async (sql) => {
+    if (sql.includes('JOIN food_products')) return [[{ room_code: '123456', food_name: 'Apple' }]];
+    if (sql.includes("SELECT room_code FROM testing_rooms")) return [[]];
+    return [[{ testing_room_id: 1 }]];
+  });
+  const viewer = socket('viewer', 'admin');
+  await viewer.call('monitor-all-rooms');
+  const tester = socket('tester-socket', 'tester', 'Tester 1');
+  await tester.call('tester-presence-update', { stage: 'consent_pending', roomCode: '123456' });
+  const online = delivered.filter(item => item.event === 'tester-presence-snapshot').at(-1).data;
+  assert.equal(online[0].testerName, 'Tester 1');
+  assert.equal(online[0].stage, 'consent_pending');
+  assert.equal(online[0].roomCode, '123456');
+  assert.equal(online[0].foodName, 'Apple');
+  tester.call('disconnect');
+  const offline = delivered.filter(item => item.event === 'tester-presence-snapshot').at(-1).data;
+  assert.deepEqual(Array.from(offline), []);
+});
+
 test('late viewers receive the latest paused status and session identity', async () => {
   const { socket } = setup();
   const host = socket('host', 'tester');
   await host.call('join-room', 'room');
   assert.equal(host.sent[0].event, 'room-joined');
-  host.call('tester-session-status', { status: 'recording', sessionId: 12 });
-  host.call('tester-session-status', { status: 'paused', sessionId: 12 });
+  await host.call('tester-session-status', { status: 'recording', sessionId: 12 });
+  await host.call('tester-session-status', { status: 'paused', sessionId: 12 });
   const viewer = socket('viewer', 'admin');
   await viewer.call('join-room', 'room');
   const status = viewer.sent.find(item => item.event === 'tester-session-status').data;
@@ -49,11 +70,11 @@ test('disconnected hosts are not replayed and viewers cannot set recording state
   const { socket, rooms } = setup();
   const host = socket('host', 'tester');
   await host.call('join-room', 'room');
-  host.call('tester-session-status', { status: 'recording', sessionId: 1 });
+  await host.call('tester-session-status', { status: 'recording', sessionId: 1 });
   host.call('disconnect');
   const viewer = socket('viewer', 'admin');
   await viewer.call('join-room', 'room');
-  viewer.call('tester-session-status', { status: 'recording' });
+  await viewer.call('tester-session-status', { status: 'recording' });
   assert.equal(viewer.sent.some(item => item.event === 'tester-session-status'), false);
   assert.equal(rooms.get('room').get('viewer').status, undefined);
 });
@@ -62,12 +83,12 @@ test('a reconnect restores status under the new peer and rejects unknown states'
   const { socket, rooms } = setup();
   const oldHost = socket('old', 'tester');
   await oldHost.call('join-room', 'room');
-  oldHost.call('tester-session-status', { status: 'recording', sessionId: 8 });
+  await oldHost.call('tester-session-status', { status: 'recording', sessionId: 8 });
   oldHost.call('disconnect');
   const host = socket('new', 'tester');
   await host.call('join-room', 'room');
-  host.call('tester-session-status', { status: 'completed', sessionId: 8 });
-  host.call('tester-session-status', { status: 'invalid', sessionId: 8 });
+  await host.call('tester-session-status', { status: 'completed', sessionId: 8 });
+  await host.call('tester-session-status', { status: 'invalid', sessionId: 8 });
   assert.equal(rooms.get('room').has('old'), false);
   assert.equal(rooms.get('room').get('new').status.status, 'completed');
 });
@@ -131,7 +152,7 @@ test('monitor labels use authenticated username, ignoring client-supplied identi
   const { socket } = setup();
   const host = socket('host', 'tester', 'Tester 1');
   await host.call('join-room', 'room');
-  host.call('tester-session-status', { status: 'recording', testerName: 'Spoofed name' });
+  await host.call('tester-session-status', { status: 'recording', sessionId: 4, testerName: 'Spoofed name' });
   const viewer = socket('viewer', 'admin');
   await viewer.call('join-room', 'room');
   assert.equal(viewer.sent.find(item => item.event === 'tester-session-status').data.testerName, 'Tester 1');

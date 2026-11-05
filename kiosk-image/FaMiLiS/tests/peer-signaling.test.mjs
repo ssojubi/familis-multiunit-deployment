@@ -92,3 +92,19 @@ for (const recording of [true, false]) {
     assert.deepEqual(published, recording ? ['monitor-1'] : []);
   });
 }
+
+
+test('stale buffered ICE does not suppress the answer or remaining candidates', async () => {
+  const pc = peer();
+  const original = pc.addIceCandidate;
+  pc.addIceCandidate = async function(candidate) {
+    if (candidate.candidate === 'stale') throw new Error('old ICE generation');
+    return original.call(this, candidate);
+  };
+  await receivePeerSignal(pc, { candidate: { candidate: 'stale' } });
+  await receivePeerSignal(pc, { candidate: { candidate: 'valid' } });
+  let answer;
+  await receivePeerSignal(pc, { sdp: { type: 'offer' } }, value => { answer = value; });
+  assert.equal(answer.type, 'answer');
+  assert.ok(pc.calls.includes('valid'));
+});

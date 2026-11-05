@@ -42,6 +42,7 @@ ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip,
 
 type TabKey = "frame" | "system" | "survey";
 type SessionStatus = "pending" | "active" | "completed" | "cancelled";
+type DisplayStatus = SessionStatus | "incomplete";
 
 type Food = {
   id: number;
@@ -77,7 +78,7 @@ type SurveyResults = {
 };
 
 type Participant = {
-  id: number;
+  id: number | null;
   testerLabel: string | null;
   dietaryRestrictions?: string | null;
 };
@@ -85,6 +86,7 @@ type Participant = {
 type SessionDetailPayload = {
   session: {
     id: number;
+    displayNumber: number;
     userId: number;
     foodId: number;
     status: SessionStatus;
@@ -109,11 +111,12 @@ function clampPct(n: number) {
   return Math.max(0, Math.min(100, n));
 }
 
-function formatStatus(status: SessionStatus) {
+function formatStatus(status: DisplayStatus) {
+  if (status === "pending") return "Incomplete";
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
-function statusClasses(status: SessionStatus) {
+function statusClasses(status: DisplayStatus) {
   switch (status) {
     case "pending":
       return "bg-yellow-50 text-yellow-700";
@@ -123,6 +126,8 @@ function statusClasses(status: SessionStatus) {
       return "bg-gray-100 text-gray-700";
     case "cancelled":
       return "bg-red-50 text-red-700";
+    case "incomplete":
+      return "bg-amber-50 text-amber-700";
     default:
       return "bg-gray-100 text-gray-700";
   }
@@ -175,7 +180,6 @@ export default function SessionDetail() {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<SessionDetailPayload | null>(null);
   const [previewImage, setPreviewImage] = useState<{ url: string; label: string } | null>(null);
-  const [statusSaving, setStatusSaving] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deletePending, setDeletePending] = useState(false);
   const [invalidateOpen, setInvalidateOpen] = useState(false);
@@ -273,8 +277,11 @@ export default function SessionDetail() {
   }, [sessionId]);
 
   const content = data;
+  const displaySessionNumber = content?.session.displayNumber ?? content?.session.id;
   const status = content?.session.status ?? "completed";
-  const statusOptions: SessionStatus[] = ["pending", "active", "completed", "cancelled"];
+  const displayStatus: DisplayStatus = status === "completed" && content?.surveyResults?.finalOverallRating == null
+    ? "incomplete"
+    : status;
 
   const meanConfidencePct =
     content?.metrics.meanConfidence == null ? null : Math.round(content.metrics.meanConfidence * 100);
@@ -361,28 +368,6 @@ export default function SessionDetail() {
       }) as const,
     []
   );
-
-  const onChangeStatus = async (nextStatus: SessionStatus) => {
-    if (!content || statusSaving || nextStatus === content.session.status) return;
-    setStatusSaving(true);
-    setError(null);
-    try {
-      const res = await apiFetch(`/api/sessions/${content.session.id}/status`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: nextStatus }),
-      });
-      const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.ok || !json?.session) {
-        throw new Error(json?.error || "Failed to update session status.");
-      }
-      setData((prev) => (prev ? { ...prev, session: json.session } : prev));
-    } catch (err: any) {
-      setError(err?.message || "Failed to update session status.");
-    } finally {
-      setStatusSaving(false);
-    }
-  };
 
   const onDeleteSession = async () => {
     if (!content) return;
@@ -538,14 +523,14 @@ export default function SessionDetail() {
                       />
                     ) : null}
                     <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">
-                      S-{content.session.id}
+                      S-{displaySessionNumber}
                     </h1>
                     <span
                       className={`inline-flex items-center px-3 py-1 rounded-full text-[11px] font-semibold ${statusClasses(
-                        status
+                        displayStatus
                       )}`}
                     >
-                      {formatStatus(status)}
+                      {formatStatus(displayStatus)}
                     </span>
                     {content.session.invalidatedAt ? (
                       <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-semibold bg-red-100 text-red-700 border border-red-200">
@@ -561,10 +546,13 @@ export default function SessionDetail() {
                   <p className="text-sm text-gray-600 mt-1">
                     {content.food ? `${content.food.name} - ${content.food.category}` : "Session"}
                   </p>
+                  <p className="text-sm font-semibold text-gray-800 mt-1">
+                    Tester: {content.participant?.testerLabel || `User ${content.session.userId}`}
+                  </p>
                   <p className="text-xs text-gray-500 mt-1">
                     {formatDateTime(content.session.startTime)} - {formatDateTime(content.session.endTime)}
                   </p>
-                  {content.participant ? (
+                  {content.participant?.id != null ? (
                     <button
                       type="button"
                       onClick={() => navigate(`/participants/${content.participant!.id}`)}
@@ -584,19 +572,6 @@ export default function SessionDetail() {
                     onNavigateToSession={(id) => navigate(`/session-detail?sessionId=${id}`)}
                   />
                   {canExport ? <ExportButton kind="session" sessionId={content.session.id} /> : null}
-                  <select
-                    value={status}
-                    onChange={(e) => onChangeStatus(e.target.value as SessionStatus)}
-                    disabled={statusSaving}
-                    className="text-sm font-semibold border border-gray-200 rounded-md px-3 py-2 bg-white"
-                    aria-label="Session status"
-                  >
-                    {statusOptions.map((s) => (
-                      <option key={s} value={s}>
-                        {formatStatus(s)}
-                      </option>
-                    ))}
-                  </select>
                   {content.session.invalidatedAt ? (
                     <button
                       type="button"
@@ -923,7 +898,7 @@ export default function SessionDetail() {
               Delete this session?
             </h2>
             <p className="text-sm text-gray-600">
-              This permanently deletes session <span className="font-semibold">S-{content.session.id}</span>.
+              This permanently deletes session <span className="font-semibold">S-{displaySessionNumber}</span>.
             </p>
             <div className="flex gap-3 mt-5">
               <button
@@ -959,7 +934,7 @@ export default function SessionDetail() {
               Invalidate this session?
             </h2>
             <p className="text-sm text-gray-600">
-              This marks session <span className="font-semibold">S-{content.session.id}</span> as
+              This marks session <span className="font-semibold">S-{displaySessionNumber}</span> as
               unusable for reports. It is excluded from analytics and exports, and no new frames can be
               recorded. The session is not deleted immediately.
             </p>
@@ -997,7 +972,7 @@ export default function SessionDetail() {
               Revalidate this session?
             </h2>
             <p className="text-sm text-gray-600">
-              This restores session <span className="font-semibold">S-{content.session.id}</span> as the
+              This restores session <span className="font-semibold">S-{displaySessionNumber}</span> as the
               valid record for this taster and food. Any other valid sessions for the same pair will
               be invalidated and excluded from reports.
             </p>

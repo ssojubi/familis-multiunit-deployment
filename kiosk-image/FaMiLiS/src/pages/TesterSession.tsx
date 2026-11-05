@@ -19,6 +19,8 @@ const SESSIONS_API_BASE = getApiBase();
 const SOCKET_SERVER_URL = getSocketUrl();
 const FRAME_CAPTURE_MS = 750;
 const MAX_FRAME_WIDTH = 960;
+const ACTIVE_TESTER_SESSION_KEY = "familis.activeTesterRecording";
+const RECONNECT_TIMEOUT_MS = 90_000;
 
 type ServerToClientEvents = {
   "room-joined": () => void;
@@ -26,6 +28,7 @@ type ServerToClientEvents = {
   "stream-request": (data: { from?: string }) => void;
   "stream-stop": (data: { from?: string }) => void;
   "user-disconnected": (peerId: string) => void;
+  "session-reconnect-expired": (data: { sessionId?: number }) => void;
   signal: (data: {
     from?: string;
     sdp?: RTCSessionDescriptionInit;
@@ -43,7 +46,7 @@ type ClientToServerEvents = {
   }) => void;
   "tester-session-status": (data: {
     room: string;
-    status: "recording" | "completed";
+    status: "ready" | "recording" | "completed";
     sessionId?: number;
     foodName?: string;
   }) => void;
@@ -57,6 +60,24 @@ function getStoredUserId(): number | null {
     const candidate = parsed?.id ?? parsed?.userId ?? parsed?.user_id;
     const numeric = Number(candidate);
     return Number.isFinite(numeric) ? numeric : null;
+  } catch {
+    return null;
+  }
+}
+
+type StoredTesterRecording = {
+  id: number;
+  userId: number;
+  foodId: number;
+  roomId: string;
+  kioskId: string;
+  foodName?: string;
+};
+
+function readStoredRecording(): StoredTesterRecording | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(ACTIVE_TESTER_SESSION_KEY) || "null") as StoredTesterRecording | null;
+    return value && Number.isFinite(value.id) && Number.isFinite(value.userId) ? value : null;
   } catch {
     return null;
   }
@@ -86,6 +107,9 @@ export default function TesterSession() {
   const latestStatusRef = useRef<Parameters<ClientToServerEvents["tester-session-status"]>[0] | null>(null);
   const sessionIdRef = useRef<number | null>(null);
   const frameInFlightRef = useRef(false);
+  const reconnectDeadlineRef = useRef<number | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [testerContext] = useState(() =>
     captureTesterContext(window.location.search),
@@ -97,12 +121,56 @@ export default function TesterSession() {
   useEffect(() => {
     let disposed = false;
 
+    const clearReconnectCountdown = () => {
+      reconnectDeadlineRef.current = null;
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      if (reconnectIntervalRef.current) clearInterval(reconnectIntervalRef.current);
+      reconnectTimeoutRef.current = null;
+      reconnectIntervalRef.current = null;
+    };
+
+    const expireDisconnectedSession = () => {
+      const abandonedSessionId = sessionIdRef.current;
+      clearReconnectCountdown();
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      intervalRef.current = null;
+      isRecordingRef.current = false;
+      sessionIdRef.current = null;
+      localStorage.removeItem(ACTIVE_TESTER_SESSION_KEY);
+      setIsRecording(false);
+      setSessionId(null);
+      setStatus("completed");
+      setMessage("Connection was not restored. Your session is incomplete and you are being logged out.");
+      if (abandonedSessionId != null) {
+        void fetch(`${SESSIONS_API_BASE}/api/sessions/${abandonedSessionId}/stop`, {
+          method: "POST",
+          credentials: "include",
+          keepalive: true,
+        }).catch(() => undefined);
+      }
+      window.setTimeout(() => performLogout(navigate), 1500);
+    };
+
+    const beginReconnectCountdown = () => {
+      if (!isRecordingRef.current || reconnectDeadlineRef.current != null) return;
+      reconnectDeadlineRef.current = Date.now() + RECONNECT_TIMEOUT_MS;
+      const updateMessage = () => {
+        const seconds = Math.max(0, Math.ceil(((reconnectDeadlineRef.current ?? Date.now()) - Date.now()) / 1000));
+        setMessage(`Wi-Fi/network connection lost. Reconnecting… You will be logged out in ${seconds}s and this session will be marked incomplete if the connection is not restored.`);
+      };
+      updateMessage();
+      reconnectIntervalRef.current = setInterval(updateMessage, 1000);
+      reconnectTimeoutRef.current = setTimeout(expireDisconnectedSession, RECONNECT_TIMEOUT_MS);
+    };
+
     localStorage.setItem("kiosk_id", kioskId);
 
     ensureCameraStream()
       .then(() => {
         if (disposed) return;
-        setMessage("Camera ready. Start whenever you're ready to taste.");
+        setMessage(isRecordingRef.current
+          ? "Session restored. Recording will continue under the same session."
+          : "Camera ready. Start whenever you're ready to taste.");
       })
       .catch((err) => {
         if (disposed) return;
@@ -122,6 +190,11 @@ export default function TesterSession() {
 
     socket.on("connect", () => {
       if (disposed) return;
+      const wasReconnecting = reconnectDeadlineRef.current != null;
+      clearReconnectCountdown();
+      if (wasReconnecting && isRecordingRef.current) {
+        setMessage("Connection restored. Resuming camera and frame uploads…");
+      }
       console.log(
         `[TesterSession] Socket.IO connected. Joining room "${roomId}" as host`,
       );
@@ -134,6 +207,9 @@ export default function TesterSession() {
     socket.on("disconnect", () => {
       cleanupPeerConnection();
       viewerIdsRef.current.clear();
+      if (isRecordingRef.current) {
+        beginReconnectCountdown();
+      }
     });
 
     socket.on("viewer-connected", (viewerId) => {
@@ -173,15 +249,98 @@ export default function TesterSession() {
       viewerIdsRef.current.delete(peerId);
       cleanupPeerConnection(peerId);
     });
+    socket.on("session-reconnect-expired", () => expireDisconnectedSession());
+
+    const handleOffline = () => {
+      if (isRecordingRef.current) {
+        beginReconnectCountdown();
+      }
+    };
+    const handleOnline = () => {
+      if (!isRecordingRef.current) return;
+      setMessage("Internet connection restored. Reconnecting camera and frame uploads…");
+      if (!socket.connected) socket.connect();
+      void ensureCameraStream();
+    };
+    window.addEventListener("offline", handleOffline);
+    window.addEventListener("online", handleOnline);
 
     return () => {
       disposed = true;
+      clearReconnectCountdown();
       socket.disconnect();
       cleanupPeerConnection();
       if (intervalRef.current) clearInterval(intervalRef.current);
       if (streamRef.current)
         streamRef.current.getTracks().forEach((t) => t.stop());
+      window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("online", handleOnline);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const stored = readStoredRecording();
+    const currentUserId = getStoredUserId();
+    if (currentUserId == null) return;
+    const storedMatches = stored?.userId === currentUserId
+      && stored.roomId === roomId
+      && String(stored.foodId) === String(foodId);
+    const controller = new AbortController();
+    const recoveryUrl = storedMatches
+      ? `${SESSIONS_API_BASE}/api/sessions/${stored.id}`
+      : `${SESSIONS_API_BASE}/api/sessions/booth/active`;
+    void fetch(recoveryUrl, {
+      credentials: "include",
+      signal: controller.signal,
+    }).then(async (response) => {
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || payload.session?.status !== "active" || payload.session?.invalidatedAt) {
+        if (response.ok || response.status === 404) localStorage.removeItem(ACTIVE_TESTER_SESSION_KEY);
+        return;
+      }
+      const recoveredId = Number(payload.session.id);
+      const recoveredFoodId = Number(payload.session.foodId);
+      const recoveredRoomId = String(payload.session.roomCode || "");
+      if (!Number.isFinite(recoveredId) || recoveredFoodId !== Number(foodId) || recoveredRoomId !== roomId) return;
+      const restoredFoodName = payload.food?.name || stored?.foodName;
+      const recovered: StoredTesterRecording = {
+        id: recoveredId,
+        userId: currentUserId,
+        foodId: recoveredFoodId,
+        roomId: recoveredRoomId,
+        kioskId,
+        foodName: restoredFoodName,
+      };
+      localStorage.setItem(ACTIVE_TESTER_SESSION_KEY, JSON.stringify(recovered));
+      sessionIdRef.current = recoveredId;
+      isRecordingRef.current = true;
+      setSessionId(recoveredId);
+      setFoodName(restoredFoodName);
+      setIsRecording(true);
+      setStatus("recording");
+      setMessage("Session restored. Reconnecting camera and frame uploads…");
+      latestStatusRef.current = {
+        room: roomId,
+        status: "recording",
+        sessionId: recoveredId,
+        foodName: restoredFoodName,
+      };
+      if (socketRef.current?.connected) {
+        socketRef.current.emit("tester-session-status", latestStatusRef.current);
+      }
+      await ensureCameraStream();
+      if (!intervalRef.current) {
+        void sendFrame();
+        intervalRef.current = setInterval(sendFrame, FRAME_CAPTURE_MS);
+      }
+    }).catch((error) => {
+      if ((error as { name?: string })?.name !== "AbortError") {
+        setMessage("Could not verify the active session yet. Waiting for the network…");
+      }
+    });
+    return () => controller.abort();
+    // Restore once for this tester page; active refs handle later reconnects.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -267,7 +426,7 @@ export default function TesterSession() {
   }
 
   function broadcastStatus(
-    statusValue: "recording" | "completed",
+    statusValue: "ready" | "recording" | "completed",
     sid?: number,
     fName?: string,
   ) {
@@ -327,6 +486,14 @@ export default function TesterSession() {
       setSessionId(newSessionId);
       sessionIdRef.current = newSessionId;
       setFoodName(newFoodName);
+      localStorage.setItem(ACTIVE_TESTER_SESSION_KEY, JSON.stringify({
+        id: newSessionId,
+        userId: Number(uId),
+        foodId: fId,
+        roomId,
+        kioskId,
+        foodName: newFoodName,
+      } satisfies StoredTesterRecording));
 
       setIsRecording(true);
       isRecordingRef.current = true;
@@ -367,11 +534,12 @@ export default function TesterSession() {
 
     isRecordingRef.current = false;
     sessionIdRef.current = null;
+    localStorage.removeItem(ACTIVE_TESTER_SESSION_KEY);
     cleanupPeerConnection();
     setIsRecording(false);
     setSessionId(null);
     setStatus("completed");
-    setMessage("Session completed. Redirecting to survey...");
+    setMessage("Recording ended. Please complete the survey to finish your session.");
 
     try {
       const res = await fetch(
@@ -385,7 +553,8 @@ export default function TesterSession() {
       console.error("Failed to stop session:", err);
     }
 
-    broadcastStatus("completed", completedSessionId, foodName);
+    // The recording has ended, but the session is not complete until its survey is submitted.
+    broadcastStatus("ready", completedSessionId, foodName);
 
     setTimeout(() => {
       navigate("/tester-survey", {

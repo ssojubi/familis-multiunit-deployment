@@ -5,6 +5,10 @@ import {
   useLocation,
 } from "react-router-dom";
 import { useEffect, useState } from "react";
+import { useRef } from "react";
+import { io, type Socket } from "socket.io-client";
+import { getSocketUrl } from "./apiConfig";
+import { captureTesterContext } from "./testerContext";
 
 export const FAMILIS_USER_KEY = "familis.user";
 export const FAMILIS_CURRENT_SESSION_KEY = "familis.currentSession";
@@ -131,6 +135,67 @@ export function hasStoredUser(): boolean {
   }
 }
 
+type PresenceStage = "logged_in" | "consent_pending" | "ready" | "survey";
+
+function TesterPresence() {
+  const location = useLocation();
+  const socketRef = useRef<Socket | null>(null);
+  const latestRef = useRef<{ stage: PresenceStage; roomCode: string }>({
+    stage: "logged_in",
+    roomCode: "",
+  });
+
+  const pathname = location.pathname;
+  let consentComplete = false;
+  try {
+    const stored = JSON.parse(localStorage.getItem("familis.consent") || "null") as {
+      answers?: Record<string, boolean>;
+      version?: string;
+    } | null;
+    consentComplete = Boolean(
+      stored?.version &&
+      stored.answers &&
+      Object.keys(stored.answers).length > 0 &&
+      Object.values(stored.answers).every(Boolean),
+    );
+  } catch {
+    consentComplete = false;
+  }
+  const stage: PresenceStage = pathname.startsWith("/tester-consent")
+    ? "consent_pending"
+    : pathname.startsWith("/tester-session")
+      ? consentComplete ? "ready" : "consent_pending"
+      : pathname.startsWith("/tester-survey") || pathname.startsWith("/survey")
+        ? "survey"
+        : "logged_in";
+  const roomCode = captureTesterContext(location.search).roomId;
+  latestRef.current = { stage, roomCode };
+
+  useEffect(() => {
+    const socket = io(getSocketUrl(), {
+      reconnection: true,
+      transports: ["websocket", "polling"],
+      withCredentials: true,
+    });
+    socketRef.current = socket;
+    const publish = () => socket.emit("tester-presence-update", latestRef.current);
+    socket.on("connect", publish);
+    return () => {
+      socket.off("connect", publish);
+      socket.disconnect();
+      socketRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (socketRef.current?.connected) {
+      socketRef.current.emit("tester-presence-update", latestRef.current);
+    }
+  }, [pathname, location.search, stage, roomCode]);
+
+  return null;
+}
+
 /**
  * Parent route: verifies the HttpOnly cookie used by the HTTPS deployment and
  * refreshes the small client-side role cache used by nested route guards.
@@ -138,6 +203,7 @@ export function hasStoredUser(): boolean {
 export default function RequireAuth() {
   const location = useLocation();
   const [state, setState] = useState<"checking" | "authenticated" | "anonymous">("checking");
+  const [role, setRole] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -149,6 +215,7 @@ export default function RequireAuth() {
           return;
         }
         localStorage.setItem(FAMILIS_USER_KEY, JSON.stringify(data.user));
+        setRole(typeof data.user.role === "string" ? data.user.role : null);
         setState("authenticated");
       })
       .catch((error: unknown) => {
@@ -164,5 +231,10 @@ export default function RequireAuth() {
     const returnTo = `${location.pathname}${location.search}${location.hash}`;
     return <Navigate to="/" replace state={{ returnTo }} />;
   }
-  return <Outlet />;
+  return (
+    <>
+      {role === "tester" ? <TesterPresence /> : null}
+      <Outlet />
+    </>
+  );
 }

@@ -48,6 +48,7 @@ ChartJS.register(
 );
 
 type TabKey = "food" | "stats";
+type CompletionFilter = "all" | "complete" | "incomplete";
 
 type Food = {
   id: number;
@@ -57,6 +58,7 @@ type Food = {
   createdAt: string | null;
   sessionsTotal: number;
   sessionsActive: number;
+  latestSessionStatus: string | null;
   avgDurationMin: number | null;
 };
 
@@ -94,6 +96,8 @@ type Analytics = {
   sessionCount: number;
   frameLogCount: number;
   surveyCount: number;
+  completeSessionCount: number;
+  incompleteSessionCount: number;
   aspectStats: AspectStats;
   sessionTrends: SessionTrendPoint[];
 };
@@ -153,6 +157,8 @@ const EMPTY_ANALYTICS: Analytics = {
   sessionCount: 0,
   frameLogCount: 0,
   surveyCount: 0,
+  completeSessionCount: 0,
+  incompleteSessionCount: 0,
   aspectStats: EMPTY_ASPECT_STATS,
   sessionTrends: [],
 };
@@ -178,6 +184,7 @@ export default function Dashboard() {
   const tabFromUrl = searchParams.get("tab") === "stats" ? "stats" : "food";
   const [tab, setTab] = useState<TabKey>(tabFromUrl);
   const [statsCategory, setStatsCategory] = useState<StatsCategory>("overall");
+  const [completionFilter, setCompletionFilter] = useState<CompletionFilter>("all");
   const [foods, setFoods] = useState<Food[]>([]);
   const [rooms, setRooms] = useState<{ id: number; foodId: number; roomCode: string }[]>([]);
   const [roomsReady, setRoomsReady] = useState(false);
@@ -231,11 +238,12 @@ export default function Dashboard() {
     category: "",
   });
   const [newFoodImageFile, setNewFoodImageFile] = useState<File | null>(null);
-  const [analyticsByFoodId, setAnalyticsByFoodId] = useState<Record<number, Analytics>>({});
+  const [analyticsByFoodId, setAnalyticsByFoodId] = useState<Record<string, Analytics>>({});
   const [foodsLoading, setFoodsLoading] = useState(true);
   const [foodsError, setFoodsError] = useState<string | null>(null);
-  const [analyticsLoading, setAnalyticsLoading] = useState<Record<number, boolean>>({});
+  const [analyticsLoading, setAnalyticsLoading] = useState<Record<string, boolean>>({});
   const [statsError, setStatsError] = useState<string | null>(null);
+  const [deletingIncomplete, setDeletingIncomplete] = useState(false);
   const [foodToDelete, setFoodToDelete] = useState<Food | null>(null);
   const [deletingFoodId, setDeletingFoodId] = useState<number | null>(null);
   const [deleteFoodError, setDeleteFoodError] = useState<string | null>(null);
@@ -488,33 +496,60 @@ export default function Dashboard() {
     if (tab !== "stats") return;
     if (!selectedFood) return;
     const foodId = selectedFood.id;
-    if (analyticsByFoodId[foodId]) return;
-    if (analyticsLoading[foodId]) return;
+    const analyticsKey = `${foodId}:${completionFilter}`;
+    if (analyticsByFoodId[analyticsKey]) return;
+    if (analyticsLoading[analyticsKey]) return;
 
     async function loadAnalytics() {
       setStatsError(null);
-      setAnalyticsLoading((p) => ({ ...p, [foodId]: true }));
+      setAnalyticsLoading((p) => ({ ...p, [analyticsKey]: true }));
       try {
-        const res = await apiFetch(`/api/foods/${foodId}/analytics`);
+        const res = await apiFetch(`/api/foods/${foodId}/analytics?completion=${completionFilter}`);
         const json = await res.json();
         if (!res.ok || !json?.ok) {
           throw new Error(json?.error || "Failed to load analytics.");
         }
-        setAnalyticsByFoodId((p) => ({ ...p, [foodId]: json.analytics as Analytics }));
+        setAnalyticsByFoodId((p) => ({ ...p, [analyticsKey]: json.analytics as Analytics }));
       } catch (err: any) {
         setStatsError(err?.message || "Failed to load analytics.");
       } finally {
-        setAnalyticsLoading((p) => ({ ...p, [foodId]: false }));
+        setAnalyticsLoading((p) => ({ ...p, [analyticsKey]: false }));
       }
     }
 
     void loadAnalytics();
-  }, [tab, selectedFood, analyticsByFoodId, analyticsLoading]);
+  }, [tab, selectedFood, completionFilter, analyticsByFoodId, analyticsLoading]);
 
   const stats = useMemo(() => {
     if (!selectedFood) return EMPTY_ANALYTICS;
-    return analyticsByFoodId[selectedFood.id] ?? EMPTY_ANALYTICS;
-  }, [selectedFood, analyticsByFoodId]);
+    return analyticsByFoodId[`${selectedFood.id}:${completionFilter}`] ?? EMPTY_ANALYTICS;
+  }, [selectedFood, completionFilter, analyticsByFoodId]);
+
+  const selectedAnalyticsKey = selectedFood ? `${selectedFood.id}:${completionFilter}` : "";
+
+  const deleteIncompleteSessions = async () => {
+    if (!selectedFood || deletingIncomplete || stats.incompleteSessionCount <= 0) return;
+    const count = stats.incompleteSessionCount;
+    if (!window.confirm(
+      `Permanently delete ${count} incomplete session${count === 1 ? "" : "s"} for ${selectedFood.name}? This also deletes their frames and FER results and cannot be undone.`,
+    )) return;
+    setDeletingIncomplete(true);
+    setStatsError(null);
+    try {
+      const response = await apiFetch(`/api/foods/${selectedFood.id}/incomplete-sessions`, { method: "DELETE" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error || "Could not delete incomplete sessions.");
+      const deletedCount = Number(payload.deletedCount ?? 0);
+      setFoods((current) => current.map((food) => food.id === selectedFood.id
+        ? { ...food, sessionsTotal: Math.max(0, food.sessionsTotal - deletedCount) }
+        : food));
+      setAnalyticsByFoodId({});
+    } catch (error) {
+      setStatsError(error instanceof Error ? error.message : "Could not delete incomplete sessions.");
+    } finally {
+      setDeletingIncomplete(false);
+    }
+  };
 
   const analyticsIssues = useMemo(() => {
     const issues: string[] = [];
@@ -807,6 +842,7 @@ export default function Dashboard() {
         createdAt: created.createdAt,
         sessionsTotal: 0,
         sessionsActive: 0,
+        latestSessionStatus: null,
         avgDurationMin: null,
       };
       setFoods((prev) => [newRow, ...prev]);
@@ -942,9 +978,22 @@ export default function Dashboard() {
                     <p className="text-s text-gray-500 mt-1">
                       Live analytics from DB
                     </p>
+                    <p className="text-xs text-gray-500 mt-1">
+                      {stats.completeSessionCount} complete · {stats.incompleteSessionCount} incomplete
+                    </p>
                   </div>
 
                   <div className="flex items-center gap-2">
+                    <select
+                      value={completionFilter}
+                      onChange={(e) => setCompletionFilter(e.target.value as CompletionFilter)}
+                      className="text-xs border border-gray-200 rounded-md px-3 py-2 bg-white"
+                      aria-label="Filter sessions by survey completion"
+                    >
+                      <option value="all">All sessions</option>
+                      <option value="complete">Complete — survey submitted</option>
+                      <option value="incomplete">Incomplete — survey missing</option>
+                    </select>
                     {foods.length > 1 && (
                       <select
                         value={selectedFood?.id ?? ""}
@@ -960,6 +1009,16 @@ export default function Dashboard() {
                       </select>
                     )}
                     {selectedFood && canExport ? <ExportButton kind="food" foodId={selectedFood.id} /> : null}
+                    {completionFilter === "incomplete" ? (
+                      <button
+                        type="button"
+                        onClick={() => void deleteIncompleteSessions()}
+                        disabled={deletingIncomplete || stats.incompleteSessionCount === 0}
+                        className="text-xs font-semibold border border-red-200 text-red-700 hover:bg-red-50 rounded-md px-3 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {deletingIncomplete ? "Deleting…" : `Delete incomplete (${stats.incompleteSessionCount})`}
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -967,7 +1026,7 @@ export default function Dashboard() {
               <div className="p-5 space-y-5">
                 <StatsCategoryRibbon active={statsCategory} onChange={setStatsCategory} />
 
-                {selectedFood && analyticsLoading[selectedFood.id] ? (
+                {selectedFood && analyticsLoading[selectedAnalyticsKey] ? (
                   <AnalyticsSkeleton />
                 ) : null}
                 {statsError ? (
@@ -982,7 +1041,7 @@ export default function Dashboard() {
                   </div>
                 ) : null}
 
-                {selectedFood && !analyticsLoading[selectedFood.id] && !hideAnalyticsGraphs ? (
+                {selectedFood && !analyticsLoading[selectedAnalyticsKey] && !hideAnalyticsGraphs ? (
                   <>
                     {statsCategory === "overall" ? (
                       <div className="space-y-6">
@@ -1411,7 +1470,7 @@ export default function Dashboard() {
                       </LowSampleOverlay>
                     ) : null}
                   </>
-                ) : selectedFood && !analyticsLoading[selectedFood.id] && hideAnalyticsGraphs ? (
+                ) : selectedFood && !analyticsLoading[selectedAnalyticsKey] && hideAnalyticsGraphs ? (
                   <div className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-md px-4 py-2">
                     Graphs are hidden until required analytics data is available.
                   </div>

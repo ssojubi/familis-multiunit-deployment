@@ -9,6 +9,14 @@ import { WEBRTC_CONFIGURATION } from "../webrtcConfig";
 import { receivePeerSignal } from "../lib/peerSignaling";
 
 type RecordingStatus = "ready" | "recording" | "paused" | "completed";
+type PresenceStage = "logged_in" | "consent_pending" | "ready" | "survey";
+type TesterPresence = {
+  testerId: number;
+  testerName: string;
+  stage: PresenceStage;
+  roomCode: string | null;
+  foodName: string | null;
+};
 
 
 type Role = "host" | "viewer" | null;
@@ -36,6 +44,10 @@ interface ServerToClientEvents {
     testerName?: string;
     testerId?: number;
   }) => void;
+  "tester-presence-snapshot": (data: TesterPresence[]) => void;
+  "tester-logged-out": (data: { testerId: number }) => void;
+  "tester-reconnecting": (data: { testerId: number; sessionId: number; deadline: number }) => void;
+  "tester-reconnect-expired": (data: { testerId: number; sessionId: number }) => void;
 }
 
 interface ClientToServerEvents {
@@ -50,7 +62,7 @@ interface ClientToServerEvents {
   }) => void;
 }
 
-type KioskConnectionState = "streaming" | "idle" | "offline";
+type KioskConnectionState = "streaming" | "reconnecting" | "idle" | "offline";
 
 type RemoteKiosk = {
   testerId?: number;
@@ -61,11 +73,15 @@ type RemoteKiosk = {
   sessionId: number | null;
   foodName: string | null;
   connectionState: KioskConnectionState;
+  workflowStage?: PresenceStage | null;
+  roomCode?: string | null;
+  reconnectDeadline?: number | null;
 };
 
 type ActiveRoom = { id: number; roomCode: string; foodId: number; foodName: string; sessionsActive: number };
 type LayoutMode = "icon-grid" | "sidebar-spotlight" | "pinned-grid" | "show-all";
-type StatusFilter = "all" | "streaming" | "idle" | "offline";
+type StatusFilter = "all" | "streaming" | "reconnecting" | "idle" | "offline";
+type KioskSort = "tester-asc" | "tester-desc" | "food-asc" | "food-desc";
 
 const MAX_PINNED = 4;
 
@@ -131,8 +147,9 @@ function IconSearch({ className }: { className?: string }) {
 
 function StatusBadge({ state }: { state: KioskConnectionState }) {
   const config = {
-    streaming: { bg: "bg-green-100", text: "text-green-700", dot: "bg-green-500", label: "Streaming" },
-    idle: { bg: "bg-amber-50", text: "text-amber-700", dot: "bg-amber-400", label: "Idle" },
+    streaming: { bg: "bg-green-100", text: "text-green-700", dot: "bg-green-500", label: "Recording" },
+    reconnecting: { bg: "bg-amber-50", text: "text-amber-700", dot: "bg-amber-500", label: "Reconnecting" },
+    idle: { bg: "bg-blue-50", text: "text-blue-700", dot: "bg-blue-500", label: "Online" },
     offline: { bg: "bg-gray-100", text: "text-gray-500", dot: "bg-gray-400", label: "Offline" },
   }[state];
 
@@ -142,6 +159,32 @@ function StatusBadge({ state }: { state: KioskConnectionState }) {
       {config.label}
     </span>
   );
+}
+
+function workflowLabel(kiosk: RemoteKiosk, now = Date.now()): string {
+  if (kiosk.connectionState === "offline") return "Not logged in";
+  if (kiosk.connectionState === "reconnecting") {
+    const seconds = kiosk.reconnectDeadline == null ? 90 : Math.max(0, Math.ceil((kiosk.reconnectDeadline - now) / 1000));
+    return `Connection lost · offline in ${seconds}s`;
+  }
+  if (kiosk.status === "recording") return "Recording";
+  if (kiosk.status === "paused") return "Recording paused";
+  if (kiosk.workflowStage === "consent_pending") return "In room · consent pending";
+  if (kiosk.workflowStage === "ready") return "Waiting room";
+  if (kiosk.workflowStage === "survey") return "Completing survey";
+  if (kiosk.status === "completed") return "Session complete";
+  return "Logged in · choosing room";
+}
+
+function WorkflowStatus({ kiosk }: { kiosk: RemoteKiosk }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (kiosk.connectionState !== "reconnecting") return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [kiosk.connectionState, kiosk.reconnectDeadline]);
+  return <span className="ml-2 text-xs text-gray-600">{workflowLabel(kiosk, now)}</span>;
 }
 
 /* ──────────────────────────── Kiosk Status Tile ──────────────────────────── */
@@ -184,10 +227,11 @@ function KioskStatusTile({
               <span className="text-sm font-bold text-gray-900 truncate">{kiosk.label}</span>
             </div>
             <StatusBadge state={kiosk.connectionState} />
-            <span className="ml-2 text-xs text-gray-600">{kiosk.status === "paused" ? "Recording paused" : kiosk.status === "recording" ? "Recording" : kiosk.status === "completed" ? "Session completed" : "Ready"}</span>
+            <WorkflowStatus kiosk={kiosk} />
             {kiosk.foodName ? (
               <p className="text-[11px] text-gray-500 mt-1.5 truncate">
                 🍽️ {kiosk.foodName}
+                {kiosk.roomCode ? <span className="text-gray-400"> · Room {kiosk.roomCode}</span> : null}
                 {kiosk.sessionId != null ? <span className="text-gray-400"> · S-{kiosk.sessionId}</span> : null}
               </p>
             ) : null}
@@ -231,9 +275,17 @@ function KioskStatusTile({
 
 /* ──────────────────────────── Live Video View ──────────────────────────── */
 
-function LiveVideoView({ stream }: { stream: MediaStream }) {
+function LiveVideoView({ stream, connectionState, reconnectDeadline }: { stream: MediaStream; connectionState: KioskConnectionState; reconnectDeadline?: number | null }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [message, setMessage] = useState<string | null>("Connecting to camera…");
+  const [reconnectNow, setReconnectNow] = useState(Date.now());
+
+  useEffect(() => {
+    if (connectionState !== "reconnecting") return;
+    setReconnectNow(Date.now());
+    const timer = window.setInterval(() => setReconnectNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [connectionState, reconnectDeadline]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -247,10 +299,10 @@ function LiveVideoView({ stream }: { stream: MediaStream }) {
     });
     const timeout = window.setTimeout(() => {
       if (video.readyState < 2 || video.videoWidth === 0) {
-        setMessage("No camera video received. Check the tester's camera and select Reconnect cameras. Wi-Fi device isolation may block the video connection.");
+        setMessage("No camera video received. Retrying automatically. Check that the tester's camera is on and the network allows device-to-device video.");
       }
     }, 12000);
-    const ended = () => setMessage("Camera stream ended. Select Reconnect cameras.");
+    const ended = () => setMessage("Camera connection ended.");
     const muted = () => setMessage("Waiting for camera video…");
     const tracks = stream.getVideoTracks();
     tracks.forEach((track) => {
@@ -268,16 +320,20 @@ function LiveVideoView({ stream }: { stream: MediaStream }) {
     };
   }, [stream]);
 
+  const visibleMessage = connectionState === "reconnecting"
+    ? `Tester lost connection. Reconnecting for ${Math.max(0, Math.ceil(((reconnectDeadline ?? (reconnectNow + 90_000)) - reconnectNow) / 1000))}s before logout and marking the session incomplete.`
+    : message;
+
   return (
     <div className="relative w-full h-full bg-black">
       <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover"
         onPlaying={() => setMessage(null)}
         onWaiting={() => setMessage("Waiting for camera video…")}
-        onError={() => setMessage("Video playback failed. Select Reconnect cameras.")} />
-      {message && <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/75 p-4 text-center text-sm text-white">
-        <p role="status">{message}</p>
-        {message.includes("Play video") && <button type="button" className="underline" onClick={() => {
-          void videoRef.current?.play().catch(() => setMessage("Unable to play this stream. Select Reconnect cameras."));
+        onError={() => setMessage("Video playback failed. Refresh this monitoring page.")} />
+      {visibleMessage && <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/75 p-4 text-center text-sm text-white">
+        <p role="status">{visibleMessage}</p>
+        {visibleMessage.includes("Play video") && <button type="button" className="underline" onClick={() => {
+          void videoRef.current?.play().catch(() => setMessage("Unable to play this stream. Refresh this monitoring page."));
         }}>Play video</button>}
       </div>}
     </div>
@@ -308,10 +364,11 @@ function VideoModal({
               <h3 className="text-sm font-bold text-gray-900 truncate">{kiosk.label}</h3>
               <div className="flex items-center gap-2 mt-0.5">
                 <StatusBadge state={kiosk.connectionState} />
-            <span className="ml-2 text-xs text-gray-600">{kiosk.status === "paused" ? "Recording paused" : kiosk.status === "recording" ? "Recording" : kiosk.status === "completed" ? "Session completed" : "Ready"}</span>
+            <WorkflowStatus kiosk={kiosk} />
                 {kiosk.foodName ? (
                   <span className="text-[11px] text-gray-500">
                     🍽️ {kiosk.foodName}
+                    {kiosk.roomCode ? ` · Room ${kiosk.roomCode}` : ""}
                     {kiosk.sessionId != null ? ` · S-${kiosk.sessionId}` : ""}
                   </span>
                 ) : null}
@@ -330,7 +387,7 @@ function VideoModal({
 
         {/* Video */}
         <div className="aspect-video bg-black">
-          <LiveVideoView stream={kiosk.stream} />
+          <LiveVideoView stream={kiosk.stream} connectionState={kiosk.connectionState} reconnectDeadline={kiosk.reconnectDeadline} />
         </div>
 
         {/* Footer info */}
@@ -401,7 +458,8 @@ function StatusFilterBar({
   const filters: Array<{ key: StatusFilter; label: string }> = [
     { key: "all", label: "All" },
     { key: "streaming", label: "Active" },
-    { key: "idle", label: "Idle" },
+    { key: "reconnecting", label: "Reconnecting" },
+    { key: "idle", label: "Online" },
     { key: "offline", label: "Offline" },
   ];
 
@@ -460,6 +518,7 @@ function KioskMonitorDetail() {
   const [roomId, setRoomId] = useState(() => searchParams.get("room") || getAdminRoomContext().roomId);
   const [publicAccessUrl, setPublicAccessUrl] = useState<string>("");
   const [remoteKiosks, setRemoteKiosks] = useState<RemoteKiosk[]>([]);
+  const [testerPresence, setTesterPresence] = useState<TesterPresence[]>([]);
   const sessionStatusByPeerRef = useRef<Map<string, { status: RecordingStatus; sessionId: number | null; foodName: string | null; testerId?: number; testerName: string | null }>>(new Map());
   const socketRef = useRef<Socket<ServerToClientEvents, ClientToServerEvents> | null>(
     null,
@@ -475,18 +534,33 @@ function KioskMonitorDetail() {
   const [visibleVideoIds, setVisibleVideoIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
   const [foodFilter, setFoodFilter] = useState("");
-  const [foodSort, setFoodSort] = useState("food-asc");
+  const [kioskSort, setKioskSort] = useState<KioskSort>("tester-asc");
 
   const selectedRoom = activeRooms.find((room) => room.roomCode === roomId);
   const validFoodId = selectedRoom?.foodId ?? null;
 
   // ── Derived data ──
 
-  const allKiosks: RemoteKiosk[] = [...remoteKiosks, ...testerAccounts
+  const presenceByTester = new Map(testerPresence.map((presence) => [presence.testerId, presence]));
+  const connectedKiosks = remoteKiosks.map((kiosk) => {
+    const presence = kiosk.testerId == null ? undefined : presenceByTester.get(kiosk.testerId);
+    return {
+      ...kiosk,
+      label: presence?.testerName || kiosk.label,
+      foodName: kiosk.foodName || presence?.foodName || null,
+      workflowStage: presence?.stage ?? (kiosk.status === "recording" ? "ready" : null),
+      roomCode: presence?.roomCode ?? null,
+    };
+  });
+  const allKiosks: RemoteKiosk[] = [...connectedKiosks, ...testerAccounts
     .filter((account) => !remoteKiosks.some((kiosk) => kiosk.testerId === account.id))
-    .map((account): RemoteKiosk => ({ peerId: `account:${account.id}`, testerId: account.id,
-      label: account.username, stream: new MediaStream(), status: "ready", sessionId: null,
-      foodName: null, connectionState: "idle" }))];
+    .map((account): RemoteKiosk => {
+      const presence = presenceByTester.get(account.id);
+      return { peerId: `account:${account.id}`, testerId: account.id,
+        label: presence?.testerName || account.username, stream: new MediaStream(), status: null, sessionId: null,
+        foodName: presence?.foodName ?? null, connectionState: presence ? "idle" : "offline",
+        workflowStage: presence?.stage ?? null, roomCode: presence?.roomCode ?? null };
+    })];
   const filteredKiosks = allKiosks.filter((k) => {
     if (foodFilter && k.foodName !== foodFilter) return false;
     if (statusFilter !== "all" && k.connectionState !== statusFilter) return false;
@@ -502,16 +576,32 @@ function KioskMonitorDetail() {
   });
 
   filteredKiosks.sort((a, b) => {
-    const order = (a.foodName ?? "").localeCompare(b.foodName ?? "");
-    return (foodSort === "food-desc" ? -order : order) || a.label.localeCompare(b.label);
+    const byTester = a.label.localeCompare(b.label, undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+    if (kioskSort === "tester-asc") return byTester;
+    if (kioskSort === "tester-desc") return -byTester;
+
+    // Keep accounts without an assigned food together after active rooms.
+    const aFood = a.foodName?.trim();
+    const bFood = b.foodName?.trim();
+    if (!aFood && bFood) return 1;
+    if (aFood && !bFood) return -1;
+    const byFood = (aFood ?? "").localeCompare(bFood ?? "", undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+    return (kioskSort === "food-desc" ? -byFood : byFood) || byTester;
   });
   const foodOptions = [...new Set([...activeRooms.map((room) => room.foodName), ...remoteKiosks.map((kiosk) => kiosk.foodName)].filter((name): name is string => Boolean(name)))].sort((a, b) => a.localeCompare(b));
 
   const statusCounts: Record<StatusFilter, number> = {
     all: allKiosks.length,
     streaming: remoteKiosks.filter((k) => k.connectionState === "streaming").length,
+    reconnecting: allKiosks.filter((k) => k.connectionState === "reconnecting").length,
     idle: allKiosks.filter((k) => k.connectionState === "idle").length,
-    offline: remoteKiosks.filter((k) => k.connectionState === "offline").length,
+    offline: allKiosks.filter((k) => k.connectionState === "offline").length,
   };
 
   const modalKiosk = modalKioskId ? allKiosks.find((k) => k.peerId === modalKioskId) ?? null : null;
@@ -604,14 +694,12 @@ function KioskMonitorDetail() {
   // ── WebRTC peer management ──
 
   const getKioskConnectionState = useCallback((pc: RTCPeerConnection, peerId: string): KioskConnectionState => {
-    const state = pc.connectionState;
-    if (state === "connected") {
-      const sessionInfo = sessionStatusByPeerRef.current.get(peerId);
-      return sessionInfo?.sessionId != null ? "streaming" : "idle";
-    }
-    if (state === "failed" || state === "disconnected" || state === "closed") return "offline";
-    return "idle";
+    const recording = sessionStatusByPeerRef.current.get(peerId)?.status === "recording";
+    if (!recording) return "idle";
+    return pc.connectionState === "connected" ? "streaming" : "reconnecting";
   }, []);
+  const cameraRetryRef = useRef(new Map<string, { started: number; attempts: number }>());
+  const disconnectTimerRef = useRef(new Map<string, number>());
 
   const createPeerConnectionFor = (peerId: string): RTCPeerConnection => {
     const existing = peerConnectionsRef.current.get(peerId);
@@ -619,6 +707,8 @@ function KioskMonitorDetail() {
 
     const pc = new RTCPeerConnection(WEBRTC_CONFIGURATION);
     peerConnectionsRef.current.set(peerId, pc);
+    const previousRetry = cameraRetryRef.current.get(peerId);
+    cameraRetryRef.current.set(peerId, { started: Date.now(), attempts: previousRetry?.attempts ?? 0 });
 
     pc.onicecandidate = (event) => {
       if (event.candidate && socketRef.current && peerConnectionsRef.current.get(peerId) === pc) {
@@ -667,9 +757,13 @@ function KioskMonitorDetail() {
   };
 
   const removeKiosk = useCallback((peerId: string) => {
+    const timer = disconnectTimerRef.current.get(peerId);
+    if (timer != null) window.clearTimeout(timer);
+    disconnectTimerRef.current.delete(peerId);
     peerConnectionsRef.current.get(peerId)?.close();
     peerConnectionsRef.current.delete(peerId);
     sessionStatusByPeerRef.current.delete(peerId);
+    cameraRetryRef.current.delete(peerId);
     setRemoteKiosks((prev) => prev.filter((k) => k.peerId !== peerId));
     setPinnedIds((prev) => { const next = new Set(prev); next.delete(peerId); return next; });
     setVisibleVideoIds((prev) => { const next = new Set(prev); next.delete(peerId); return next; });
@@ -681,6 +775,9 @@ function KioskMonitorDetail() {
     peerConnectionsRef.current.forEach((pc) => pc.close());
     peerConnectionsRef.current.clear();
     sessionStatusByPeerRef.current.clear();
+    cameraRetryRef.current.clear();
+    disconnectTimerRef.current.forEach((timer) => window.clearTimeout(timer));
+    disconnectTimerRef.current.clear();
     setRemoteKiosks([]);
     setPinnedIds(new Set());
     setVisibleVideoIds(new Set());
@@ -702,6 +799,31 @@ function KioskMonitorDetail() {
       },
     );
     socketRef.current = socket;
+    const retireStalePeersForTester = (activePeerId: string, testerId?: number) => {
+      if (testerId == null) return;
+      for (const [otherPeerId, otherStatus] of sessionStatusByPeerRef.current) {
+        if (otherPeerId === activePeerId || otherStatus.testerId !== testerId) continue;
+        peerConnectionsRef.current.get(otherPeerId)?.close();
+        peerConnectionsRef.current.delete(otherPeerId);
+        sessionStatusByPeerRef.current.delete(otherPeerId);
+        cameraRetryRef.current.delete(otherPeerId);
+        const timer = disconnectTimerRef.current.get(otherPeerId);
+        if (timer != null) window.clearTimeout(timer);
+        disconnectTimerRef.current.delete(otherPeerId);
+        setPinnedIds((current) => {
+          const next = new Set(current);
+          if (next.delete(otherPeerId)) next.add(activePeerId);
+          return next;
+        });
+        setVisibleVideoIds((current) => {
+          const next = new Set(current);
+          if (next.delete(otherPeerId)) next.add(activePeerId);
+          return next;
+        });
+        setSelectedKioskId((current) => current === otherPeerId ? activePeerId : current);
+        setModalKioskId((current) => current === otherPeerId ? activePeerId : current);
+      }
+    };
 
     socket.on("connect", () => {
 
@@ -709,11 +831,25 @@ function KioskMonitorDetail() {
       else socket.emit("join-room", roomId);
     });
     const refreshRooms = window.setInterval(() => {
-      if (role === "viewer" && socket.connected) socket.emit("monitor-all-rooms");
+      if (role !== "viewer" || !socket.connected) return;
+      socket.emit("monitor-all-rooms");
+      for (const [peerId, pc] of peerConnectionsRef.current) {
+        const retry = cameraRetryRef.current.get(peerId);
+        const status = sessionStatusByPeerRef.current.get(peerId)?.status;
+        if (!retry || (status !== "recording" && status !== "paused")) continue;
+        if (pc.connectionState === "connected") { retry.attempts = 0; continue; }
+        if (retry.attempts >= 3 || Date.now() - retry.started < 15000) continue;
+        retry.attempts += 1;
+        pc.close();
+        peerConnectionsRef.current.delete(peerId);
+        createPeerConnectionFor(peerId);
+        socket.emit("request-stream", { to: peerId });
+      }
     }, 5000);
 
     socket.on("disconnect", () => {
       cleanupAllPeerConnections();
+      setTesterPresence([]);
 
     });
 
@@ -727,15 +863,25 @@ function KioskMonitorDetail() {
 
     socket.on("host-connected", (peerId) => {
       if (role !== "viewer") return;
+      const incoming = sessionStatusByPeerRef.current.get(peerId);
+      retireStalePeersForTester(peerId, incoming?.testerId);
+      const reconnectTimer = disconnectTimerRef.current.get(peerId);
+      if (reconnectTimer != null) window.clearTimeout(reconnectTimer);
+      disconnectTimerRef.current.delete(peerId);
       createPeerConnectionFor(peerId);
-      setRemoteKiosks((previous) => previous.some((kiosk) => kiosk.peerId === peerId) ? previous : [...previous, {
+      setRemoteKiosks((previous) => {
+        const withoutStale = incoming?.testerId == null
+          ? previous
+          : previous.filter((kiosk) => kiosk.peerId === peerId || kiosk.testerId !== incoming.testerId);
+        return withoutStale.some((kiosk) => kiosk.peerId === peerId) ? withoutStale : [...withoutStale, {
         testerId: sessionStatusByPeerRef.current.get(peerId)?.testerId,
         peerId, label: sessionStatusByPeerRef.current.get(peerId)?.testerName || `Tester ${peerConnectionsRef.current.size}`, stream: new MediaStream(),
         status: sessionStatusByPeerRef.current.get(peerId)?.status ?? null,
         sessionId: sessionStatusByPeerRef.current.get(peerId)?.sessionId ?? null,
         foodName: sessionStatusByPeerRef.current.get(peerId)?.foodName ?? null,
-        connectionState: "idle",
-      }]);
+        connectionState: sessionStatusByPeerRef.current.get(peerId)?.status === "recording" ? "reconnecting" : "idle",
+        }];
+      });
     });
 
     socket.on("signal", async (data) => {
@@ -760,9 +906,15 @@ function KioskMonitorDetail() {
       if (!from) return;
 
       sessionStatusByPeerRef.current.set(from, { status, sessionId: sessionId ?? null, foodName: foodName ?? null, testerId, testerName: testerName ?? null });
-
-      setRemoteKiosks((prev) =>
-        prev.map((k) =>
+      retireStalePeersForTester(from, testerId);
+      const nextConnectionState: KioskConnectionState = status === "recording"
+        ? peerConnectionsRef.current.get(from)?.connectionState === "connected" ? "streaming" : "reconnecting"
+        : "idle";
+      setRemoteKiosks((prev) => {
+        const withoutStale = testerId == null
+          ? prev
+          : prev.filter((kiosk) => kiosk.peerId === from || kiosk.testerId !== testerId);
+        const updated = withoutStale.map((k) =>
           k.peerId === from
             ? {
                 ...k,
@@ -771,17 +923,63 @@ function KioskMonitorDetail() {
                 status,
                 sessionId: sessionId ?? null,
                 foodName: foodName ?? null,
-                connectionState: k.connectionState,
+                connectionState: nextConnectionState,
 
               }
             : k,
-        ),
-      );
+        );
+        return updated;
+      });
 
+    });
+    socket.on("tester-presence-snapshot", (data) => {
+      const nextPresence = Array.isArray(data) ? data : [];
+      setTesterPresence(nextPresence);
+      // Reaching the survey proves the tester is online and no longer recording.
+      // Retire any stale recording peer immediately instead of showing reconnecting.
+      for (const presence of nextPresence) {
+        if (presence.stage !== "survey") continue;
+        for (const [peerId, status] of sessionStatusByPeerRef.current) {
+          if (status.testerId === presence.testerId && status.status === "recording") removeKiosk(peerId);
+        }
+      }
+    });
+
+    socket.on("tester-logged-out", ({ testerId }) => {
+      setTesterPresence((current) => current.filter((presence) => presence.testerId !== testerId));
+      for (const [peerId, status] of sessionStatusByPeerRef.current) {
+        if (status.testerId === testerId) removeKiosk(peerId);
+      }
+    });
+
+    socket.on("tester-reconnecting", ({ testerId, deadline }) => {
+      setRemoteKiosks((current) => current.map((kiosk) => kiosk.testerId === testerId
+        ? { ...kiosk, connectionState: "reconnecting", reconnectDeadline: deadline }
+        : kiosk));
+    });
+
+    socket.on("tester-reconnect-expired", ({ testerId }) => {
+      setTesterPresence((current) => current.filter((presence) => presence.testerId !== testerId));
+      for (const [peerId, status] of sessionStatusByPeerRef.current) {
+        if (status.testerId === testerId) removeKiosk(peerId);
+      }
     });
 
     socket.on("user-disconnected", (peerId) => {
-      removeKiosk(peerId);
+      const current = sessionStatusByPeerRef.current.get(peerId);
+      if (current?.status === "recording") {
+        peerConnectionsRef.current.get(peerId)?.close();
+        peerConnectionsRef.current.delete(peerId);
+        cameraRetryRef.current.delete(peerId);
+        setRemoteKiosks((previous) => previous.map((kiosk) =>
+          kiosk.peerId === peerId ? { ...kiosk, connectionState: "reconnecting", reconnectDeadline: Date.now() + 90_000 } : kiosk
+        ));
+        const existing = disconnectTimerRef.current.get(peerId);
+        if (existing != null) window.clearTimeout(existing);
+        disconnectTimerRef.current.set(peerId, window.setTimeout(() => removeKiosk(peerId), 90_000));
+      } else {
+        removeKiosk(peerId);
+      }
 
     });
 
@@ -801,6 +999,19 @@ function KioskMonitorDetail() {
   // ── Layout action handlers ──
 
   const handleTileClick = (peerId: string) => {
+    if (peerId.startsWith("account:")) {
+      if (layoutMode === "icon-grid") setModalKioskId(peerId);
+      else setSelectedKioskId(peerId);
+      return;
+    }
+    const pc = peerConnectionsRef.current.get(peerId);
+    if (pc && pc.connectionState !== "connected") {
+      pc.close();
+      peerConnectionsRef.current.delete(peerId);
+      cameraRetryRef.current.delete(peerId);
+      createPeerConnectionFor(peerId);
+      socketRef.current?.emit("request-stream", { to: peerId });
+    }
     if (layoutMode === "icon-grid") {
       setModalKioskId(peerId);
     } else {
@@ -899,8 +1110,11 @@ function KioskMonitorDetail() {
                 {foodOptions.map((name) => <option key={name} value={name}>{name}</option>)}
               </select>
             </label>
-            <select aria-label="Sort kiosks by food" value={foodSort} onChange={(event) => setFoodSort(event.target.value)} className="rounded-md border border-gray-200 px-3 py-2 text-xs">
-              <option value="food-asc">Food A–Z</option><option value="food-desc">Food Z–A</option>
+            <select aria-label="Sort testers" value={kioskSort} onChange={(event) => setKioskSort(event.target.value as KioskSort)} className="rounded-md border border-gray-200 px-3 py-2 text-xs">
+              <option value="tester-asc">Tester A–Z</option>
+              <option value="tester-desc">Tester Z–A</option>
+              <option value="food-asc">Food A–Z</option>
+              <option value="food-desc">Food Z–A</option>
             </select>
 
             <div className="flex items-center gap-3">
@@ -962,10 +1176,11 @@ function KioskMonitorDetail() {
                           <h3 className="text-sm font-bold text-gray-900 truncate">{spotlightKiosk.label}</h3>
                           <div className="flex items-center gap-2 mt-0.5">
                             <StatusBadge state={spotlightKiosk.connectionState} />
-                            <span className="ml-2 text-xs text-gray-600">{spotlightKiosk.status === "paused" ? "Recording paused" : spotlightKiosk.status === "recording" ? "Recording" : spotlightKiosk.status === "completed" ? "Session completed" : "Ready"}</span>
+                            <WorkflowStatus kiosk={spotlightKiosk} />
                             {spotlightKiosk.foodName ? (
                               <span className="text-[11px] text-gray-500">
                                 🍽️ {spotlightKiosk.foodName}
+                                {spotlightKiosk.roomCode ? ` · Room ${spotlightKiosk.roomCode}` : ""}
                                 {spotlightKiosk.sessionId != null ? ` · S-${spotlightKiosk.sessionId}` : ""}
                               </span>
                             ) : null}
@@ -973,7 +1188,7 @@ function KioskMonitorDetail() {
                         </div>
                       </div>
                       <div className="flex-1 bg-black">
-                        <LiveVideoView stream={spotlightKiosk.stream} />
+                        <LiveVideoView stream={spotlightKiosk.stream} connectionState={spotlightKiosk.connectionState} reconnectDeadline={spotlightKiosk.reconnectDeadline} />
                       </div>
                     </>
                   ) : (
@@ -999,12 +1214,12 @@ function KioskMonitorDetail() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {pinnedKiosks.map((kiosk) => (
                         <div key={kiosk.peerId} className="relative bg-black aspect-video rounded-xl overflow-hidden border border-gray-200 group">
-                          <LiveVideoView stream={kiosk.stream} />
+                          <LiveVideoView stream={kiosk.stream} connectionState={kiosk.connectionState} reconnectDeadline={kiosk.reconnectDeadline} />
                           <span className="absolute top-2 left-2 text-[11px] text-white bg-black/50 px-2 py-0.5 rounded font-semibold">
                             {kiosk.label}
                           </span>
                           <StatusBadge state={kiosk.connectionState} />
-            <span className="ml-2 text-xs text-gray-600">{kiosk.status === "paused" ? "Recording paused" : kiosk.status === "recording" ? "Recording" : kiosk.status === "completed" ? "Session completed" : "Ready"}</span>
+            <WorkflowStatus kiosk={kiosk} />
                           {kiosk.sessionId != null && (
                             <span className="absolute top-2 right-2 text-[10px] text-white bg-green-600/80 px-2 py-0.5 rounded font-semibold">
                               Recording{kiosk.foodName ? ` · ${kiosk.foodName}` : ""} · S-{kiosk.sessionId}
@@ -1129,7 +1344,7 @@ function KioskMonitorDetail() {
                     .filter((kiosk) => visibleVideoIds.has(kiosk.peerId))
                     .map((kiosk) => (
                       <div key={kiosk.peerId} className="relative aspect-video overflow-hidden rounded-xl bg-black">
-                        <LiveVideoView stream={kiosk.stream} />
+                        <LiveVideoView stream={kiosk.stream} connectionState={kiosk.connectionState} reconnectDeadline={kiosk.reconnectDeadline} />
                         <span className="absolute left-2 top-2 rounded bg-black/60 px-2 py-0.5 text-[11px] font-semibold text-white">
                           {kiosk.label}
                         </span>

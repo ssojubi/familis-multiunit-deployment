@@ -6,6 +6,7 @@ export type FoodCardData = {
   createdAt: string | null;
   sessionsTotal: number;
   sessionsActive: number;
+  latestSessionStatus: string | null;
   avgDurationMin: number | null;
 };
 
@@ -120,6 +121,11 @@ export function FoodCard({
         <p className="text-xs text-gray-500 mt-1">{food.category}</p>
         <div className="mt-2 space-y-0.5 text-sm text-gray-600">
           <p className="font-bold">Latest Session Details</p>     
+          <p>
+            Status: {food.latestSessionStatus
+              ? food.latestSessionStatus.charAt(0).toUpperCase() + food.latestSessionStatus.slice(1)
+              : "No sessions yet"}
+          </p>
           <p>Duration: {durationLabel}</p>
           <p>Created: {formatDate(food.createdAt)}</p>
         </div>

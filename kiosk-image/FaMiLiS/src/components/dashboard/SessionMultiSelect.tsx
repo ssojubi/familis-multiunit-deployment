@@ -1,27 +1,34 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 type SessionStatus = "pending" | "active" | "completed" | "cancelled";
+type DisplayStatus = SessionStatus | "incomplete";
 
 export type SessionOption = {
   id: number;
+  displayNumber: number;
+  testerLabel: string | null;
   status: SessionStatus;
+  completionStatus?: DisplayStatus;
   startTime: string | null;
 };
 
-function formatStatus(status: SessionStatus) {
+function formatStatus(status: DisplayStatus) {
+  if (status === "pending") return "Incomplete";
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
-function statusClasses(status: SessionStatus) {
+function statusClasses(status: DisplayStatus) {
   switch (status) {
     case "pending":
-      return "bg-yellow-50 text-yellow-700";
+      return "bg-amber-50 text-amber-700";
     case "active":
       return "bg-green-50 text-green-700";
     case "completed":
       return "bg-gray-100 text-gray-700";
     case "cancelled":
       return "bg-red-50 text-red-700";
+    case "incomplete":
+      return "bg-amber-50 text-amber-700";
     default:
       return "bg-gray-100 text-gray-700";
   }
@@ -52,6 +59,8 @@ export function SessionMultiSelect({
   onNavigateToSession,
 }: SessionMultiSelectProps) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "incomplete" | "active" | "completed" | "cancelled">("all");
   const rootRef = useRef<HTMLDivElement>(null);
   const listId = useId();
 
@@ -66,11 +75,25 @@ export function SessionMultiSelect({
 
   const selectedSet = new Set(selectedIds);
   const otherSelected = selectedIds.filter((id) => id !== currentSessionId);
+  const currentSession = sessions.find((session) => session.id === currentSessionId);
+  const filteredSessions = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return sessions.filter((session) => {
+      const visibleStatus = session.completionStatus === "incomplete" || session.status === "pending"
+        ? "incomplete"
+        : session.completionStatus ?? session.status;
+      if (statusFilter !== "all" && visibleStatus !== statusFilter) return false;
+      if (!normalizedQuery) return true;
+      return String(session.testerLabel || "").toLowerCase().includes(normalizedQuery)
+        || `s-${session.displayNumber ?? session.id}`.includes(normalizedQuery)
+        || String(session.displayNumber ?? session.id) === normalizedQuery;
+    });
+  }, [sessions, query, statusFilter]);
 
   const triggerLabel =
     otherSelected.length === 0
       ? `Sessions (${sessions.length})`
-      : `S-${currentSessionId} · ${selectedIds.length} selected`;
+      : `S-${currentSession?.displayNumber ?? currentSessionId} · ${selectedIds.length} selected`;
 
   const toggleSession = (sessionId: number) => {
     if (sessionId === currentSessionId) return;
@@ -95,7 +118,7 @@ export function SessionMultiSelect({
   };
 
   const selectAll = () => {
-    onSelectedIdsChange(sessions.map((s) => s.id));
+    onSelectedIdsChange(filteredSessions.map((s) => s.id));
   };
 
   const clearSelection = () => {
@@ -125,17 +148,17 @@ export function SessionMultiSelect({
           id={listId}
           role="listbox"
           aria-multiselectable="true"
-          className="absolute left-0 top-full mt-1 z-20 w-72 bg-white border border-gray-200 rounded-lg shadow-lg py-2 max-h-80 overflow-y-auto"
+          className="absolute left-0 top-full mt-1 z-20 w-80 bg-white border border-gray-200 rounded-lg shadow-lg py-2 max-h-[28rem] overflow-y-auto"
         >
           <div className="flex items-center justify-between px-3 pb-2 border-b border-gray-100">
-            <span className="text-xs font-semibold text-gray-700">Food sessions</span>
+            <span className="text-xs font-semibold text-gray-700">Find a tester session</span>
             <div className="flex gap-2">
               <button
                 type="button"
                 onClick={selectAll}
                 className="text-[11px] font-semibold text-[#e8174a] hover:text-[#c9143f]"
               >
-                Select all
+                Select shown
               </button>
               <button
                 type="button"
@@ -147,11 +170,35 @@ export function SessionMultiSelect({
             </div>
           </div>
 
-          {sessions.length === 0 ? (
-            <p className="px-3 py-2 text-xs text-gray-500">No sessions for this product.</p>
+          <div className="px-3 py-2 space-y-2 border-b border-gray-100">
+            <input
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search tester or S-#"
+              className="w-full text-xs border border-gray-200 rounded-md px-2.5 py-2 focus:outline-none focus:ring-2 focus:ring-[#e8174a]/20 focus:border-[#e8174a]"
+              aria-label="Search sessions by tester or session number"
+            />
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}
+              className="w-full text-xs border border-gray-200 rounded-md px-2.5 py-2 bg-white"
+              aria-label="Filter food sessions by status"
+            >
+              <option value="all">All statuses ({sessions.length})</option>
+              <option value="incomplete">Incomplete</option>
+              <option value="active">Active</option>
+              <option value="completed">Completed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+            <p className="text-[11px] text-gray-500">Showing {filteredSessions.length} of {sessions.length}</p>
+          </div>
+
+          {filteredSessions.length === 0 ? (
+            <p className="px-3 py-3 text-xs text-gray-500">No sessions match this search and status.</p>
           ) : (
             <ul className="py-1">
-              {sessions.map((s) => {
+              {filteredSessions.map((s) => {
                 const isCurrent = s.id === currentSessionId;
                 const isChecked = selectedSet.has(s.id);
                 return (
@@ -179,19 +226,21 @@ export function SessionMultiSelect({
                         className="flex-1 text-left min-w-0"
                       >
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-xs font-semibold text-gray-900">S-{s.id}</span>
+                          <span className="text-xs font-semibold text-gray-900">S-{s.displayNumber ?? s.id}</span>
                           <span
                             className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${statusClasses(
-                              s.status
+                              s.completionStatus ?? s.status
                             )}`}
                           >
-                            {formatStatus(s.status)}
+                            {formatStatus(s.completionStatus === "incomplete" || s.status === "pending" ? "incomplete" : (s.completionStatus ?? s.status))}
                           </span>
                           {isCurrent ? (
                             <span className="text-[10px] font-semibold text-[#e8174a]">Viewing</span>
                           ) : null}
                         </div>
-                        <p className="text-[11px] text-gray-500 mt-0.5">{formatShortDate(s.startTime)}</p>
+                        <p className="text-[11px] text-gray-500 mt-0.5">
+                          {s.testerLabel || "Unknown tester"} · {formatShortDate(s.startTime)}
+                        </p>
                       </button>
                     </div>
                   </li>

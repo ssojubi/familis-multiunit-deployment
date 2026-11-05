@@ -29,13 +29,13 @@ export default function TesterConsent() {
 
   useEffect(() => {
     const controller = new AbortController();
-    void apiFetch("/api/preferences", { signal: controller.signal }).then(r => r.json()).then(payload => {
-      if (!payload?.ok || !payload.preferences?.consent || !payload.consentVersion) {
+    void apiFetch("/api/consent-form", { signal: controller.signal }).then(r => r.json()).then(payload => {
+      if (!payload?.ok || !payload.consent || !payload.consentVersion) {
         setError(payload?.error || "Could not load the current consent form. Refresh this page to try again.");
         return;
       }
-      setConsentFields(payload.preferences.consent);
-      setConsent(Object.fromEntries(Object.keys(payload.preferences.consent).map(key => [key, false])));
+      setConsentFields(payload.consent);
+      setConsent(Object.fromEntries(Object.keys(payload.consent).map(key => [key, false])));
       setConsentVersion(payload.consentVersion);
       setConsentLoaded(true);
     }).catch(() => { setError("Could not load the current consent form. Refresh this page to try again."); });
