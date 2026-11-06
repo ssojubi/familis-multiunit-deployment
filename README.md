@@ -583,3 +583,26 @@ kubectl -n familis rollout status deployment/familis --timeout=180s
 
 Press `Ctrl+C` in the Traefik port-forward terminal. The Kubernetes services
 remain running.
+
+### Automatic Quick Tunnel discovery on Linux
+
+`scripts/watch-public-access.py` reads cloudflared's local `/quicktunnel`
+endpoint on ports 20241–20245 and publishes the current address to the
+`familis-public-access` ConfigMap every 30 seconds. Run it on the same machine
+as cloudflared, with Python 3 and a working `kubectl` context:
+
+```bash
+python3 scripts/watch-public-access.py
+```
+
+The FaMiLiS deployment mounts this ConfigMap and reads it on each public-access
+request. Keep the watcher running alongside your existing `cloudflared tunnel`
+command. No fixed public hostname or app restart is needed when the URL changes.
+Allow about two minutes for Kubernetes to propagate updates. Missing tunnels
+clear the URL; discovery records expire after three minutes if the watcher stops.
+With multiple Quick Tunnels, the first detected tunnel is used, so run only the
+FaMiLiS Quick Tunnel on this machine while using discovery.
+
+On the configured Linux workstation, `familis-public-access.service` runs this
+watcher automatically at user login. Inspect it with
+`systemctl --user status familis-public-access.service`.

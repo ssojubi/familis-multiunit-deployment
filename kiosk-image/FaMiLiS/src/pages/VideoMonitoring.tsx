@@ -49,7 +49,7 @@ interface ServerToClientEvents {
   }) => void;
   "tester-presence-snapshot": (data: TesterPresence[]) => void;
   "tester-logged-out": (data: { testerId: number }) => void;
-  "tester-reconnecting": (data: { testerId: number; sessionId: number; deadline: number }) => void;
+  "tester-reconnecting": (data: { testerId: number; sessionId: number; deadline: number; serverNow: number }) => void;
   "tester-reconnect-expired": (data: { testerId: number; sessionId: number }) => void;
 }
 
@@ -215,7 +215,7 @@ function KioskStatusTile({
     <div
       onClick={onSelect}
       className={`
-        relative rounded-xl border transition-all cursor-pointer
+        relative self-start overflow-hidden rounded-xl border transition-all cursor-pointer
         ${isSelected
           ? "border-[#e8174a] bg-red-50/40 shadow-md ring-1 ring-[#e8174a]/20"
           : "border-gray-200 bg-white hover:border-gray-300 hover:shadow-sm"
@@ -261,6 +261,7 @@ function KioskStatusTile({
               onClick={onToggleVideo}
               title={showVideo ? "Hide video" : "Show video"}
               aria-label={`${showVideo ? "Hide" : "Show"} ${kiosk.label} video`}
+              aria-expanded={showVideo}
               className={`p-1.5 rounded-md transition-colors text-xs font-bold ${
                 showVideo
                   ? "bg-[#e8174a] text-white hover:bg-[#c9143f]"
@@ -272,6 +273,11 @@ function KioskStatusTile({
           </div>
         </div>
       </div>
+      {showVideo && (
+        <div className="aspect-video overflow-hidden border-t border-gray-200 bg-black" onClick={(event) => event.stopPropagation()}>
+          <LiveVideoView stream={kiosk.stream} connectionState={kiosk.connectionState} reconnectDeadline={kiosk.reconnectDeadline} sessionId={kiosk.sessionId} recordingStatus={kiosk.status} />
+        </div>
+      )}
     </div>
   );
 }
@@ -370,12 +376,12 @@ function LiveVideoView({ stream, connectionState, reconnectDeadline, sessionId, 
 
   return (
     <div className="relative w-full h-full bg-black">
-      <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover"
+      <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-contain"
         onPlaying={() => setMessage(null)}
         onWaiting={() => setMessage("Waiting for camera video…")}
         onError={() => setMessage("Video playback failed. Refresh this monitoring page.")} />
       {latestFrameUrl && <>
-        <img src={latestFrameUrl} alt="Latest tester camera frame" className="absolute inset-0 h-full w-full object-cover" />
+        <img src={latestFrameUrl} alt="Latest tester camera frame" className="absolute inset-0 h-full w-full object-contain" />
         <span className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 text-[10px] font-semibold text-white">Live frame feed</span>
       </>}
       {visibleMessage && <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/75 p-4 text-center text-sm text-white">
@@ -580,6 +586,7 @@ function KioskMonitorDetail() {
   const [modalKioskId, setModalKioskId] = useState<string | null>(null);
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
   const [visibleVideoIds, setVisibleVideoIds] = useState<Set<string>>(new Set());
+  const [hiddenAllVideoIds, setHiddenAllVideoIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
   const [foodFilter, setFoodFilter] = useState("");
   const [kioskSort, setKioskSort] = useState<KioskSort>("tester-asc");
@@ -692,19 +699,27 @@ function KioskMonitorDetail() {
   }, [role, roomId, validFoodId]);
 
   useEffect(() => {
+    // Quick Tunnel addresses rotate on restart; use the address serving this page.
+    if (window.location.protocol === "https:" && window.location.hostname.endsWith(".trycloudflare.com")) {
+      setPublicAccessUrl(window.location.origin);
+      return;
+    }
+    let cancelled = false;
     async function loadPublicAccessUrl() {
       try {
         const response = await fetch(`${API_BASE}/api/public-access`);
         const payload = await response.json();
-        if (response.ok && payload?.ok && payload?.enabled && payload?.url) {
-          setPublicAccessUrl(String(payload.url));
+        if (!cancelled) {
+          setPublicAccessUrl(response.ok && payload?.ok && payload?.enabled && payload?.url ? String(payload.url) : "");
         }
       } catch {
-        setPublicAccessUrl("");
+        // Keep the last known address during a temporary network failure.
       }
     }
 
     void loadPublicAccessUrl();
+    const timer = window.setInterval(loadPublicAccessUrl, 15000);
+    return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
 
   const copyPublicAccessUrl = () => {
@@ -817,7 +832,8 @@ function KioskMonitorDetail() {
     cameraRetryRef.current.delete(peerId);
     setRemoteKiosks((prev) => prev.filter((k) => k.peerId !== peerId));
     setPinnedIds((prev) => { const next = new Set(prev); next.delete(peerId); return next; });
-    setVisibleVideoIds((prev) => { const next = new Set(prev); next.delete(peerId); return next; });
+    const setIds = layoutMode === "show-all" ? setHiddenAllVideoIds : setVisibleVideoIds;
+    setIds((prev) => { const next = new Set(prev); next.delete(peerId); return next; });
     if (selectedKioskId === peerId) setSelectedKioskId(null);
     if (modalKioskId === peerId) setModalKioskId(null);
   }, [modalKioskId, selectedKioskId]);
@@ -975,10 +991,15 @@ function KioskMonitorDetail() {
                 sessionId: sessionId ?? null,
                 foodName: foodName ?? null,
                 connectionState: nextConnectionState,
+                reconnectDeadline: null,
 
               }
             : k,
         );
+        if (!updated.some((kiosk) => kiosk.peerId === from)) {
+          updated.push({ peerId: from, testerId, label: testerName || "Tester", stream: new MediaStream(),
+            status, sessionId: sessionId ?? null, foodName: foodName ?? null, connectionState: nextConnectionState });
+        }
         return updated;
       });
 
@@ -986,14 +1007,7 @@ function KioskMonitorDetail() {
     socket.on("tester-presence-snapshot", (data) => {
       const nextPresence = Array.isArray(data) ? data : [];
       setTesterPresence(nextPresence);
-      // Reaching the survey proves the tester is online and no longer recording.
-      // Retire any stale recording peer immediately instead of showing reconnecting.
-      for (const presence of nextPresence) {
-        if (presence.stage !== "survey") continue;
-        for (const [peerId, status] of sessionStatusByPeerRef.current) {
-          if (status.testerId === presence.testerId && status.status === "recording") removeKiosk(peerId);
-        }
-      }
+
     });
 
     socket.on("tester-logged-out", ({ testerId }) => {
@@ -1003,9 +1017,9 @@ function KioskMonitorDetail() {
       }
     });
 
-    socket.on("tester-reconnecting", ({ testerId, deadline }) => {
+    socket.on("tester-reconnecting", ({ testerId, deadline, serverNow }) => {
       setRemoteKiosks((current) => current.map((kiosk) => kiosk.testerId === testerId
-        ? { ...kiosk, connectionState: "reconnecting", reconnectDeadline: deadline }
+        ? { ...kiosk, connectionState: "reconnecting", reconnectDeadline: Date.now() + (deadline - serverNow) }
         : kiosk));
     });
 
@@ -1023,11 +1037,12 @@ function KioskMonitorDetail() {
         peerConnectionsRef.current.delete(peerId);
         cameraRetryRef.current.delete(peerId);
         setRemoteKiosks((previous) => previous.map((kiosk) =>
-          kiosk.peerId === peerId ? { ...kiosk, connectionState: "reconnecting", reconnectDeadline: Date.now() + 90_000 } : kiosk
+          kiosk.peerId === peerId ? { ...kiosk, connectionState: "reconnecting", reconnectDeadline: kiosk.reconnectDeadline } : kiosk
         ));
         const existing = disconnectTimerRef.current.get(peerId);
         if (existing != null) window.clearTimeout(existing);
-        disconnectTimerRef.current.set(peerId, window.setTimeout(() => removeKiosk(peerId), 90_000));
+        disconnectTimerRef.current.delete(peerId);
+        // Only the server expiry event may retire a disconnected recording.
       } else {
         removeKiosk(peerId);
       }
@@ -1083,7 +1098,8 @@ function KioskMonitorDetail() {
   };
 
   const toggleVideoVisibility = (peerId: string) => {
-    setVisibleVideoIds((prev) => {
+    const setIds = layoutMode === "show-all" ? setHiddenAllVideoIds : setVisibleVideoIds;
+    setIds((prev) => {
       const next = new Set(prev);
       if (next.has(peerId)) {
         next.delete(peerId);
@@ -1154,7 +1170,10 @@ function KioskMonitorDetail() {
 
           {/* Layout toolbar */}
           <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-            <LayoutSwitcher value={layoutMode} onChange={setLayoutMode} />
+            <LayoutSwitcher value={layoutMode} onChange={(mode) => {
+              setLayoutMode(mode);
+              if (mode === "show-all") setHiddenAllVideoIds(new Set());
+            }} />
             <label className="text-xs text-gray-700">Food
               <select aria-label="Filter kiosks by food" value={foodFilter} onChange={(event) => setFoodFilter(event.target.value)} className="ml-2 rounded-md border border-gray-200 px-3 py-2">
                 <option value="">All foods</option>
@@ -1197,10 +1216,10 @@ function KioskMonitorDetail() {
               </div>
             ) : layoutMode === "sidebar-spotlight" ? (
               /* ── Sidebar + Spotlight ── */
-              <div className="flex min-h-[500px]">
+              <div className="grid grid-cols-1 md:grid-cols-[260px_minmax(0,1fr)]">
                 {/* Sidebar list */}
-                <div className="w-[220px] sm:w-[260px] border-r border-gray-200 overflow-y-auto bg-gray-50/50">
-                  <div className="p-2 space-y-1.5">
+                <div className="relative min-h-0 border-b md:border-b-0 md:border-r border-gray-200 bg-gray-50/50">
+                  <div className="max-h-[240px] overflow-y-auto overscroll-contain p-2 space-y-1.5 md:absolute md:inset-0 md:max-h-none">
                     {filteredKiosks.map((kiosk) => (
                       <KioskStatusTile
                         key={kiosk.peerId}
@@ -1218,7 +1237,7 @@ function KioskMonitorDetail() {
                 </div>
 
                 {/* Spotlight panel */}
-                <div className="flex-1 flex flex-col">
+                <div className="min-w-0 w-full flex-1 flex flex-col">
                   {spotlightKiosk ? (
                     <>
                       <div className="flex items-center gap-3 px-5 py-3 border-b border-gray-200 bg-gray-50/80">
@@ -1238,12 +1257,12 @@ function KioskMonitorDetail() {
                           </div>
                         </div>
                       </div>
-                      <div className="flex-1 bg-black">
+                      <div className="aspect-video w-full max-w-[720px] self-center overflow-hidden bg-black">
                         <LiveVideoView stream={spotlightKiosk.stream} connectionState={spotlightKiosk.connectionState} reconnectDeadline={spotlightKiosk.reconnectDeadline} sessionId={spotlightKiosk.sessionId} recordingStatus={spotlightKiosk.status} />
                       </div>
                     </>
                   ) : (
-                    <div className="flex-1 flex items-center justify-center text-center p-8">
+                    <div className="aspect-video w-full max-w-[720px] self-center flex items-center justify-center text-center p-8">
                       <div>
                         <IconCamera className="w-10 h-10 text-gray-300 mx-auto mb-2" />
                         <p className="text-gray-500 text-sm font-semibold">Select a kiosk</p>
@@ -1325,14 +1344,14 @@ function KioskMonitorDetail() {
                   <div className="flex gap-2">
                     <button
                       type="button"
-                      onClick={() => setVisibleVideoIds(new Set(remoteKiosks.map((k) => k.peerId)))}
+                      onClick={() => setHiddenAllVideoIds(new Set())}
                       className="text-[11px] font-semibold text-[#e8174a] hover:underline"
                     >
                       Show All
                     </button>
                     <button
                       type="button"
-                      onClick={() => setVisibleVideoIds(new Set())}
+                      onClick={() => setHiddenAllVideoIds(new Set(allKiosks.map((kiosk) => kiosk.peerId)))}
                       className="text-[11px] font-semibold text-gray-500 hover:underline"
                     >
                       Hide All
@@ -1346,7 +1365,7 @@ function KioskMonitorDetail() {
                       kiosk={kiosk}
                       isSelected={selectedKioskId === kiosk.peerId}
                       isPinned={false}
-                      showVideo={visibleVideoIds.has(kiosk.peerId)}
+                      showVideo={!hiddenAllVideoIds.has(kiosk.peerId)}
                       onSelect={() => setModalKioskId(kiosk.peerId)}
                       onTogglePin={() => {}}
                       onToggleVideo={() => toggleVideoVisibility(kiosk.peerId)}
@@ -1376,41 +1395,6 @@ function KioskMonitorDetail() {
               </div>
             )}
 
-            {visibleVideoIds.size > 0 ? (
-              <div className="border-t border-gray-100 p-4 sm:p-5">
-                <div className="mb-3 flex items-center justify-between">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">
-                    Live camera views ({visibleVideoIds.size})
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => setVisibleVideoIds(new Set())}
-                    className="text-[11px] font-semibold text-gray-500 hover:text-gray-800 hover:underline"
-                  >
-                    Hide all
-                  </button>
-                </div>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                  {remoteKiosks
-                    .filter((kiosk) => visibleVideoIds.has(kiosk.peerId))
-                    .map((kiosk) => (
-                      <div key={kiosk.peerId} className="relative aspect-video overflow-hidden rounded-xl bg-black">
-                        <LiveVideoView stream={kiosk.stream} connectionState={kiosk.connectionState} reconnectDeadline={kiosk.reconnectDeadline} sessionId={kiosk.sessionId} recordingStatus={kiosk.status} />
-                        <span className="absolute left-2 top-2 rounded bg-black/60 px-2 py-0.5 text-[11px] font-semibold text-white">
-                          {kiosk.label}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => toggleVideoVisibility(kiosk.peerId)}
-                          className="absolute right-2 top-2 rounded bg-black/60 px-2 py-1 text-[10px] font-semibold text-white hover:bg-black/80"
-                        >
-                          Hide
-                        </button>
-                      </div>
-                    ))}
-                </div>
-              </div>
-            ) : null}
           </section>
 
 
@@ -1427,7 +1411,7 @@ function KioskMonitorDetail() {
               </div>
             ) : (
               <div className="text-[12px] text-gray-500 bg-white border border-gray-100 rounded-lg px-4 py-3 shadow-sm">
-                Public mobile access is not running.
+                Public mobile access URL is not configured. A Cloudflare tunnel may still be running.
               </div>
             )}
           </div>

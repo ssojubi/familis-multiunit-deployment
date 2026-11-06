@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { initDb } from "./init.js";
 import multer from "multer";
-import { mkdir } from "fs/promises";
+import { mkdir, readFile } from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -249,11 +249,11 @@ function scheduleTesterReconnectTimeout(entry) {
   const testerId = Number(entry?.status?.testerId);
   const sessionId = Number(entry?.status?.sessionId);
   if (!Number.isFinite(testerId) || !Number.isFinite(sessionId) || entry?.status?.status !== "recording") return;
-  clearTesterReconnectTimer(testerId);
+  if (testerReconnectTimers.has(testerId)) return;
   const lastActivity = sessionLastFrameActivity.get(sessionId) ?? Date.now();
   const deadline = lastActivity + TESTER_RECONNECT_TIMEOUT_MS;
   const remainingMs = Math.max(0, deadline - Date.now());
-  io.to(ADMIN_PRESENCE_ROOM).emit("tester-reconnecting", { testerId, sessionId, deadline });
+  io.to(ADMIN_PRESENCE_ROOM).emit("tester-reconnecting", { testerId, sessionId, deadline, serverNow: Date.now() });
   const timer = setTimeout(async () => {
     testerReconnectTimers.delete(testerId);
     try {
@@ -332,7 +332,7 @@ io.on('connection', (socket) => {
     }
 
     if (socket.disconnected || rooms.get(normalizedRoomId)?.has(socket.id)) return;
-    if (role === "host") clearTesterReconnectTimer(socket.data.auth.id);
+
     socket.data.roomIds ??= new Set();
     socket.data.roomIds.add(normalizedRoomId);
     socket.join(normalizedRoomId);
@@ -385,7 +385,9 @@ io.on('connection', (socket) => {
   socket.on('tester-presence-update', async (data) => {
     if (socket.data.auth.role !== "tester") return;
     const allowedStages = new Set(["logged_in", "consent_pending", "ready", "survey"]);
-    const stage = allowedStages.has(data?.stage) ? data.stage : "logged_in";
+    let stage = allowedStages.has(data?.stage) ? data.stage : "logged_in";
+    const revision = (socket.data.presenceRevision ?? 0) + 1;
+    socket.data.presenceRevision = revision;
     const requestedRoomCode = String(data?.roomCode || "").trim();
     let roomCode = null;
     let foodName = null;
@@ -408,7 +410,12 @@ io.on('connection', (socket) => {
         console.error("Tester presence room lookup failed:", err);
       }
     }
+    if (socket.disconnected || revision !== socket.data.presenceRevision) return;
     const testerId = Number(socket.data.auth.id);
+    const recording = [...rooms.values()].some((room) => [...room.values()].some(
+      (entry) => Number(entry.status?.testerId) === testerId && entry.status?.status === "recording",
+    ));
+    if (recording && stage === "survey") stage = "ready";
     const pendingPresenceRemoval = testerPresenceDisconnectTimers.get(testerId);
     if (pendingPresenceRemoval) clearTimeout(pendingPresenceRemoval);
     testerPresenceDisconnectTimers.delete(testerId);
@@ -460,6 +467,18 @@ io.on('connection', (socket) => {
     socket.to(socket.data.roomId).emit('admin-stop-stream');
   });
 
+  const renewRecordingLease = () => {
+    const entry = rooms.get(socket.data.roomId)?.get(socket.id);
+    if (entry?.status?.status !== "recording") return;
+    const serverNow = Date.now();
+    sessionLastFrameActivity.set(Number(entry.status.sessionId), serverNow);
+    socket.emit("session-reconnect-lease", {
+      sessionId: Number(entry.status.sessionId), serverNow,
+      deadline: serverNow + TESTER_RECONNECT_TIMEOUT_MS,
+    });
+  };
+  socket.on("tester-recording-heartbeat", renewRecordingLease);
+
   socket.on('tester-session-status', async (data) => {
     if (socket.data.auth.role !== "tester" || !socket.data.roomId) return;
     const { status, sessionId, foodName } = data ?? {};
@@ -483,6 +502,10 @@ io.on('connection', (socket) => {
     const entry = rooms.get(socket.data.roomId)?.get(socket.id);
     if (!entry) return;
     entry.status = { status, sessionId, foodName, testerId: socket.data.auth.id, testerName: socket.data.auth.username || `Tester ${socket.data.auth.id}` };
+    if (status === "recording") {
+      clearTesterReconnectTimer(socket.data.auth.id);
+      renewRecordingLease();
+    }
     socket.to(socket.data.roomId).emit('tester-session-status', { ...entry.status, from: socket.id });
   });
 
@@ -698,8 +721,8 @@ async function start() {
     }
   });
 
-  app.get("/api/public-access", (req, res) => {
-    const forwardedHost = String(req.headers["x-forwarded-host"] ?? "")
+  app.get("/api/public-access", async (req, res) => {
+    const forwardedHost = String(req.headers["x-forwarded-host"] || req.headers.host || "")
       .split(",")[0]
       .trim();
     const forwardedProtocol = String(req.headers["x-forwarded-proto"] ?? "")
@@ -708,7 +731,17 @@ async function start() {
     const requestTunnelUrl = forwardedHost.endsWith(".trycloudflare.com")
       ? `${forwardedProtocol || "https"}://${forwardedHost}`
       : "";
-    const url = publicAccessUrl || requestTunnelUrl;
+    // A request through the current tunnel takes precedence over an older startup URL.
+    let discoveredUrl = null;
+    try {
+      const current = JSON.parse(await readFile("/app/public-access/current.json", "utf8"));
+      const fresh = Number.isFinite(current.updatedAt) && Date.now() / 1000 - current.updatedAt < 180;
+      discoveredUrl = fresh && /^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/.test(current.url) ? current.url : "";
+    } catch {
+      // Deployments without the local discovery service retain startup configuration.
+    }
+    const url = requestTunnelUrl || (discoveredUrl ?? publicAccessUrl);
+    res.set("Cache-Control", "no-store");
 
     return res.json({
       ok: true,
@@ -3035,7 +3068,19 @@ async function start() {
           return res.status(409).json({ ok: false, error: "Session is not active; cannot record frames." });
         }
         if (sess.invalidated_at) return res.status(409).json({ ok: false, error: "Session was invalidated; recording is disabled." });
-        sessionLastFrameActivity.set(Number(sessionId), Date.now());
+        // Frame traffic also renews the shared deadline, including legacy recording pages.
+        const serverNow = Date.now();
+        sessionLastFrameActivity.set(Number(sessionId), serverNow);
+        for (const room of rooms.values()) {
+          for (const [peerId, entry] of room) {
+            if (entry.status?.status === "recording" && Number(entry.status.sessionId) === Number(sessionId)) {
+              io.to(peerId).emit("session-reconnect-lease", {
+                sessionId: Number(sessionId), serverNow, deadline: serverNow + TESTER_RECONNECT_TIMEOUT_MS,
+              });
+            }
+          }
+        }
+
 
         const kioskId =
           String(req.body?.kiosk_id || req.body?.kioskId || `session-${sessionId}`).trim();

@@ -72,6 +72,9 @@ spec:
             - name: SSL_CERT_FILE
               value: /app/tls/tls.crt
           volumeMounts:
+            - name: public-access
+              mountPath: /app/public-access
+              readOnly: true
             - name: familis-tls
               mountPath: /app/tls
               readOnly: true
@@ -94,6 +97,10 @@ spec:
               cpu: "2"
               memory: 2Gi
       volumes:
+        - name: public-access
+          configMap:
+            name: familis-public-access
+            optional: true
         - name: familis-tls
           secret:
             secretName: familis-tls

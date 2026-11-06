@@ -23,6 +23,7 @@ const ACTIVE_TESTER_SESSION_KEY = "familis.activeTesterRecording";
 const RECONNECT_TIMEOUT_MS = 90_000;
 
 type ServerToClientEvents = {
+  "session-reconnect-lease": (data: { sessionId: number; deadline: number; serverNow: number }) => void;
   "room-joined": () => void;
   "viewer-connected": (viewerId: string) => void;
   "stream-request": (data: { from?: string }) => void;
@@ -37,6 +38,7 @@ type ServerToClientEvents = {
 };
 
 type ClientToServerEvents = {
+  "tester-recording-heartbeat": () => void;
   "join-room": (roomId: string) => void;
   signal: (data: {
     room: string;
@@ -107,6 +109,7 @@ export default function TesterSession() {
   const latestStatusRef = useRef<Parameters<ClientToServerEvents["tester-session-status"]>[0] | null>(null);
   const sessionIdRef = useRef<number | null>(null);
   const frameInFlightRef = useRef(false);
+  const reconnectLeaseRef = useRef<number | null>(null);
   const reconnectDeadlineRef = useRef<number | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -130,8 +133,10 @@ export default function TesterSession() {
     };
 
     const expireDisconnectedSession = () => {
+      if (!isRecordingRef.current) { clearReconnectCountdown(); return; }
       const abandonedSessionId = sessionIdRef.current;
       clearReconnectCountdown();
+      reconnectLeaseRef.current = null;
       if (intervalRef.current) clearInterval(intervalRef.current);
       intervalRef.current = null;
       isRecordingRef.current = false;
@@ -153,14 +158,14 @@ export default function TesterSession() {
 
     const beginReconnectCountdown = () => {
       if (!isRecordingRef.current || reconnectDeadlineRef.current != null) return;
-      reconnectDeadlineRef.current = Date.now() + RECONNECT_TIMEOUT_MS;
+      reconnectDeadlineRef.current = reconnectLeaseRef.current ?? Date.now() + RECONNECT_TIMEOUT_MS;
       const updateMessage = () => {
         const seconds = Math.max(0, Math.ceil(((reconnectDeadlineRef.current ?? Date.now()) - Date.now()) / 1000));
         setMessage(`Wi-Fi/network connection lost. Reconnecting… You will be logged out in ${seconds}s and this session will be marked incomplete if the connection is not restored.`);
       };
       updateMessage();
       reconnectIntervalRef.current = setInterval(updateMessage, 1000);
-      reconnectTimeoutRef.current = setTimeout(expireDisconnectedSession, RECONNECT_TIMEOUT_MS);
+      reconnectTimeoutRef.current = setTimeout(expireDisconnectedSession, Math.max(0, reconnectDeadlineRef.current - Date.now()));
     };
 
     localStorage.setItem("kiosk_id", kioskId);
@@ -191,7 +196,6 @@ export default function TesterSession() {
     socket.on("connect", () => {
       if (disposed) return;
       const wasReconnecting = reconnectDeadlineRef.current != null;
-      clearReconnectCountdown();
       if (wasReconnecting && isRecordingRef.current) {
         setMessage("Connection restored. Resuming camera and frame uploads…");
       }
@@ -200,6 +204,19 @@ export default function TesterSession() {
       );
       socket.emit("join-room", roomId);
     });
+
+    socket.on("session-reconnect-lease", ({ sessionId: leaseSessionId, deadline, serverNow }) => {
+      if (!isRecordingRef.current || sessionIdRef.current !== leaseSessionId) return;
+      reconnectLeaseRef.current = Date.now() + (deadline - serverNow);
+      const wasReconnecting = reconnectDeadlineRef.current != null;
+      clearReconnectCountdown();
+      setStatus("recording");
+      setIsRecording(true);
+      if (wasReconnecting) setMessage("Connection restored. Recording continues.");
+    });
+    const heartbeat = window.setInterval(() => {
+      if (socket.connected && isRecordingRef.current) socket.emit("tester-recording-heartbeat");
+    }, 3000);
 
     socket.on("room-joined", () => {
       if (latestStatusRef.current) socket.emit("tester-session-status", latestStatusRef.current);
@@ -267,6 +284,7 @@ export default function TesterSession() {
 
     return () => {
       disposed = true;
+      window.clearInterval(heartbeat);
       clearReconnectCountdown();
       socket.disconnect();
       cleanupPeerConnection();
