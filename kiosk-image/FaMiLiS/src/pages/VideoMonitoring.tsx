@@ -23,6 +23,9 @@ type Role = "host" | "viewer" | null;
 
 const SOCKET_SERVER_URL = getSocketUrl();
 const API_BASE = getApiBase();
+const MONITOR_HOSTNAME = window.location.hostname;
+const USE_HTTPS_FRAME_RELAY = MONITOR_HOSTNAME !== "localhost" && MONITOR_HOSTNAME !== "127.0.0.1" && MONITOR_HOSTNAME !== "::1" &&
+  !/^10\.|^192\.168\.|^172\.(1[6-9]|2\d|3[01])\./.test(MONITOR_HOSTNAME);
 
 interface ServerToClientEvents {
   "room-error": (data: { error?: string }) => void;
@@ -275,10 +278,42 @@ function KioskStatusTile({
 
 /* ──────────────────────────── Live Video View ──────────────────────────── */
 
-function LiveVideoView({ stream, connectionState, reconnectDeadline }: { stream: MediaStream; connectionState: KioskConnectionState; reconnectDeadline?: number | null }) {
+function LiveVideoView({ stream, connectionState, reconnectDeadline, sessionId, recordingStatus }: { stream: MediaStream; connectionState: KioskConnectionState; reconnectDeadline?: number | null; sessionId?: number | null; recordingStatus?: RecordingStatus | null }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [message, setMessage] = useState<string | null>("Connecting to camera…");
   const [reconnectNow, setReconnectNow] = useState(Date.now());
+  const [latestFrameUrl, setLatestFrameUrl] = useState<string | null>(null);
+  const useFrameRelay = USE_HTTPS_FRAME_RELAY;
+  const cameraActive = recordingStatus === "recording" || recordingStatus === "paused";
+
+  useEffect(() => {
+    if (!cameraActive || !useFrameRelay || sessionId == null) {
+      setLatestFrameUrl(null);
+      return;
+    }
+    let disposed = false;
+    const loadLatestFrame = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/sessions/${sessionId}/latest-frame`, {
+          credentials: "include",
+          cache: "no-store",
+        });
+        const payload = await response.json().catch(() => null);
+        if (disposed || !response.ok || !payload?.frame?.imageUrl) return;
+        const url = new URL(String(payload.frame.imageUrl), window.location.origin);
+        url.searchParams.set("frame", String(payload.frame.id));
+        setLatestFrameUrl(url.toString());
+      } catch {
+        // WebRTC remains available if the HTTPS frame fallback is temporarily unavailable.
+      }
+    };
+    void loadLatestFrame();
+    const timer = window.setInterval(loadLatestFrame, 1000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [cameraActive, sessionId, useFrameRelay]);
 
   useEffect(() => {
     if (connectionState !== "reconnecting") return;
@@ -290,6 +325,11 @@ function LiveVideoView({ stream, connectionState, reconnectDeadline }: { stream:
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
+    if (!cameraActive) {
+      video.srcObject = null;
+      setMessage("Camera view will begin when the tasting session starts.");
+      return;
+    }
     let disposed = false;
     setMessage("Connecting to camera…");
     video.muted = true;
@@ -318,9 +358,13 @@ function LiveVideoView({ stream, connectionState, reconnectDeadline }: { stream:
       });
       video.srcObject = null;
     };
-  }, [stream]);
+  }, [cameraActive, stream]);
 
-  const visibleMessage = connectionState === "reconnecting"
+  const visibleMessage = !cameraActive
+    ? "Camera view will begin when the tasting session starts."
+    : latestFrameUrl
+    ? null
+    : connectionState === "reconnecting"
     ? `Tester lost connection. Reconnecting for ${Math.max(0, Math.ceil(((reconnectDeadline ?? (reconnectNow + 90_000)) - reconnectNow) / 1000))}s before logout and marking the session incomplete.`
     : message;
 
@@ -330,6 +374,10 @@ function LiveVideoView({ stream, connectionState, reconnectDeadline }: { stream:
         onPlaying={() => setMessage(null)}
         onWaiting={() => setMessage("Waiting for camera video…")}
         onError={() => setMessage("Video playback failed. Refresh this monitoring page.")} />
+      {latestFrameUrl && <>
+        <img src={latestFrameUrl} alt="Latest tester camera frame" className="absolute inset-0 h-full w-full object-cover" />
+        <span className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 text-[10px] font-semibold text-white">Live frame feed</span>
+      </>}
       {visibleMessage && <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/75 p-4 text-center text-sm text-white">
         <p role="status">{visibleMessage}</p>
         {visibleMessage.includes("Play video") && <button type="button" className="underline" onClick={() => {
@@ -387,7 +435,7 @@ function VideoModal({
 
         {/* Video */}
         <div className="aspect-video bg-black">
-          <LiveVideoView stream={kiosk.stream} connectionState={kiosk.connectionState} reconnectDeadline={kiosk.reconnectDeadline} />
+          <LiveVideoView stream={kiosk.stream} connectionState={kiosk.connectionState} reconnectDeadline={kiosk.reconnectDeadline} sessionId={kiosk.sessionId} recordingStatus={kiosk.status} />
         </div>
 
         {/* Footer info */}
@@ -696,7 +744,10 @@ function KioskMonitorDetail() {
   const getKioskConnectionState = useCallback((pc: RTCPeerConnection, peerId: string): KioskConnectionState => {
     const recording = sessionStatusByPeerRef.current.get(peerId)?.status === "recording";
     if (!recording) return "idle";
-    return pc.connectionState === "connected" ? "streaming" : "reconnecting";
+    // WebRTC may be blocked while Socket.IO and the HTTPS live-frame feed are
+    // healthy. Only the server's disconnect event may mark a tester reconnecting.
+    if (USE_HTTPS_FRAME_RELAY) return "streaming";
+    return pc.connectionState === "connected" ? "streaming" : "idle";
   }, []);
   const cameraRetryRef = useRef(new Map<string, { started: number; attempts: number }>());
   const disconnectTimerRef = useRef(new Map<string, number>());
@@ -879,7 +930,7 @@ function KioskMonitorDetail() {
         status: sessionStatusByPeerRef.current.get(peerId)?.status ?? null,
         sessionId: sessionStatusByPeerRef.current.get(peerId)?.sessionId ?? null,
         foodName: sessionStatusByPeerRef.current.get(peerId)?.foodName ?? null,
-        connectionState: sessionStatusByPeerRef.current.get(peerId)?.status === "recording" ? "reconnecting" : "idle",
+        connectionState: sessionStatusByPeerRef.current.get(peerId)?.status === "recording" && USE_HTTPS_FRAME_RELAY ? "streaming" : "idle",
         }];
       });
     });
@@ -908,7 +959,7 @@ function KioskMonitorDetail() {
       sessionStatusByPeerRef.current.set(from, { status, sessionId: sessionId ?? null, foodName: foodName ?? null, testerId, testerName: testerName ?? null });
       retireStalePeersForTester(from, testerId);
       const nextConnectionState: KioskConnectionState = status === "recording"
-        ? peerConnectionsRef.current.get(from)?.connectionState === "connected" ? "streaming" : "reconnecting"
+        ? USE_HTTPS_FRAME_RELAY || peerConnectionsRef.current.get(from)?.connectionState === "connected" ? "streaming" : "idle"
         : "idle";
       setRemoteKiosks((prev) => {
         const withoutStale = testerId == null
@@ -1188,7 +1239,7 @@ function KioskMonitorDetail() {
                         </div>
                       </div>
                       <div className="flex-1 bg-black">
-                        <LiveVideoView stream={spotlightKiosk.stream} connectionState={spotlightKiosk.connectionState} reconnectDeadline={spotlightKiosk.reconnectDeadline} />
+                        <LiveVideoView stream={spotlightKiosk.stream} connectionState={spotlightKiosk.connectionState} reconnectDeadline={spotlightKiosk.reconnectDeadline} sessionId={spotlightKiosk.sessionId} recordingStatus={spotlightKiosk.status} />
                       </div>
                     </>
                   ) : (
@@ -1214,7 +1265,7 @@ function KioskMonitorDetail() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {pinnedKiosks.map((kiosk) => (
                         <div key={kiosk.peerId} className="relative bg-black aspect-video rounded-xl overflow-hidden border border-gray-200 group">
-                          <LiveVideoView stream={kiosk.stream} connectionState={kiosk.connectionState} reconnectDeadline={kiosk.reconnectDeadline} />
+                          <LiveVideoView stream={kiosk.stream} connectionState={kiosk.connectionState} reconnectDeadline={kiosk.reconnectDeadline} sessionId={kiosk.sessionId} recordingStatus={kiosk.status} />
                           <span className="absolute top-2 left-2 text-[11px] text-white bg-black/50 px-2 py-0.5 rounded font-semibold">
                             {kiosk.label}
                           </span>
@@ -1344,7 +1395,7 @@ function KioskMonitorDetail() {
                     .filter((kiosk) => visibleVideoIds.has(kiosk.peerId))
                     .map((kiosk) => (
                       <div key={kiosk.peerId} className="relative aspect-video overflow-hidden rounded-xl bg-black">
-                        <LiveVideoView stream={kiosk.stream} connectionState={kiosk.connectionState} reconnectDeadline={kiosk.reconnectDeadline} />
+                        <LiveVideoView stream={kiosk.stream} connectionState={kiosk.connectionState} reconnectDeadline={kiosk.reconnectDeadline} sessionId={kiosk.sessionId} recordingStatus={kiosk.status} />
                         <span className="absolute left-2 top-2 rounded bg-black/60 px-2 py-0.5 text-[11px] font-semibold text-white">
                           {kiosk.label}
                         </span>

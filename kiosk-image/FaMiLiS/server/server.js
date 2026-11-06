@@ -191,8 +191,10 @@ if (process.env.USE_HTTPS === "true") {
   console.log('Running in HTTP mode');
 }
 const io = new Server(http, {
-  pingTimeout: 60000,
-  pingInterval: 25000
+  // Detect a vanished kiosk promptly through proxies such as Cloudflare.
+  // The last-frame timestamp below keeps the 90-second recovery deadline stable.
+  pingTimeout: 10000,
+  pingInterval: 5000
 });
 
 function getLocalIP() {
@@ -231,8 +233,10 @@ io.use((socket, next) => {
 
 const ADMIN_PRESENCE_ROOM = "__familis_admin_presence__";
 const testerPresenceSockets = new Map();
+const testerPresenceDisconnectTimers = new Map();
 const TESTER_RECONNECT_TIMEOUT_MS = 90_000;
 const testerReconnectTimers = new Map();
+const sessionLastFrameActivity = new Map();
 
 function clearTesterReconnectTimer(testerId) {
   const pending = testerReconnectTimers.get(Number(testerId));
@@ -246,7 +250,9 @@ function scheduleTesterReconnectTimeout(entry) {
   const sessionId = Number(entry?.status?.sessionId);
   if (!Number.isFinite(testerId) || !Number.isFinite(sessionId) || entry?.status?.status !== "recording") return;
   clearTesterReconnectTimer(testerId);
-  const deadline = Date.now() + TESTER_RECONNECT_TIMEOUT_MS;
+  const lastActivity = sessionLastFrameActivity.get(sessionId) ?? Date.now();
+  const deadline = lastActivity + TESTER_RECONNECT_TIMEOUT_MS;
+  const remainingMs = Math.max(0, deadline - Date.now());
   io.to(ADMIN_PRESENCE_ROOM).emit("tester-reconnecting", { testerId, sessionId, deadline });
   const timer = setTimeout(async () => {
     testerReconnectTimers.delete(testerId);
@@ -261,8 +267,9 @@ function scheduleTesterReconnectTimeout(entry) {
     } catch (err) {
       console.error("Reconnect timeout could not end session:", err);
     }
+    sessionLastFrameActivity.delete(sessionId);
     io.to(ADMIN_PRESENCE_ROOM).emit("tester-reconnect-expired", { testerId, sessionId });
-  }, TESTER_RECONNECT_TIMEOUT_MS);
+  }, remainingMs);
   timer.unref?.();
   testerReconnectTimers.set(testerId, { timer, sessionId, deadline });
 }
@@ -401,8 +408,12 @@ io.on('connection', (socket) => {
         console.error("Tester presence room lookup failed:", err);
       }
     }
+    const testerId = Number(socket.data.auth.id);
+    const pendingPresenceRemoval = testerPresenceDisconnectTimers.get(testerId);
+    if (pendingPresenceRemoval) clearTimeout(pendingPresenceRemoval);
+    testerPresenceDisconnectTimers.delete(testerId);
     testerPresenceSockets.set(socket.id, {
-      testerId: Number(socket.data.auth.id),
+      testerId,
       testerName: socket.data.auth.username || `Tester ${socket.data.auth.id}`,
       stage,
       roomCode,
@@ -491,7 +502,17 @@ io.on('connection', (socket) => {
       socket.to(roomId).emit('user-disconnected', socket.id);
     }
     }
-    if (hadPresence) emitTesterPresenceSnapshot();
+    if (hadPresence) {
+      const testerId = Number(socket.data.auth.id);
+      const existing = testerPresenceDisconnectTimers.get(testerId);
+      if (existing) clearTimeout(existing);
+      const timer = setTimeout(() => {
+        testerPresenceDisconnectTimers.delete(testerId);
+        emitTesterPresenceSnapshot();
+      }, 20_000);
+      timer.unref?.();
+      testerPresenceDisconnectTimers.set(testerId, timer);
+    }
     console.log(`User disconnected: ${socket.id}`);
   });
 });
@@ -1270,6 +1291,9 @@ async function start() {
   app.post("/api/logout", (req, res) => {
     const testerId = Number(req.auth?.id);
     if (req.auth?.role === "tester" && Number.isFinite(testerId)) {
+      const pendingPresenceRemoval = testerPresenceDisconnectTimers.get(testerId);
+      if (pendingPresenceRemoval) clearTimeout(pendingPresenceRemoval);
+      testerPresenceDisconnectTimers.delete(testerId);
       for (const [socketId, presence] of testerPresenceSockets) {
         if (presence.testerId === testerId) testerPresenceSockets.delete(socketId);
       }
@@ -1295,7 +1319,7 @@ async function start() {
       : routePath.startsWith("/kiosks") || routePath === "/emotion/health" ||
         (routePath.startsWith("/testing-rooms") && routePath !== "/testing-rooms/active" && routePath !== "/testing-rooms/validate")
         ? "monitor"
-        : routePath.startsWith("/sessions") && (/^\/sessions\/\d+\/(details|status|invalidate|revalidate|export)$/.test(routePath) || (req.method === "DELETE" && /^\/sessions\/\d+(?:\/frames\/\d+)?$/.test(routePath)))
+        : routePath.startsWith("/sessions") && (/^\/sessions\/\d+\/(details|latest-frame|status|invalidate|revalidate|export)$/.test(routePath) || (req.method === "DELETE" && /^\/sessions\/\d+(?:\/frames\/\d+)?$/.test(routePath)))
           ? "stats"
           : routePath.startsWith("/foods")
             ? routePath.includes("/analytics") || routePath.endsWith("/export") || /^\/foods\/\d+\/(sessions|incomplete-sessions)$/.test(routePath) ? "stats" : "food"
@@ -3011,6 +3035,7 @@ async function start() {
           return res.status(409).json({ ok: false, error: "Session is not active; cannot record frames." });
         }
         if (sess.invalidated_at) return res.status(409).json({ ok: false, error: "Session was invalidated; recording is disabled." });
+        sessionLastFrameActivity.set(Number(sessionId), Date.now());
 
         const kioskId =
           String(req.body?.kiosk_id || req.body?.kioskId || `session-${sessionId}`).trim();
@@ -3267,6 +3292,38 @@ async function start() {
     } catch (err) {
       console.error("GET /api/sessions/:sessionId/details error:", err);
       return res.status(500).json({ ok: false, error: "Server error." });
+    }
+  });
+
+  // A low-bandwidth monitoring fallback for networks that block direct WebRTC.
+  // Frame files remain protected by the existing admin-only uploads middleware.
+  app.get("/api/sessions/:sessionId/latest-frame", requireAdmin, async (req, res) => {
+    const sessionId = Number.parseInt(req.params.sessionId, 10);
+    if (!Number.isFinite(sessionId)) {
+      return res.status(400).json({ ok: false, error: "Invalid sessionId." });
+    }
+    try {
+      const [[frame]] = await pool.query(
+        `SELECT frame_log_id, timestamp, frame_image_url
+         FROM frame_logs
+         WHERE session_id = ? AND frame_image_url IS NOT NULL
+         ORDER BY timestamp DESC, frame_log_id DESC
+         LIMIT 1`,
+        [sessionId],
+      );
+      res.setHeader("Cache-Control", "no-store");
+      if (!frame) return res.json({ ok: true, frame: null });
+      return res.json({
+        ok: true,
+        frame: {
+          id: Number(frame.frame_log_id),
+          timestamp: toIsoOrNull(frame.timestamp),
+          imageUrl: String(frame.frame_image_url),
+        },
+      });
+    } catch (err) {
+      console.error("Latest monitoring frame failed:", err);
+      return res.status(500).json({ ok: false, error: "Could not load the latest monitoring frame." });
     }
   });
 
