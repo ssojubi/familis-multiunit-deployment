@@ -7,3 +7,5 @@ COPY FaMiLiS/vite.config.ts /app/familis/vite.config.ts
 COPY start.sh /app/start.sh
 
 RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh
+# Rebuild the production frontend bundle from the updated sources.
+RUN cd /app/familis && npm run build

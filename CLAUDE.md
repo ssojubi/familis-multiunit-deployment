@@ -11,8 +11,8 @@ The capstone (IT Capstone Project 2, `CAP-2518-IT`) is now named **ChauFER**; Fa
 ## Repository layout (big picture)
 
 - `kiosk-image/FaMiLiS/` — the main app (image `familis-app:k8s`). One container runs **both**:
-  - React 19 + Vite + TypeScript + Tailwind frontend (`src/`), served by the Vite dev server on 5173 (the container runs `vite`, not a static build — see `kiosk-image/start.sh`).
-  - Express + Socket.IO API (`server/server.js`, port 8080). Vite proxies `/api`, `/config`, `/uploads`, `/socket.io` to it (`vite.config.ts`).
+  - React 19 + Vite + TypeScript + Tailwind frontend (`src/`), built into the image (`npm run build` in `kiosk-image/Dockerfile`) and served on 5173 by `vite preview` (`kiosk-image/start.sh`). Frontend changes therefore need an image rebuild. Set `FRONTEND_MODE=dev` on the deployment to run the Vite dev server instead; it is about 100 unbundled requests per page load, and very slow over tunnels.
+  - Express + Socket.IO API (`server/server.js`, port 8080). Vite (dev and preview) proxies `/api`, `/config`, `/uploads`, `/socket.io` to it (`vite.config.ts`).
   - `backend/` holds the older standalone Python emotion-model scripts/training; not used by the k8s deployment path.
 - `central-server/` — Python FastAPI (image `familis-central-server:latest`). The same image runs two deployments: `central-api` (`app/main.py`, frame ingest at `/api/ingest/frame`, dashboard and command routers) and `fer-worker` (`app/worker.py`, a Kafka consumer that scores frames with the `.pkl` models in `models/`, autoscaled 1–6 by HPA).
 - `k8s/base/` — Kustomize manifests (apply with `kubectl apply -k k8s/base --validate=false`): familis, central-api, fer-worker, kafka/zookeeper (+ `kafka-init` job creating the 6-partition `video-frames` topic), mysql, ingress.
