@@ -1018,6 +1018,10 @@ async function start() {
       }
     };
   }
+  // Local backups live on the uploads volume (the familis-uploads PVC in Kubernetes) so they survive
+  // pod restarts. Only the uploads subfolders mounted explicitly above are web-served, so this
+  // folder is not reachable over HTTP (backups contain password hashes).
+  const localBackupDirectory = path.join(uploadsRoot, "backups");
   let backupJobRunning = false;
   async function createScheduledBackup() {
     if (backupJobRunning) return;
@@ -1057,6 +1061,7 @@ async function start() {
         for (const entry of await fs.promises.readdir(folder, { withFileTypes: true })) {
           const absolute = path.join(folder, entry.name);
           const relative = path.posix.join(prefix, entry.name);
+          if (absolute === localBackupDirectory) continue; // never put older backups inside a new one
           if (entry.isDirectory()) await collectFiles(absolute, relative);
           else if (entry.isFile()) files.push({ path: relative, data: (await fs.promises.readFile(absolute)).toString("base64") });
         }
@@ -1068,9 +1073,8 @@ async function start() {
         const response = await fetch(preferences.backup.cloudUrl, { method: "PUT", headers: { "Content-Type": "application/gzip" }, body: archive });
         if (!response.ok) throw new Error(`Cloud upload returned HTTP ${response.status}.`);
       } else {
-        const backupDirectory = path.resolve(__dirname, "backups");
-        await fs.promises.mkdir(backupDirectory, { recursive: true });
-        await fs.promises.writeFile(path.join(backupDirectory, `familis-${stamp}.json.gz`), archive);
+        await fs.promises.mkdir(localBackupDirectory, { recursive: true });
+        await fs.promises.writeFile(path.join(localBackupDirectory, `familis-${stamp}.json.gz`), archive);
       }
       await pool.query("INSERT INTO app_settings (setting_key, setting_value) VALUES ('backup_last_run', ?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)", [JSON.stringify(periodKey)]);
       console.log(`Scheduled ${preferences.backup.destination} backup completed for ${periodKey}.`);
