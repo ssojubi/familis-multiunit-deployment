@@ -113,7 +113,7 @@ export default function TesterJoin() {
       className="min-h-screen bg-[#f6f7fb]"
       style={{ fontFamily: "'Montserrat', sans-serif" }}
     >
-      <header className="bg-red-600 text-white">
+      <header className="bg-[#e8174a] text-white">
         <div className="h-[72px] px-6 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <img
@@ -126,7 +126,7 @@ export default function TesterJoin() {
           <button
             type="button"
             onClick={() => performLogout(navigate)}
-            className="bg-white text-red-700 px-4 py-2 rounded-md text-sm font-semibold"
+            className="bg-white text-[#e8174a] px-4 py-2 rounded-md text-sm font-semibold"
           >
             Log Out
           </button>
@@ -135,7 +135,7 @@ export default function TesterJoin() {
 
       <main className="px-6 py-10">
         <div className="max-w-2xl mx-auto bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
-          <div className="bg-red-600 px-6 py-4">
+          <div className="bg-[#e8174a] px-6 py-4">
             <h1 className="text-white text-xl font-bold">
               Join an Active Food Test
             </h1>
@@ -166,7 +166,7 @@ export default function TesterJoin() {
                         value={room.foodId}
                         checked={foodId === room.foodId}
                         onChange={() => setFoodId(room.foodId)}
-                        className="w-4 h-4 accent-red-600"
+                        className="w-4 h-4 accent-[#e8174a]"
                       />
                       {room.foodImageUrl ? (
                         <img
@@ -207,7 +207,7 @@ export default function TesterJoin() {
                 inputMode="numeric"
                 autoComplete="one-time-code"
                 placeholder="Enter 6-digit code"
-                className="w-full h-12 border border-gray-300 rounded-md px-4 text-center text-lg tracking-widest focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-500"
+                className="w-full h-12 border border-gray-300 rounded-md px-4 text-center text-lg tracking-widest focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30 focus:border-[#e8174a]"
               />
             </div>
 
@@ -221,7 +221,7 @@ export default function TesterJoin() {
               type="button"
               onClick={handleJoin}
               disabled={joining || loading || rooms.length === 0}
-              className="w-full bg-red-600 hover:bg-red-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white py-3 rounded-md text-sm font-semibold"
+              className="w-full bg-[#e8174a] hover:bg-[#c9143f] disabled:bg-gray-300 disabled:cursor-not-allowed text-white py-3 rounded-md text-sm font-semibold"
             >
               {joining ? "Checking Room..." : "Continue to Consent"}
             </button>

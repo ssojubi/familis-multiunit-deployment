@@ -161,15 +161,16 @@ export default function TesterSession() {
     if (reason === "camera-disabled" || reason === "kiosk-disabled") stopCameraStream();
     setMessage(
       reason === "camera-disabled"
-        ? "An administrator disabled recording for this kiosk. Your session was ended as incomplete. Taking you to the survey…"
+        ? "An administrator turned off your camera. Your recording was stopped and saved as incomplete. You can record again once the camera is turned back on."
         : reason === "kiosk-disabled"
           ? "An administrator disabled this kiosk. Your session was ended as incomplete. Taking you to the survey…"
           : wasRecording
             ? "An administrator ended your recording session. It was saved as incomplete. Taking you to the survey…"
             : "Your recording session was ended by an administrator.",
     );
-    // Like a normal stop, move the tester on to the product evaluation survey.
-    if (endedId != null) {
+    // Camera off keeps the tester on this page so the camera can be turned back on and recording
+    // started again. Kiosk off and "End live session" move on to the survey, like a normal stop.
+    if (endedId != null && reason !== "camera-disabled") {
       window.setTimeout(() => navigate("/tester-survey", { state: { sessionId: endedId } }), 1500);
     }
   }
@@ -762,7 +763,7 @@ export default function TesterSession() {
       className="min-h-screen bg-[#f6f7fb]"
       style={{ fontFamily: "'Montserrat', sans-serif" }}
     >
-      <header className="bg-red-600 text-white">
+      <header className="bg-[#e8174a] text-white">
         <div className="h-[72px] px-6 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <img
@@ -776,7 +777,7 @@ export default function TesterSession() {
           </div>
           <button
             onClick={() => performLogout(navigate)}
-            className="bg-white/90 text-red-700 hover:bg-white transition-colors px-4 py-2 rounded-md text-sm font-semibold"
+            className="bg-white/90 text-[#e8174a] hover:bg-white transition-colors px-4 py-2 rounded-md text-sm font-semibold"
           >
             Log Out
           </button>
@@ -825,7 +826,7 @@ export default function TesterSession() {
                     autoPlay
                   />
                   {isRecording && (
-                    <div className="absolute top-4 right-4 bg-red-600 text-white px-3 py-1 rounded-full text-sm font-semibold animate-pulse">
+                    <div className="absolute top-4 right-4 bg-[#e8174a] text-white px-3 py-1 rounded-full text-sm font-semibold animate-pulse">
                       ● RECORDING
                     </div>
                   )}

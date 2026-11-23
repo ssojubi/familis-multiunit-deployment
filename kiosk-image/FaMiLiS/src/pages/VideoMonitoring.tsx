@@ -585,8 +585,9 @@ function KioskControlPanel({
         </button>
       </div>
       <p className="text-[11px] text-gray-500 mt-2">
-        Camera off: the tester can still log in and take the survey but cannot record. Kiosk off: the tester also cannot join rooms.
-        Turning either off, or ending the session, saves a live session as incomplete and sends the tester to the survey.
+        Camera off: stops a live recording (saved as incomplete) and turns the tester's camera off; they stay on the
+        session page and can record again once you turn it back on. Kiosk off: the tester also cannot join rooms.
+        Turning the kiosk off, or ending the session, saves a live session as incomplete and sends the tester to the survey.
       </p>
       {notice && notice.testerId === kiosk.testerId ? (
         <p role="status" className={`text-[12px] font-semibold mt-2 ${notice.kind === "ok" ? "text-green-700" : "text-red-600"}`}>{notice.text}</p>

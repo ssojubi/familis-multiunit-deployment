@@ -83,7 +83,7 @@ export default function TesterSurvey() {
           </p>
           <button
             onClick={() => navigate("/")}
-            className="mt-4 bg-red-600 text-white px-4 py-2 rounded-lg"
+            className="mt-4 bg-[#e8174a] text-white px-4 py-2 rounded-lg"
           >
             Go to Login
           </button>
@@ -110,7 +110,7 @@ export default function TesterSurvey() {
       className="min-h-screen bg-[#f6f7fb]"
       style={{ fontFamily: "'Montserrat', sans-serif" }}
     >
-      <header className="bg-red-600 text-white">
+      <header className="bg-[#e8174a] text-white">
         <div className="h-[72px] px-6 flex items-center">
           <img
             src={logo}
@@ -126,7 +126,7 @@ export default function TesterSurvey() {
       <main className="px-6 py-8">
         <div className="max-w-3xl mx-auto">
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <div className="bg-red-600 px-6 py-4">
+            <div className="bg-[#e8174a] px-6 py-4">
               <h1 className="text-white text-xl font-bold">
                 Product Evaluation Survey
               </h1>
@@ -186,7 +186,7 @@ export default function TesterSurvey() {
                   value={remarks}
                   onChange={(e) => setRemarks(e.target.value)}
                   placeholder="Additional comments (optional)"
-                  className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-red-500"
+                  className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-[#e8174a]/30"
                 />
               </div>
 
@@ -196,7 +196,7 @@ export default function TesterSurvey() {
                   disabled={!allSelected || submitting}
                   className={`px-8 py-3 rounded-lg font-semibold text-white transition-colors ${
                     allSelected && !submitting
-                      ? "bg-red-600 hover:bg-red-700"
+                      ? "bg-[#e8174a] hover:bg-[#c9143f]"
                       : "bg-gray-400 cursor-not-allowed"
                   }`}
                 >
@@ -230,7 +230,7 @@ function RatingRow({
             onClick={() => onChange(rating)}
             className={`min-w-[36px] h-9 px-2 rounded-lg font-bold text-sm transition-all ${
               value === rating
-                ? "bg-red-600 text-white shadow-sm"
+                ? "bg-[#e8174a] text-white shadow-sm"
                 : "bg-gray-100 text-gray-700 hover:bg-gray-200"
             }`}
           >
