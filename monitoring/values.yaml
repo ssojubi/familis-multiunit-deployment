@@ -1,15 +1,48 @@
-# Local capstone stress-test monitoring on the kind cluster.
+# Local capstone stress-test monitoring (Docker Desktop Kubernetes, or a kind cluster).
+# Memory is capped so the stack fits beside FaMiLiS in Docker Desktop's ~6 GB VM.
 alertmanager:
+  enabled: false
+
+# On Docker Desktop and kind these control-plane components listen only inside the node,
+# so Prometheus can never scrape them; the FaMiLiS dashboards do not use them.
+kubeControllerManager:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
   enabled: false
 
 grafana:
   persistence:
     enabled: true
     size: 2Gi
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 512Mi }
+
+prometheusOperator:
+  resources:
+    requests: { cpu: 20m, memory: 64Mi }
+    limits: { memory: 192Mi }
+
+kube-state-metrics:
+  resources:
+    requests: { cpu: 10m, memory: 48Mi }
+    limits: { memory: 160Mi }
+
+prometheus-node-exporter:
+  resources:
+    requests: { cpu: 10m, memory: 24Mi }
+    limits: { memory: 96Mi }
 
 prometheus:
   prometheusSpec:
     retention: 7d
+    resources:
+      requests: { cpu: 100m, memory: 384Mi }
+      limits: { memory: 1Gi }
     serviceMonitorNamespaceSelector: {}
     serviceMonitorSelector: {}
     serviceMonitorSelectorNilUsesHelmValues: false
