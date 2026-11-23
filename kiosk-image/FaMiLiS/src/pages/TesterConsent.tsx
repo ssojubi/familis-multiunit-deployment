@@ -38,7 +38,11 @@ export default function TesterConsent() {
       setConsent(Object.fromEntries(Object.keys(payload.consent).map(key => [key, false])));
       setConsentVersion(payload.consentVersion);
       setConsentLoaded(true);
-    }).catch(() => { setError("Could not load the current consent form. Refresh this page to try again."); });
+    }).catch(() => {
+      // React runs this effect twice in development; the first request is aborted on purpose.
+      if (controller.signal.aborted) return;
+      setError("Could not load the current consent form. Refresh this page to try again.");
+    });
     return () => controller.abort();
   }, []);
 

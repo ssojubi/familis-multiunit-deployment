@@ -28,7 +28,7 @@ export default function AdminPreferences() {
   const [message, setMessage] = useState("");
   useEffect(() => {
     const controller = new AbortController();
-    void apiFetch("/api/preferences", { signal: controller.signal }).then(r => r.json()).then(j => { if (j?.ok) setValue(j.preferences); else setMessage(j?.error || "Could not load preferences."); }).catch(() => setMessage("Could not load preferences."));
+    void apiFetch("/api/preferences", { signal: controller.signal }).then(r => r.json()).then(j => { if (j?.ok) setValue(j.preferences); else setMessage(j?.error || "Could not load preferences."); }).catch(() => { if (!controller.signal.aborted) setMessage("Could not load preferences."); });
     return () => controller.abort();
   }, []);
   const updateConsent = (key: string, field: "label" | "helper", text: string) => setValue(prev => prev ? ({ ...prev, consent: { ...prev.consent, [key]: { ...prev.consent[key], [field]: text } } }) : prev);

@@ -1036,7 +1036,12 @@ async function start() {
       const isoWeek = Math.ceil((((weekDate.getTime() - isoYearStart.getTime()) / 86_400_000) + 1) / 7);
       const periodKey = preferences.backup.frequency === "monthly" ? day.slice(0, 7) : preferences.backup.frequency === "weekly" ? `${weekDate.getUTCFullYear()}-W${String(isoWeek).padStart(2, "0")}` : day;
       const [[lastRun]] = await pool.query("SELECT setting_value FROM app_settings WHERE setting_key='backup_last_run'");
-      const lastKey = lastRun ? (typeof lastRun.setting_value === "string" ? JSON.parse(lastRun.setting_value) : lastRun.setting_value) : null;
+      // setting_value is a JSON column: mysql2 usually returns it decoded ("2026-W43" as a plain
+      // string, which JSON.parse rejects), but tolerate raw JSON text too.
+      let lastKey = lastRun?.setting_value ?? null;
+      if (typeof lastKey === "string") {
+        try { const parsed = JSON.parse(lastKey); if (typeof parsed === "string") lastKey = parsed; } catch { /* already decoded */ }
+      }
       if (lastKey === periodKey) return;
 
       const [tableRows] = await pool.query("SHOW FULL TABLES WHERE Table_type = 'BASE TABLE'");
