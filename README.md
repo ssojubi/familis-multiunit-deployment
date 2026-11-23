@@ -475,8 +475,18 @@ https://<SERVER-IP>:5173
 
 ## Public Mobile Access
 
-Keep the Traefik port-forward running. Start a temporary Cloudflare tunnel in
-another terminal:
+On Windows, one command starts the tunnel in the background, publishes its URL to
+the app and opens Grafana too (`-Public` or `-Grafana` for just one; `-Stop` to end):
+
+```powershell
+.\scripts\open-familis-access.ps1
+```
+
+Quick Tunnels need `api.trycloudflare.com` and `*.argotunnel.com`; some school and
+office networks block them, in which case the script says so. Use a phone hotspot.
+
+To do it by hand instead, keep the Traefik port-forward running and start a
+temporary Cloudflare tunnel in another terminal:
 
 ```bash
 cloudflared tunnel --no-autoupdate --url https://127.0.0.1:5173 --no-tls-verify

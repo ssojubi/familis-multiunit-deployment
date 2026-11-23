@@ -27,6 +27,16 @@ try {
 
   kubectl -n familis set env deployment/familis --containers=familis PUBLIC_ACCESS_URL- *> $null
 
+  $grafanaPidFile = Join-Path $RuntimeDir "grafana-port-forward.pid"
+  if (Test-Path $grafanaPidFile) {
+    $grafanaPid = Get-Content $grafanaPidFile -ErrorAction SilentlyContinue
+    if ($grafanaPid -and (Get-Process -Id $grafanaPid -ErrorAction SilentlyContinue)) {
+      Stop-Process -Id $grafanaPid -Force
+      Write-Host "Stopped Grafana port-forward process $grafanaPid."
+    }
+    Remove-Item -LiteralPath $grafanaPidFile -Force -ErrorAction SilentlyContinue
+  }
+
   if (Test-Path $PidFile) {
     $pidValue = Get-Content $PidFile -ErrorAction SilentlyContinue
     if ($pidValue -and (Get-Process -Id $pidValue -ErrorAction SilentlyContinue)) {

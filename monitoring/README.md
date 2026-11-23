@@ -46,6 +46,9 @@ All pods should be `Running`. `preflight.py` is read-only and should print only 
 
 ## 3. Open Grafana
 
+Quickest: `.\scripts\open-familis-access.ps1 -Grafana` starts the port-forward in the
+background and prints the URL and password (stop it with `-Stop`). By hand:
+
 Get the password (username `admin`). Keep it out of reports and source control:
 
 ```powershell
