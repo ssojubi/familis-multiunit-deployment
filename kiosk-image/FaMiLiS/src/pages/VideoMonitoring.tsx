@@ -668,6 +668,9 @@ function KioskMonitorDetail() {
   const [roomId, setRoomId] = useState(() => searchParams.get("room") || getAdminRoomContext().roomId);
   const [publicAccessUrl, setPublicAccessUrl] = useState<string>("");
   const [remoteKiosks, setRemoteKiosks] = useState<RemoteKiosk[]>([]);
+  // Latest kiosks for socket handlers, which are registered once and would otherwise see stale state.
+  const remoteKiosksRef = useRef<RemoteKiosk[]>([]);
+  useEffect(() => { remoteKiosksRef.current = remoteKiosks; }, [remoteKiosks]);
   const [testerPresence, setTesterPresence] = useState<TesterPresence[]>([]);
   const sessionStatusByPeerRef = useRef<Map<string, { status: RecordingStatus; sessionId: number | null; foodName: string | null; testerId?: number; testerName: string | null }>>(new Map());
   const socketRef = useRef<Socket<ServerToClientEvents, ClientToServerEvents> | null>(
@@ -990,7 +993,28 @@ function KioskMonitorDetail() {
     return pc;
   };
 
+  // Carry what the admin had open for one tile (video shown, pinned, selected, modal) over to another.
+  // A tester gets a new socket id whenever their page reloads or the kiosk rejoins (after a survey,
+  // or a camera/kiosk re-enable), so this is keyed through the tester's account tile, not the socket.
+  // Uses state updaters only, because the socket handlers that call it are registered once.
+  const moveWatchState = useCallback((fromId: string, toId: string | null) => {
+    const moveIn = (prev: Set<string>) => {
+      if (!prev.has(fromId)) return prev;
+      const next = new Set(prev);
+      next.delete(fromId);
+      if (toId) next.add(toId);
+      return next;
+    };
+    setVisibleVideoIds(moveIn);
+    setHiddenAllVideoIds(moveIn);
+    setPinnedIds(moveIn);
+    setSelectedKioskId((current) => current === fromId ? toId : current);
+    setModalKioskId((current) => current === fromId ? toId : current);
+  }, []);
+
   const removeKiosk = useCallback((peerId: string) => {
+    const testerId = sessionStatusByPeerRef.current.get(peerId)?.testerId
+      ?? remoteKiosksRef.current.find((kiosk) => kiosk.peerId === peerId)?.testerId;
     const timer = disconnectTimerRef.current.get(peerId);
     if (timer != null) window.clearTimeout(timer);
     disconnectTimerRef.current.delete(peerId);
@@ -999,12 +1023,9 @@ function KioskMonitorDetail() {
     sessionStatusByPeerRef.current.delete(peerId);
     cameraRetryRef.current.delete(peerId);
     setRemoteKiosks((prev) => prev.filter((k) => k.peerId !== peerId));
-    setPinnedIds((prev) => { const next = new Set(prev); next.delete(peerId); return next; });
-    const setIds = layoutMode === "show-all" ? setHiddenAllVideoIds : setVisibleVideoIds;
-    setIds((prev) => { const next = new Set(prev); next.delete(peerId); return next; });
-    if (selectedKioskId === peerId) setSelectedKioskId(null);
-    if (modalKioskId === peerId) setModalKioskId(null);
-  }, [modalKioskId, selectedKioskId]);
+    // Keep the admin's view on the tester's account tile so it follows them when they reconnect.
+    moveWatchState(peerId, testerId != null ? `account:${testerId}` : null);
+  }, [moveWatchState]);
 
   const cleanupAllPeerConnections = useCallback(() => {
     peerConnectionsRef.current.forEach((pc) => pc.close());
@@ -1036,6 +1057,8 @@ function KioskMonitorDetail() {
     socketRef.current = socket;
     const retireStalePeersForTester = (activePeerId: string, testerId?: number) => {
       if (testerId == null) return;
+      // The tester is live again: whatever the admin had open on their account tile moves to this kiosk.
+      moveWatchState(`account:${testerId}`, activePeerId);
       for (const [otherPeerId, otherStatus] of sessionStatusByPeerRef.current) {
         if (otherPeerId === activePeerId || otherStatus.testerId !== testerId) continue;
         peerConnectionsRef.current.get(otherPeerId)?.close();

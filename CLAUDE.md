@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 FaMiLiS is a browser-based food testing system: testers join a testing room on a kiosk/phone, give consent, are recorded by camera while tasting, and fill in a 9-point hedonic survey. Frames are scored for facial valence (FER) and admins see live monitoring and analytics. It is deployed as a set of containers on Docker Desktop Kubernetes (namespace `familis`). `README.md` has the full first-time deployment steps (Traefik, metrics-server, certs, secrets, image load).
 
+The capstone (IT Capstone Project 2, `CAP-2518-IT`) is now named **ChauFER**; FaMiLiS is the repo and original project name. Current work is the panel-revision feature set "Admin Management, Kiosk Control, and Monitoring Improvements". [docs/context/claude-chat-handoff.md](docs/context/claude-chat-handoff.md) has its decisions, the user's confirmed answers, open questions and next steps. Read it before changing users, auth, kiosk/camera controls or monitoring. A "kiosk" is the tester's browser, tied to the tester account; all kiosk/camera controls are per tester `users` row and admin-only.
+
 ## Repository layout (big picture)
 
 - `kiosk-image/FaMiLiS/` — the main app (image `familis-app:k8s`). One container runs **both**:
@@ -26,7 +28,9 @@ Live monitoring is WebRTC between tester and admin browsers, with Socket.IO as s
 - **`server/server.js` is a single ~4000-line file** holding all routes, auth, socket handlers and background jobs. Routes declared before `app.use("/api", requireAuth)` are public (login, signup, health, public-access, consent form); everything after is authenticated.
 - **Auth:** signed token in the `familis_session` cookie (secret `AUTH_TOKEN_SECRET`, 12 h TTL). Roles are `admin`, `staff`, `tester`. Server-side gates: `requireAuth`, `requireAdmin`, `requireTabAccess(tab)` (role-to-tab permissions stored in preferences). Each request also re-checks the user row (active / `access_revoked_at`) via the pure helpers in `server/accessControl.js` — keep that module free of Express/MySQL so it stays unit-testable.
 - **Frontend routing** (`src/App.tsx`) mirrors this: `RequireAuth`, then `RequireTabAccess` for admin tabs and `RequireRole allowed={[...]}` for role-specific flows (tester pages are `Tester*` / `/tester-*`).
-- **Database schema:** `server_database/schema.sql` is the base; `server/init.js` (`initDb`, called at server start) applies idempotent migrations with `addColumnIfMissing` / `addIndexIfMissing`. Add schema changes there in the same idempotent style rather than only editing `schema.sql`, since existing MySQL volumes are not recreated.
+- **Database schema:** `server_database/schema.sql` is the base; `server/init.js` (`initDb`, called at server start) applies idempotent migrations with `addColumnIfMissing` / `addIndexIfMissing`. Add schema changes there in the same idempotent style rather than only editing `schema.sql`, since existing MySQL volumes are not recreated. `k8s/base/mysql-init-configmap.yaml` is an older, drifted copy of the schema. Seeding is non-destructive: the default admin is only recreated when no active admin exists, or when `RESET_DEFAULT_ADMIN=true`. Default testers are seeded once (flag `app_settings.default_testers_seeded`).
+- **`app_settings.setting_value` is a MySQL JSON column**, and mysql2 returns it already parsed. A stored JSON string like `"2026-W43"` comes back as a JS string, so `typeof v === "string" ? JSON.parse(v) : v` throws on it. Only parse when the value isn't already decoded.
+- Presence, room and reconnect state lives in Express process memory, so `familis` must stay a single replica.
 
 ## Commands
 
@@ -57,7 +61,7 @@ Deploying a change to the running cluster (repo root, Windows):
 
 Images are not pushed to a registry: they are `docker save`d and imported into the Docker Desktop node with `ctr`, then re-tagged to `familis-app:k8s` / `familis-central-server:latest`. Changes to `central-server/` need that image rebuilt and `central-api` + `fer-worker` restarted (README sections 6–7, 9).
 
-Useful checks: `kubectl -n familis logs deployment/familis --tail=120`, `curl -k https://localhost:5173/api/health` (needs the Traefik port-forward `kubectl -n traefik port-forward --address 0.0.0.0 svc/traefik 5173:443`).
+Check that a deploy took effect: the container serves source through Vite, so compare a file in the pod with the repo, e.g. `kubectl -n familis exec deploy/familis -- md5sum /app/familis/src/pages/VideoMonitoring.tsx` (strip CRLF on the local side before comparing). Useful checks: `kubectl -n familis logs deployment/familis --tail=120`, `curl -k https://localhost:5173/api/health` (needs the Traefik port-forward `kubectl -n traefik port-forward --address 0.0.0.0 svc/traefik 5173:443`).
 
 ## Repo conventions
 
