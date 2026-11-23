@@ -1656,6 +1656,36 @@ async function start() {
     }
   });
 
+  // Public on purpose: pipeline status only (no user data), used by the installation manual's
+  // health check and by session recovery before sign-in.
+  app.get("/api/emotion/health", async (_req, res) => {
+    try {
+      const r = await fetch(`${CENTRAL_SERVER_URL}/api/health`, { signal: AbortSignal.timeout(3000) });
+      const j = await r.json().catch(() => null);
+      const ok = r.ok && j?.status === "ok" && j?.kafka_ready === true;
+      return res.status(ok ? 200 : 503).json({
+        ok,
+        processing: "kubernetes-fer-workers",
+        emotion: {
+          modelLoaded: ok,
+          backend: "kubernetes-fer-workers",
+        },
+        central: j,
+      });
+    } catch (err) {
+      console.warn("GET /api/emotion/health: central processing unavailable:", err?.message || err);
+      return res.status(503).json({
+        ok: false,
+        processing: "kubernetes-fer-workers",
+        emotion: {
+          modelLoaded: false,
+          backend: "kubernetes-fer-workers",
+        },
+        error: "Central API or Kafka is unavailable.",
+      });
+    }
+  });
+
   app.use("/api", requireAuth);
 
   app.get("/api/auth/me", (req, res) => {
@@ -3361,33 +3391,6 @@ async function start() {
   });
 
   // Processing health used by the recording screens.
-  app.get("/api/emotion/health", async (_req, res) => {
-    try {
-      const r = await fetch(`${CENTRAL_SERVER_URL}/api/health`, { signal: AbortSignal.timeout(3000) });
-      const j = await r.json().catch(() => null);
-      const ok = r.ok && j?.status === "ok" && j?.kafka_ready === true;
-      return res.status(ok ? 200 : 503).json({
-        ok,
-        processing: "kubernetes-fer-workers",
-        emotion: {
-          modelLoaded: ok,
-          backend: "kubernetes-fer-workers",
-        },
-        central: j,
-      });
-    } catch (err) {
-      console.warn("GET /api/emotion/health: central processing unavailable:", err?.message || err);
-      return res.status(503).json({
-        ok: false,
-        processing: "kubernetes-fer-workers",
-        emotion: {
-          modelLoaded: false,
-          backend: "kubernetes-fer-workers",
-        },
-        error: "Central API or Kafka is unavailable.",
-      });
-    }
-  });
 
   // Validate the session, then queue the frame for Kubernetes FER processing.
   app.post(
