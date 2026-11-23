@@ -1,0 +1,12 @@
+# Make familis-tls Traefik's default certificate. Browsers that open the site by IP
+# (https://<SERVER-IP>) send no SNI hostname, so without this Traefik answers with its
+# self-signed "TRAEFIK DEFAULT CERT", which devices cannot trust even after installing
+# certs/familis-ca.cer. Traefik only reads a TLSStore named "default".
+apiVersion: traefik.io/v1alpha1
+kind: TLSStore
+metadata:
+  name: default
+  namespace: familis
+spec:
+  defaultCertificate:
+    secretName: familis-tls

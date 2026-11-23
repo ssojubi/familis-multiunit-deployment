@@ -17,3 +17,4 @@ FaMiLiS/**/*.pyc
 venv/
 Thumbs.db
 .DS_Store
+FaMiLiS/server/uploads/backups/

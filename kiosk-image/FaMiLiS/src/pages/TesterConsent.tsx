@@ -38,7 +38,11 @@ export default function TesterConsent() {
       setConsent(Object.fromEntries(Object.keys(payload.consent).map(key => [key, false])));
       setConsentVersion(payload.consentVersion);
       setConsentLoaded(true);
-    }).catch(() => { setError("Could not load the current consent form. Refresh this page to try again."); });
+    }).catch(() => {
+      // React runs this effect twice in development; the first request is aborted on purpose.
+      if (controller.signal.aborted) return;
+      setError("Could not load the current consent form. Refresh this page to try again.");
+    });
     return () => controller.abort();
   }, []);
 
@@ -74,7 +78,7 @@ export default function TesterConsent() {
       className="min-h-screen bg-[#f6f7fb]"
       style={{ fontFamily: "'Montserrat', sans-serif" }}
     >
-      <header className="bg-red-600 text-white">
+      <header className="bg-[#e8174a] text-white">
         <div className="h-[72px] px-6 flex items-center">
           <img
             src={logo}
@@ -90,7 +94,7 @@ export default function TesterConsent() {
       <main className="px-6 py-10">
         <div className="max-w-2xl mx-auto">
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <div className="bg-red-600 px-6 py-4">
+            <div className="bg-[#e8174a] px-6 py-4">
               <h1 className="text-white text-xl font-bold">
                 Informed Consent Form
               </h1>
@@ -146,7 +150,7 @@ export default function TesterConsent() {
                     id="consent"
                     checked={consent}
                     onChange={(e) => setConsent(e.target.checked)}
-                    className="mt-1 w-4 h-4 accent-red-600"
+                    className="mt-1 w-4 h-4 accent-[#e8174a]"
                   />
                   <label htmlFor="consent" className="text-sm text-gray-700">
                     I have read and understood the information above. I

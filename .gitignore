@@ -14,3 +14,6 @@ kiosk-image/FaMiLiS/key.pem
 __pycache__/
 *.py[cod]
 familis-app-k8s-hotfix.tar
+
+# Local scheduled backups (contain password hashes)
+kiosk-image/FaMiLiS/server/uploads/backups/

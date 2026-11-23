@@ -164,7 +164,7 @@ export function PageHeader({
   }, [role]);
   const hasTabAccess = (tab: string) => role === "admin" || Boolean(role && roleTabAccess[role]?.includes(tab));
   const canSeeParticipants = hasTabAccess("participants");
-  const canSeeUsers = hasTabAccess("users");
+  const canSeeUsers = role === "admin"; // user management is administrator-only
   const canSeeFood = hasTabAccess("food");
   const { collapsed, canToggle, toggle } = useSidebarCollapse(variant);
   const isMinimal = shell === "minimal";

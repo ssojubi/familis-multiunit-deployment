@@ -2,6 +2,7 @@ import { useState } from "react";
 
 type UserPasswordModalProps = {
   username: string;
+  isSelf?: boolean;
   saving?: boolean;
   error?: string | null;
   onClose: () => void;
@@ -13,6 +14,7 @@ const inputClass =
 
 export function UserPasswordModal({
   username,
+  isSelf = false,
   saving = false,
   error = null,
   onClose,
@@ -33,10 +35,11 @@ export function UserPasswordModal({
         aria-labelledby="user-password-title"
       >
         <h2 id="user-password-title" className="text-gray-900 font-bold mb-1">
-          Set password
+          Reset access
         </h2>
         <p className="text-sm text-gray-500 mb-4">
-          Set a new password for <span className="font-semibold text-gray-700">{username}</span>.
+          Set a temporary password for <span className="font-semibold text-gray-700">{username}</span>
+          {isSelf ? "." : " and sign them out of every device."}
         </p>
 
         <div className="space-y-3">
@@ -75,7 +78,7 @@ export function UserPasswordModal({
           <p className="text-xs text-red-600 mt-3">{error}</p>
         ) : (
           <p className="text-xs text-gray-400 mt-3">
-            Please inform the user of the new password change.
+            Share the temporary password with the user privately.
           </p>
         )}
 
@@ -98,7 +101,7 @@ export function UserPasswordModal({
                 : "bg-gray-200 text-gray-400 cursor-not-allowed"
             }`}
           >
-            {saving ? "Saving…" : "Update password"}
+            {saving ? "Resetting…" : "Reset access"}
           </button>
         </div>
       </div>

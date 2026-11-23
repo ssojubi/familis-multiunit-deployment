@@ -6,6 +6,8 @@ COPY FaMiLiS/package.json FaMiLiS/package-lock.json ./
 RUN npm ci
 
 COPY FaMiLiS ./
+# Production frontend bundle (served by `vite preview` in start.sh).
+RUN npm run build
 COPY start.sh /app/start.sh
 
 RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh

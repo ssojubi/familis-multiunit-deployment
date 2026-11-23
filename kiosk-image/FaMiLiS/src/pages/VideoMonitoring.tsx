@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, type ReactNode } from "react";
 import { io, Socket } from "socket.io-client";
 import { useSearchParams } from "react-router-dom";
 import { getApiBase, getSocketUrl } from "../apiConfig";
@@ -10,12 +10,16 @@ import { receivePeerSignal } from "../lib/peerSignaling";
 
 type RecordingStatus = "ready" | "recording" | "paused" | "completed";
 type PresenceStage = "logged_in" | "consent_pending" | "ready" | "survey";
+type CameraState = "on" | "off" | "blocked" | "unavailable";
+type TesterAccount = { id: number; username: string; kioskEnabled?: boolean; cameraEnabled?: boolean; lastFrameAt?: number | null };
+type ControlNotice = { testerId: number; kind: "ok" | "error"; text: string };
 type TesterPresence = {
   testerId: number;
   testerName: string;
   stage: PresenceStage;
   roomCode: string | null;
   foodName: string | null;
+  cameraState?: CameraState | null;
 };
 
 
@@ -51,6 +55,7 @@ interface ServerToClientEvents {
   "tester-logged-out": (data: { testerId: number }) => void;
   "tester-reconnecting": (data: { testerId: number; sessionId: number; deadline: number; serverNow: number }) => void;
   "tester-reconnect-expired": (data: { testerId: number; sessionId: number }) => void;
+  "kiosk-controls-updated": (data: { testerId: number; kioskEnabled: boolean; cameraEnabled: boolean }) => void;
 }
 
 interface ClientToServerEvents {
@@ -79,11 +84,15 @@ type RemoteKiosk = {
   workflowStage?: PresenceStage | null;
   roomCode?: string | null;
   reconnectDeadline?: number | null;
+  kioskEnabled?: boolean;
+  cameraEnabled?: boolean;
+  lastFrameAt?: number | null;
+  cameraState?: CameraState | null;
 };
 
 type ActiveRoom = { id: number; roomCode: string; foodId: number; foodName: string; sessionsActive: number };
 type LayoutMode = "icon-grid" | "sidebar-spotlight" | "pinned-grid" | "show-all";
-type StatusFilter = "all" | "streaming" | "reconnecting" | "idle" | "offline";
+type StatusFilter = "all" | "streaming" | "reconnecting" | "idle" | "offline" | "disabled";
 type KioskSort = "tester-asc" | "tester-desc" | "food-asc" | "food-desc";
 
 const MAX_PINNED = 4;
@@ -231,6 +240,7 @@ function KioskStatusTile({
             </div>
             <StatusBadge state={kiosk.connectionState} />
             <WorkflowStatus kiosk={kiosk} />
+            <KioskFlags kiosk={kiosk} />
             {kiosk.foodName ? (
               <p className="text-[11px] text-gray-500 mt-1.5 truncate">
                 🍽️ {kiosk.foodName}
@@ -399,9 +409,11 @@ function LiveVideoView({ stream, connectionState, reconnectDeadline, sessionId, 
 function VideoModal({
   kiosk,
   onClose,
+  controls = null,
 }: {
   kiosk: RemoteKiosk;
   onClose: () => void;
+  controls?: ReactNode;
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -409,7 +421,7 @@ function VideoModal({
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
 
       {/* Modal content */}
-      <div className="relative bg-white rounded-2xl shadow-2xl overflow-hidden w-[90vw] max-w-4xl max-h-[90vh] flex flex-col z-10">
+      <div className="relative bg-white rounded-2xl shadow-2xl w-[90vw] max-w-3xl max-h-[90vh] overflow-y-auto flex flex-col z-10">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-200 bg-gray-50/80">
           <div className="flex items-center gap-3 min-w-0">
@@ -440,9 +452,12 @@ function VideoModal({
         </div>
 
         {/* Video */}
-        <div className="aspect-video bg-black">
+        <div className="aspect-video bg-black w-full max-h-[40vh] shrink-0">
           <LiveVideoView stream={kiosk.stream} connectionState={kiosk.connectionState} reconnectDeadline={kiosk.reconnectDeadline} sessionId={kiosk.sessionId} recordingStatus={kiosk.status} />
         </div>
+
+        <div className="px-5 pt-2"><KioskFlags kiosk={kiosk} /></div>
+        {controls}
 
         {/* Footer info */}
         <div className="px-5 py-3 border-t border-gray-200 bg-gray-50/50">
@@ -500,6 +515,87 @@ function LayoutSwitcher({
 
 /* ──────────────────────────── Status Filter ──────────────────────────── */
 
+type KioskControlPatch = { kioskEnabled?: boolean; cameraEnabled?: boolean };
+
+/** Small status chips shown on every kiosk card: disabled switches, camera trouble, stalled frames. */
+function KioskFlags({ kiosk }: { kiosk: RemoteKiosk }) {
+  const [now, setNow] = useState(() => Date.now());
+  const streaming = kiosk.connectionState === "streaming" && kiosk.lastFrameAt != null;
+  useEffect(() => {
+    if (!streaming) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 2000);
+    return () => window.clearInterval(timer);
+  }, [streaming]);
+  const chips: Array<{ text: string; className: string }> = [];
+  if (kiosk.kioskEnabled === false) chips.push({ text: "Kiosk off", className: "bg-red-50 text-red-700" });
+  if (kiosk.cameraEnabled === false) chips.push({ text: "Camera off", className: "bg-amber-50 text-amber-700" });
+  if (kiosk.connectionState !== "offline") {
+    if (kiosk.cameraState === "blocked") chips.push({ text: "Camera blocked in browser", className: "bg-amber-50 text-amber-700" });
+    else if (kiosk.cameraState === "off") chips.push({ text: "Camera not active", className: "bg-gray-100 text-gray-600" });
+  }
+  if (streaming) {
+    const seconds = Math.max(0, Math.round((now - (kiosk.lastFrameAt as number)) / 1000));
+    if (seconds >= 10) chips.push({ text: `No frames for ${seconds}s`, className: "bg-amber-50 text-amber-700" });
+  }
+  if (!chips.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1 mt-1.5">
+      {chips.map((chip) => (
+        <span key={chip.text} className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${chip.className}`}>{chip.text}</span>
+      ))}
+    </div>
+  );
+}
+
+/** Admin-only switches for one tester account. Every action confirms and reports what really happened. */
+function KioskControlPanel({
+  kiosk,
+  busy,
+  notice,
+  onToggleCamera,
+  onToggleKiosk,
+  onEndSession,
+}: {
+  kiosk: RemoteKiosk;
+  busy: boolean;
+  notice: ControlNotice | null;
+  onToggleCamera: () => void;
+  onToggleKiosk: () => void;
+  onEndSession: () => void;
+}) {
+  const cameraOn = kiosk.cameraEnabled !== false;
+  const kioskOn = kiosk.kioskEnabled !== false;
+  const live = kiosk.status === "recording" || kiosk.connectionState === "streaming" || kiosk.connectionState === "reconnecting";
+  const base = "px-3 py-1.5 rounded-md text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
+  const danger = `${base} bg-red-50 text-red-700 hover:bg-red-100`;
+  const restore = `${base} bg-green-50 text-green-700 hover:bg-green-100`;
+  return (
+    <div className="px-5 py-3 border-t border-gray-200 bg-white" onClick={(event) => event.stopPropagation()}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mr-1">Admin controls</span>
+        <button type="button" disabled={busy} onClick={onToggleCamera} className={cameraOn ? danger : restore}>
+          {cameraOn ? "Disable camera" : "Enable camera"}
+        </button>
+        <button type="button" disabled={busy} onClick={onToggleKiosk} className={kioskOn ? danger : restore}>
+          {kioskOn ? "Disable kiosk" : "Enable kiosk"}
+        </button>
+        <button type="button" disabled={busy || !live} onClick={onEndSession} className={`${base} bg-gray-100 text-gray-700 hover:bg-gray-200`}>
+          End live session
+        </button>
+      </div>
+      <p className="text-[11px] text-gray-500 mt-2">
+        Camera off: stops a live recording (saved as incomplete) and turns the tester's camera off; they stay on the
+        session page and can record again once you turn it back on. Kiosk off: the tester also cannot join rooms.
+        Turning the kiosk off, or ending the session, saves a live session as incomplete and sends the tester to the survey.
+      </p>
+      {notice && notice.testerId === kiosk.testerId ? (
+        <p role="status" className={`text-[12px] font-semibold mt-2 ${notice.kind === "ok" ? "text-green-700" : "text-red-600"}`}>{notice.text}</p>
+      ) : null}
+    </div>
+  );
+}
+
 function StatusFilterBar({
   value,
   onChange,
@@ -515,6 +611,7 @@ function StatusFilterBar({
     { key: "reconnecting", label: "Reconnecting" },
     { key: "idle", label: "Online" },
     { key: "offline", label: "Offline" },
+    { key: "disabled", label: "Disabled" },
   ];
 
   return (
@@ -565,13 +662,16 @@ function KioskMonitorDetail() {
     }
     return { role: null };
   });
-  const [testerAccounts, setTesterAccounts] = useState<{ id: number; username: string }[]>([]);
+  const [testerAccounts, setTesterAccounts] = useState<TesterAccount[]>([]);
   const [activeRooms, setActiveRooms] = useState<ActiveRoom[]>([]);
   const [deactivatingRoom, setDeactivatingRoom] = useState(false);
   const [roomMessage, setRoomMessage] = useState<string | null>(null);
   const [roomId, setRoomId] = useState(() => searchParams.get("room") || getAdminRoomContext().roomId);
   const [publicAccessUrl, setPublicAccessUrl] = useState<string>("");
   const [remoteKiosks, setRemoteKiosks] = useState<RemoteKiosk[]>([]);
+  // Latest kiosks for socket handlers, which are registered once and would otherwise see stale state.
+  const remoteKiosksRef = useRef<RemoteKiosk[]>([]);
+  useEffect(() => { remoteKiosksRef.current = remoteKiosks; }, [remoteKiosks]);
   const [testerPresence, setTesterPresence] = useState<TesterPresence[]>([]);
   const sessionStatusByPeerRef = useRef<Map<string, { status: RecordingStatus; sessionId: number | null; foodName: string | null; testerId?: number; testerName: string | null }>>(new Map());
   const socketRef = useRef<Socket<ServerToClientEvents, ClientToServerEvents> | null>(
@@ -597,10 +697,16 @@ function KioskMonitorDetail() {
   // ── Derived data ──
 
   const presenceByTester = new Map(testerPresence.map((presence) => [presence.testerId, presence]));
+  const accountByTester = new Map(testerAccounts.map((account) => [account.id, account]));
   const connectedKiosks = remoteKiosks.map((kiosk) => {
     const presence = kiosk.testerId == null ? undefined : presenceByTester.get(kiosk.testerId);
+    const account = kiosk.testerId == null ? undefined : accountByTester.get(kiosk.testerId);
     return {
       ...kiosk,
+      kioskEnabled: account?.kioskEnabled ?? true,
+      cameraEnabled: account?.cameraEnabled ?? true,
+      lastFrameAt: account?.lastFrameAt ?? null,
+      cameraState: presence?.cameraState ?? null,
       label: presence?.testerName || kiosk.label,
       foodName: kiosk.foodName || presence?.foodName || null,
       workflowStage: presence?.stage ?? (kiosk.status === "recording" ? "ready" : null),
@@ -614,11 +720,14 @@ function KioskMonitorDetail() {
       return { peerId: `account:${account.id}`, testerId: account.id,
         label: presence?.testerName || account.username, stream: new MediaStream(), status: null, sessionId: null,
         foodName: presence?.foodName ?? null, connectionState: presence ? "idle" : "offline",
-        workflowStage: presence?.stage ?? null, roomCode: presence?.roomCode ?? null };
+        workflowStage: presence?.stage ?? null, roomCode: presence?.roomCode ?? null,
+        kioskEnabled: account.kioskEnabled ?? true, cameraEnabled: account.cameraEnabled ?? true,
+        lastFrameAt: account.lastFrameAt ?? null, cameraState: presence?.cameraState ?? null };
     })];
   const filteredKiosks = allKiosks.filter((k) => {
     if (foodFilter && k.foodName !== foodFilter) return false;
-    if (statusFilter !== "all" && k.connectionState !== statusFilter) return false;
+    if (statusFilter === "disabled") { if (k.kioskEnabled !== false && k.cameraEnabled !== false) return false; }
+    else if (statusFilter !== "all" && k.connectionState !== statusFilter) return false;
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       return (
@@ -657,10 +766,73 @@ function KioskMonitorDetail() {
     reconnecting: allKiosks.filter((k) => k.connectionState === "reconnecting").length,
     idle: allKiosks.filter((k) => k.connectionState === "idle").length,
     offline: allKiosks.filter((k) => k.connectionState === "offline").length,
+    disabled: allKiosks.filter((k) => k.kioskEnabled === false || k.cameraEnabled === false).length,
   };
 
   const modalKiosk = modalKioskId ? allKiosks.find((k) => k.peerId === modalKioskId) ?? null : null;
   const spotlightKiosk = selectedKioskId ? allKiosks.find((k) => k.peerId === selectedKioskId) ?? null : null;
+
+  const [controlBusy, setControlBusy] = useState(false);
+  const [controlNotice, setControlNotice] = useState<ControlNotice | null>(null);
+
+  const describeResult = (json: { endedSessions?: number; notified?: boolean }) =>
+    `${json.endedSessions ? ` ${json.endedSessions} live session${json.endedSessions === 1 ? "" : "s"} ended as incomplete.` : ""}${
+      json.notified ? " The tester's browser was notified." : " The tester's browser is not connected right now; the change is enforced on their next action."
+    }`;
+
+  const runControl = async (kiosk: RemoteKiosk, request: () => Promise<Response>, success: (json: any) => string) => {
+    if (kiosk.testerId == null) return;
+    setControlBusy(true);
+    setControlNotice(null);
+    try {
+      const response = await request();
+      const json = await response.json().catch(() => null);
+      if (!response.ok || !json?.ok) throw new Error(json?.error || "The change could not be applied.");
+      if (typeof json.kioskEnabled === "boolean" && typeof json.cameraEnabled === "boolean") {
+        setTesterAccounts((current) => current.map((account) => account.id === kiosk.testerId
+          ? { ...account, kioskEnabled: json.kioskEnabled, cameraEnabled: json.cameraEnabled } : account));
+      }
+      setControlNotice({ testerId: kiosk.testerId, kind: "ok", text: success(json) });
+    } catch (error) {
+      setControlNotice({ testerId: kiosk.testerId, kind: "error", text: error instanceof Error ? error.message : "The change could not be applied." });
+    } finally {
+      setControlBusy(false);
+    }
+  };
+
+  const setKioskControl = (kiosk: RemoteKiosk, change: KioskControlPatch) => {
+    const turningOff = change.kioskEnabled === false || change.cameraEnabled === false;
+    const what = change.kioskEnabled !== undefined ? "kiosk" : "camera";
+    const live = kiosk.status === "recording" || kiosk.connectionState === "streaming";
+    if (turningOff && !window.confirm(`Disable the ${what} for ${kiosk.label}?${live ? " Their live recording will be ended as incomplete." : ""}`)) return;
+    void runControl(
+      kiosk,
+      () => apiFetch(`/api/users/${kiosk.testerId}/kiosk-controls`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change),
+      }),
+      (json) => `${what === "kiosk" ? "Kiosk" : "Camera"} ${turningOff ? "disabled" : "enabled"} for ${kiosk.label}.${describeResult(json)}`,
+    );
+  };
+
+  const endKioskSession = (kiosk: RemoteKiosk) => {
+    if (!window.confirm(`End ${kiosk.label}'s live recording session? It will be saved as incomplete.`)) return;
+    void runControl(
+      kiosk,
+      () => apiFetch(`/api/users/${kiosk.testerId}/end-session`, { method: "POST" }),
+      (json) => json.endedSessions ? `Session ended for ${kiosk.label}.${describeResult(json)}` : `${kiosk.label} had no live session to end.`,
+    );
+  };
+
+  const renderControls = (kiosk: RemoteKiosk) => role === "viewer" && kiosk.testerId != null ? (
+    <KioskControlPanel
+      kiosk={kiosk}
+      busy={controlBusy}
+      notice={controlNotice}
+      onToggleCamera={() => setKioskControl(kiosk, { cameraEnabled: kiosk.cameraEnabled === false })}
+      onToggleKiosk={() => setKioskControl(kiosk, { kioskEnabled: kiosk.kioskEnabled === false })}
+      onEndSession={() => endKioskSession(kiosk)}
+    />
+  ) : null;
 
   // ── Data fetching (unchanged) ──
 
@@ -822,7 +994,28 @@ function KioskMonitorDetail() {
     return pc;
   };
 
+  // Carry what the admin had open for one tile (video shown, pinned, selected, modal) over to another.
+  // A tester gets a new socket id whenever their page reloads or the kiosk rejoins (after a survey,
+  // or a camera/kiosk re-enable), so this is keyed through the tester's account tile, not the socket.
+  // Uses state updaters only, because the socket handlers that call it are registered once.
+  const moveWatchState = useCallback((fromId: string, toId: string | null) => {
+    const moveIn = (prev: Set<string>) => {
+      if (!prev.has(fromId)) return prev;
+      const next = new Set(prev);
+      next.delete(fromId);
+      if (toId) next.add(toId);
+      return next;
+    };
+    setVisibleVideoIds(moveIn);
+    setHiddenAllVideoIds(moveIn);
+    setPinnedIds(moveIn);
+    setSelectedKioskId((current) => current === fromId ? toId : current);
+    setModalKioskId((current) => current === fromId ? toId : current);
+  }, []);
+
   const removeKiosk = useCallback((peerId: string) => {
+    const testerId = sessionStatusByPeerRef.current.get(peerId)?.testerId
+      ?? remoteKiosksRef.current.find((kiosk) => kiosk.peerId === peerId)?.testerId;
     const timer = disconnectTimerRef.current.get(peerId);
     if (timer != null) window.clearTimeout(timer);
     disconnectTimerRef.current.delete(peerId);
@@ -831,12 +1024,9 @@ function KioskMonitorDetail() {
     sessionStatusByPeerRef.current.delete(peerId);
     cameraRetryRef.current.delete(peerId);
     setRemoteKiosks((prev) => prev.filter((k) => k.peerId !== peerId));
-    setPinnedIds((prev) => { const next = new Set(prev); next.delete(peerId); return next; });
-    const setIds = layoutMode === "show-all" ? setHiddenAllVideoIds : setVisibleVideoIds;
-    setIds((prev) => { const next = new Set(prev); next.delete(peerId); return next; });
-    if (selectedKioskId === peerId) setSelectedKioskId(null);
-    if (modalKioskId === peerId) setModalKioskId(null);
-  }, [modalKioskId, selectedKioskId]);
+    // Keep the admin's view on the tester's account tile so it follows them when they reconnect.
+    moveWatchState(peerId, testerId != null ? `account:${testerId}` : null);
+  }, [moveWatchState]);
 
   const cleanupAllPeerConnections = useCallback(() => {
     peerConnectionsRef.current.forEach((pc) => pc.close());
@@ -868,6 +1058,8 @@ function KioskMonitorDetail() {
     socketRef.current = socket;
     const retireStalePeersForTester = (activePeerId: string, testerId?: number) => {
       if (testerId == null) return;
+      // The tester is live again: whatever the admin had open on their account tile moves to this kiosk.
+      moveWatchState(`account:${testerId}`, activePeerId);
       for (const [otherPeerId, otherStatus] of sessionStatusByPeerRef.current) {
         if (otherPeerId === activePeerId || otherStatus.testerId !== testerId) continue;
         peerConnectionsRef.current.get(otherPeerId)?.close();
@@ -956,7 +1148,14 @@ function KioskMonitorDetail() {
       const peerId = data.from;
       if (!peerId) return;
 
-      const pc = createPeerConnectionFor(peerId);
+      let pc = createPeerConnectionFor(peerId);
+      // The tester builds a brand-new connection for every offer (after a restart, or a camera/kiosk
+      // re-enable). A connection that already negotiated cannot accept it, so start over.
+      if (data.sdp?.type === "offer" && (pc.remoteDescription || pc.signalingState === "closed")) {
+        pc.close();
+        peerConnectionsRef.current.delete(peerId);
+        pc = createPeerConnectionFor(peerId);
+      }
 
       try {
         await receivePeerSignal(pc, data, (answer) => {
@@ -1003,6 +1202,16 @@ function KioskMonitorDetail() {
         return updated;
       });
 
+    });
+    socket.on("kiosk-controls-updated", ({ testerId, kioskEnabled, cameraEnabled }) => {
+      // Drop video connections to this tester; a fresh one is negotiated when they record again.
+      for (const [peerId, status] of sessionStatusByPeerRef.current) {
+        if (status.testerId !== testerId) continue;
+        peerConnectionsRef.current.get(peerId)?.close();
+        peerConnectionsRef.current.delete(peerId);
+        cameraRetryRef.current.delete(peerId);
+      }
+      setTesterAccounts((current) => current.map((account) => account.id === testerId ? { ...account, kioskEnabled, cameraEnabled } : account));
     });
     socket.on("tester-presence-snapshot", (data) => {
       const nextPresence = Array.isArray(data) ? data : [];
@@ -1257,9 +1466,11 @@ function KioskMonitorDetail() {
                           </div>
                         </div>
                       </div>
-                      <div className="aspect-video w-full max-w-[720px] self-center overflow-hidden bg-black">
+                      <div className="aspect-video w-full max-w-[720px] max-h-[40vh] self-center overflow-hidden bg-black">
                         <LiveVideoView stream={spotlightKiosk.stream} connectionState={spotlightKiosk.connectionState} reconnectDeadline={spotlightKiosk.reconnectDeadline} sessionId={spotlightKiosk.sessionId} recordingStatus={spotlightKiosk.status} />
                       </div>
+                      <div className="px-5 pt-2"><KioskFlags kiosk={spotlightKiosk} /></div>
+                      {renderControls(spotlightKiosk)}
                     </>
                   ) : (
                     <div className="aspect-video w-full max-w-[720px] self-center flex items-center justify-center text-center p-8">
@@ -1423,6 +1634,7 @@ function KioskMonitorDetail() {
         <VideoModal
           kiosk={modalKiosk}
           onClose={() => setModalKioskId(null)}
+          controls={renderControls(modalKiosk)}
         />
       ) : null}
     </PageHeader>
