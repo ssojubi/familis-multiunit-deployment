@@ -392,14 +392,15 @@ function testerSockets(userId) {
   return [...io.sockets.sockets.values()].filter((s) => Number(s.data?.auth?.id) === Number(userId));
 }
 
-// Ends every live session of a tester as incomplete (same state a manual stop leaves).
+// Ends every live session of a tester as incomplete (same state a manual stop leaves) and records
+// why, so the survey the tester is sent to afterwards does not mark the session completed.
 async function endLiveSessionsForUser(pool, userId, reason) {
   const [live] = await pool.query("SELECT session_id FROM sessions WHERE user_id = ? AND status = 'active'", [userId]);
   const sessionIds = live.map((row) => Number(row.session_id));
   if (!sessionIds.length) return { sessionIds, notified: false };
   await pool.query(
-    "UPDATE sessions SET status = 'pending', end_time = COALESCE(end_time, NOW()) WHERE session_id IN (?) AND status = 'active'",
-    [sessionIds],
+    "UPDATE sessions SET status = 'pending', end_time = COALESCE(end_time, NOW()), admin_end_reason = ? WHERE session_id IN (?) AND status = 'active'",
+    [reason, sessionIds],
   );
   clearTesterReconnectTimer(userId);
   for (const sessionId of sessionIds) sessionLastFrameActivity.delete(sessionId);
@@ -4035,10 +4036,13 @@ async function start() {
       );
 
       // Completion and the required survey commit together. A failed survey
-      // can never leave the session marked complete.
+      // can never leave the session marked complete. A session an administrator
+      // ended (camera/kiosk disabled or "End live session") keeps its survey
+      // answers but stays incomplete.
       await connection.query(
         `UPDATE sessions
-         SET status = 'completed', end_time = COALESCE(end_time, NOW())
+         SET status = IF(admin_end_reason IS NULL, 'completed', status),
+             end_time = COALESCE(end_time, NOW())
          WHERE session_id = ?`,
         [sessionId],
       );

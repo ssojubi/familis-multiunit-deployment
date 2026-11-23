@@ -139,6 +139,9 @@ export async function initDb() {
 
   await addColumnIfMissing(pool, "sessions", "testing_room_id", "INT NULL");
   await addColumnIfMissing(pool, "sessions", "invalidated_at", "TIMESTAMP NULL");
+  // Why an administrator ended this session (kiosk-disabled, camera-disabled, ended-by-admin).
+  // Such sessions stay incomplete even after the tester submits the survey.
+  await addColumnIfMissing(pool, "sessions", "admin_end_reason", "VARCHAR(32) NULL");
   await addColumnIfMissing(pool, "users", "contact_number", "VARCHAR(50) NULL");
   await addColumnIfMissing(pool, "users", "gcash_number", "VARCHAR(50) NULL");
   await addColumnIfMissing(pool, "session_consents", "consent_copy", "JSON NULL");
