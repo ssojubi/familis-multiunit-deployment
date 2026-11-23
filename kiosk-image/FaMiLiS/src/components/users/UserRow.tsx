@@ -10,6 +10,8 @@ export type UserListItem = {
   createdAt: string | null;
   lastLogin: string | null;
   isActive: boolean;
+  kioskEnabled?: boolean;
+  cameraEnabled?: boolean;
 };
 
 function formatDate(iso: string | null) {
@@ -31,15 +33,17 @@ export function UserRow({
   isSelf,
   onEdit,
   onChangeRole,
-  onSetPassword,
+  onResetAccess,
   onToggleActive,
+  onDelete,
 }: {
   user: UserListItem;
   isSelf?: boolean;
   onEdit: () => void;
   onChangeRole: () => void;
-  onSetPassword: () => void;
+  onResetAccess: () => void;
   onToggleActive: () => void;
+  onDelete: () => void;
 }) {
   return (
     <tr className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
@@ -76,16 +80,18 @@ export function UserRow({
           <button
             type="button"
             onClick={onChangeRole}
-            className="text-sm font-semibold text-gray-600 hover:text-gray-900 transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#e8174a]/40 rounded-sm"
+            disabled={isSelf}
+            title={isSelf ? "You cannot change your own role" : undefined}
+            className="disabled:opacity-40 disabled:cursor-not-allowed text-sm font-semibold text-gray-600 hover:text-gray-900 transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#e8174a]/40 rounded-sm"
           >
             Change role
           </button>
           <button
             type="button"
-            onClick={onSetPassword}
+            onClick={onResetAccess}
             className="text-sm font-semibold text-[#e8174a] hover:text-[#c9143f] transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#e8174a]/40 rounded-sm"
           >
-            Set password
+            Reset access
           </button>
           <button
             type="button"
@@ -100,6 +106,17 @@ export function UserRow({
             }`}
           >
             {user.isActive ? "Deactivate" : "Reactivate"}
+          </button>
+          <button
+            type="button"
+            onClick={onDelete}
+            disabled={isSelf}
+            title={isSelf ? "You cannot delete your own account" : undefined}
+            className={`text-sm font-semibold transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/40 rounded-sm ${
+              isSelf ? "text-gray-300 cursor-not-allowed" : "text-red-700 hover:text-red-800"
+            }`}
+          >
+            Delete
           </button>
         </div>
       </td>

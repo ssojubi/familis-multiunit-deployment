@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { PageHeader, PageTitle } from "../components/PageHeader";
 import {
   UserDeactivateDialog,
+  UserDeleteDialog,
   UserFormModal,
   UserPasswordModal,
   UserRoleDialog,
@@ -111,6 +112,10 @@ export default function AdminUsers() {
   const [passwordSaving, setPasswordSaving] = useState(false);
   const [passwordError, setPasswordError] = useState<string | null>(null);
 
+  const [deleteTarget, setDeleteTarget] = useState<UserListItem | null>(null);
+  const [deletePending, setDeletePending] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
   const [activeTarget, setActiveTarget] = useState<UserListItem | null>(null);
   const [activePending, setActivePending] = useState(false);
   const [activeError, setActiveError] = useState<string | null>(null);
@@ -143,7 +148,7 @@ export default function AdminUsers() {
 
   useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(() => setToast(null), 2500);
+    const t = setTimeout(() => setToast(null), 5000);
     return () => clearTimeout(t);
   }, [toast]);
 
@@ -317,22 +322,48 @@ export default function AdminUsers() {
     setPasswordSaving(true);
     setPasswordError(null);
     try {
-      const res = await apiFetch(`/api/users/${passwordTarget.id}`, {
-        method: "PATCH",
+      const res = await apiFetch(`/api/users/${passwordTarget.id}/reset-access`, {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password }),
       });
       const json = await res.json().catch(() => null);
       if (!res.ok || !json?.ok) {
-        throw new Error(json?.error || "Failed to update password.");
+        throw new Error(json?.error || "Failed to reset access.");
       }
+      const name = passwordTarget.username;
       setPasswordTarget(null);
-      setToast("Password updated");
+      setToast(
+        json.revoked
+          ? `Access reset for ${name}. ${json.notified ? "Live session notified and signed out." : "No live session was connected; old sign-ins are now invalid."}`
+          : "Password updated",
+      );
       await loadUsers();
     } catch (err: any) {
-      setPasswordError(err?.message || "Failed to update password.");
+      setPasswordError(err?.message || "Failed to reset access.");
     } finally {
       setPasswordSaving(false);
+    }
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!deleteTarget) return;
+    setDeletePending(true);
+    setDeleteError(null);
+    try {
+      const res = await apiFetch(`/api/users/${deleteTarget.id}`, { method: "DELETE" });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || "Failed to delete user.");
+      }
+      const name = deleteTarget.username;
+      setDeleteTarget(null);
+      setToast(`Deleted ${name}.${json.notified ? " Live session was signed out." : ""}`);
+      await loadUsers();
+    } catch (err: any) {
+      setDeleteError(err?.message || "Failed to delete user.");
+    } finally {
+      setDeletePending(false);
     }
   };
 
@@ -363,7 +394,7 @@ export default function AdminUsers() {
   return (
     <PageHeader variant="expanded">
       {toast ? (
-        <div className="fixed top-4 right-4 z-50 bg-green-600 text-white px-5 py-3 rounded-lg shadow-lg text-sm font-semibold">
+        <div className="fixed top-4 right-4 z-50 max-w-sm bg-green-600 text-white px-5 py-3 rounded-lg shadow-lg text-sm font-semibold">
           {toast}
         </div>
       ) : null}
@@ -442,9 +473,13 @@ export default function AdminUsers() {
                           setRoleError(null);
                           setRoleTarget(u);
                         }}
-                        onSetPassword={() => {
+                        onResetAccess={() => {
                           setPasswordError(null);
                           setPasswordTarget(u);
+                        }}
+                        onDelete={() => {
+                          setDeleteError(null);
+                          setDeleteTarget(u);
                         }}
                         onToggleActive={() => {
                           setActiveError(null);
@@ -496,6 +531,7 @@ export default function AdminUsers() {
       {passwordTarget ? (
         <UserPasswordModal
           username={passwordTarget.username}
+          isSelf={selfId != null && selfId === passwordTarget.id}
           saving={passwordSaving}
           error={passwordError}
           onClose={() => {
@@ -504,6 +540,21 @@ export default function AdminUsers() {
             setPasswordError(null);
           }}
           onSubmit={(password) => void handlePasswordSubmit(password)}
+        />
+      ) : null}
+
+      {deleteTarget ? (
+        <UserDeleteDialog
+          username={deleteTarget.username}
+          role={deleteTarget.role}
+          pending={deletePending}
+          error={deleteError}
+          onClose={() => {
+            if (deletePending) return;
+            setDeleteTarget(null);
+            setDeleteError(null);
+          }}
+          onConfirm={() => void handleDeleteConfirm()}
         />
       ) : null}
 

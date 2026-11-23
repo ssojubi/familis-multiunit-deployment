@@ -2,6 +2,7 @@ import express from "express";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { initDb } from "./init.js";
+import { evaluateAccess, wouldLeaveNoAdmin } from "./accessControl.js";
 import multer from "multer";
 import { mkdir, readFile } from "fs/promises";
 import path from "path";
@@ -82,6 +83,7 @@ function signAuthToken(user) {
       username: String(user.username),
       email: String(user.email),
       role: String(user.role),
+      iat: Math.floor(Date.now() / 1000),
       exp: Math.floor(Date.now() / 1000) + AUTH_TOKEN_TTL_SECONDS,
     }),
   );
@@ -149,13 +151,67 @@ function setAuthCookie(req, res, user) {
   });
 }
 
-function requireAuth(req, res, next) {
+const ACCESS_CACHE_TTL_MS = 5_000;
+const accessCache = new Map();
+
+function invalidateAccessCache(userId) {
+  if (userId == null) accessCache.clear();
+  else accessCache.delete(Number(userId));
+}
+
+async function getAccessRow(userId) {
+  const id = Number(userId);
+  const cached = accessCache.get(id);
+  if (cached && Date.now() - cached.at < ACCESS_CACHE_TTL_MS) return cached.row;
+  if (!poolPromise) throw new Error("Database is not ready.");
+  const pool = await poolPromise;
+  const [rows] = await pool.query(
+    `SELECT role, is_active, kiosk_enabled, camera_enabled,
+            UNIX_TIMESTAMP(access_revoked_at) AS revoked_at_epoch
+       FROM users WHERE user_id = ?`,
+    [id],
+  );
+  const row = rows[0] ?? null;
+  accessCache.set(id, { at: Date.now(), row });
+  return row;
+}
+
+const ACCESS_DENIED_MESSAGES = {
+  missing: "This account no longer exists.",
+  inactive: "This account has been deactivated.",
+  revoked: "Your access was reset by an administrator. Please sign in again.",
+};
+
+// Verifies the signed cookie, then checks the account's current database state so
+// deactivation, deletion, and "reset access" take effect without waiting for expiry.
+async function checkAuth(auth) {
+  const row = await getAccessRow(auth.id);
+  const verdict = evaluateAccess(auth, row, AUTH_TOKEN_TTL_SECONDS);
+  if (!verdict.allowed) return { ok: false, reason: verdict.reason };
+  return {
+    ok: true,
+    auth: { ...auth, role: String(row.role) },
+    access: { kioskEnabled: Boolean(row.kiosk_enabled), cameraEnabled: Boolean(row.camera_enabled) },
+  };
+}
+
+async function requireAuth(req, res, next) {
   const auth = authFromCookieHeader(req.headers.cookie);
   if (!auth) {
     return res.status(401).json({ ok: false, error: "Authentication required." });
   }
-  req.auth = auth;
-  next();
+  try {
+    const result = await checkAuth(auth);
+    if (!result.ok) {
+      return res.status(401).json({ ok: false, error: ACCESS_DENIED_MESSAGES[result.reason] ?? "Authentication required.", code: `ACCESS_${String(result.reason).toUpperCase()}` });
+    }
+    req.auth = result.auth;
+    req.access = result.access;
+    next();
+  } catch (err) {
+    console.error("Access check failed:", err);
+    return res.status(503).json({ ok: false, error: "Could not verify access. Please retry." });
+  }
 }
 
 function requireAdmin(req, res, next) {
@@ -224,12 +280,32 @@ app.get('/config', (req, res) => {
 
 const rooms = new Map();
 
-io.use((socket, next) => {
+io.use(async (socket, next) => {
   const auth = authFromCookieHeader(socket.request.headers.cookie);
   if (!auth) return next(new Error("Authentication required."));
-  socket.data.auth = auth;
-  next();
+  try {
+    const result = await checkAuth(auth);
+    if (!result.ok) return next(new Error("Authentication required."));
+    socket.data.auth = result.auth;
+    next();
+  } catch (err) {
+    console.error("Socket access check failed:", err);
+    next(new Error("Authentication required."));
+  }
 });
+
+// Tell every live socket of an account that its access ended, then close them.
+// Returns how many sockets were reached so admin responses can report it honestly.
+function disconnectUserSockets(userId, reason = "revoked") {
+  let count = 0;
+  for (const s of io.sockets.sockets.values()) {
+    if (Number(s.data?.auth?.id) !== Number(userId)) continue;
+    s.emit("access-revoked", { reason });
+    s.disconnect(true);
+    count += 1;
+  }
+  return count;
+}
 
 const ADMIN_PRESENCE_ROOM = "__familis_admin_presence__";
 const testerPresenceSockets = new Map();
@@ -282,11 +358,62 @@ function currentTesterPresence() {
       byTester.set(presence.testerId, presence);
     }
   }
-  return [...byTester.values()].map(({ updatedAt: _updatedAt, ...presence }) => presence);
+  return [...byTester.values()].map(({ updatedAt: _updatedAt, ...presence }) => ({ ...presence, cameraState: testerCameraStatus.get(presence.testerId)?.state ?? null }));
 }
 
 function emitTesterPresenceSnapshot(target = io.to(ADMIN_PRESENCE_ROOM)) {
   target.emit("tester-presence-snapshot", currentTesterPresence());
+}
+
+
+// Admin kiosk/camera controls: runtime state and helpers.
+const testerCameraStatus = new Map();
+const testerLastFrameAt = new Map();
+
+function testerSockets(userId) {
+  return [...io.sockets.sockets.values()].filter((s) => Number(s.data?.auth?.id) === Number(userId));
+}
+
+// Ends every live session of a tester as incomplete (same state a manual stop leaves).
+async function endLiveSessionsForUser(pool, userId, reason) {
+  const [live] = await pool.query("SELECT session_id FROM sessions WHERE user_id = ? AND status = 'active'", [userId]);
+  const sessionIds = live.map((row) => Number(row.session_id));
+  if (!sessionIds.length) return { sessionIds, notified: false };
+  await pool.query(
+    "UPDATE sessions SET status = 'pending', end_time = COALESCE(end_time, NOW()) WHERE session_id IN (?) AND status = 'active'",
+    [sessionIds],
+  );
+  clearTesterReconnectTimer(userId);
+  for (const sessionId of sessionIds) sessionLastFrameActivity.delete(sessionId);
+  for (const [roomId, room] of rooms) {
+    for (const [peerId, entry] of room) {
+      if (Number(entry.status?.testerId) !== Number(userId)) continue;
+      entry.status = { ...entry.status, status: "completed" };
+      io.to(roomId).emit("tester-session-status", { ...entry.status, from: peerId });
+    }
+  }
+  const sockets = testerSockets(userId);
+  for (const s of sockets) s.emit("session-ended-by-admin", { sessionIds, reason });
+  emitTesterPresenceSnapshot();
+  return { sessionIds, notified: sockets.length > 0 };
+}
+
+// Removes a tester's sockets from their rooms without closing the connection.
+function removeTesterFromRooms(userId) {
+  for (const s of testerSockets(userId)) {
+    for (const roomId of s.data.roomIds ?? []) {
+      const room = rooms.get(roomId);
+      if (room) {
+        room.delete(s.id);
+        if (room.size === 0) rooms.delete(roomId);
+      }
+      s.leave(roomId);
+      s.to(roomId).emit("host-disconnected");
+      s.to(roomId).emit("user-disconnected", s.id);
+    }
+    s.data.roomIds?.clear();
+    s.data.roomId = null;
+  }
 }
 
 io.on('connection', (socket) => {
@@ -298,6 +425,13 @@ io.on('connection', (socket) => {
     const role = socket.data.auth.role === "admin" ? "viewer" : "host";
     try {
       const pool = await poolPromise;
+      if (socket.data.auth.role === "tester") {
+        const access = await getAccessRow(socket.data.auth.id);
+        if (!access?.kiosk_enabled) {
+          socket.emit("room-error", { error: "This kiosk was disabled by an administrator.", code: "KIOSK_DISABLED" });
+          return;
+        }
+      }
       if (normalizedRoomId.startsWith("session:")) {
         if (socket.data.auth.role !== "tester") return;
         const sessionId = Number(normalizedRoomId.slice(8));
@@ -509,6 +643,14 @@ io.on('connection', (socket) => {
     socket.to(socket.data.roomId).emit('tester-session-status', { ...entry.status, from: socket.id });
   });
 
+  socket.on('tester-camera-status', (data) => {
+    if (socket.data.auth.role !== "tester") return;
+    const state = ["on", "off", "blocked", "unavailable"].includes(data?.state) ? data.state : null;
+    if (!state) return;
+    testerCameraStatus.set(Number(socket.data.auth.id), { state, updatedAt: Date.now() });
+    emitTesterPresenceSnapshot();
+  });
+
   socket.on('disconnect', () => {
     const hadPresence = testerPresenceSockets.delete(socket.id);
     for (const roomId of socket.data.roomIds ?? []) {
@@ -531,6 +673,7 @@ io.on('connection', (socket) => {
       if (existing) clearTimeout(existing);
       const timer = setTimeout(() => {
         testerPresenceDisconnectTimers.delete(testerId);
+        testerCameraStatus.delete(testerId);
         emitTesterPresenceSnapshot();
       }, 20_000);
       timer.unref?.();
@@ -810,7 +953,10 @@ async function start() {
       };
       // Booth handoff validates credentials before it starts the session.  Do
       // not replace the operator's cookie during that validation request.
-      if (!req.body?.validateOnly) setAuthCookie(req, res, responseUser);
+      if (!req.body?.validateOnly) {
+        setAuthCookie(req, res, responseUser);
+        pool.query("UPDATE users SET last_login = NOW() WHERE user_id = ?", [user.user_id]).catch((err) => console.error("last_login update failed:", err));
+      }
       return res.json({ ok: true, user: responseUser });
     } catch (err) {
       console.error("Login error:", err);
@@ -820,8 +966,12 @@ async function start() {
 
   app.get("/api/kiosks/testers", requireAuth, requireTabAccess("monitor"), async (_req, res) => {
     try {
-      const [rows] = await pool.query("SELECT user_id, username FROM users WHERE role = 'tester' AND is_active = 1 ORDER BY username, user_id");
-      res.json({ ok: true, testers: rows.map(row => ({ id: Number(row.user_id), username: String(row.username) })) });
+      const [rows] = await pool.query("SELECT user_id, username, kiosk_enabled, camera_enabled FROM users WHERE role = 'tester' AND is_active = 1 ORDER BY username, user_id");
+      res.json({ ok: true, testers: rows.map(row => ({
+        id: Number(row.user_id), username: String(row.username),
+        kioskEnabled: Boolean(row.kiosk_enabled), cameraEnabled: Boolean(row.camera_enabled),
+        lastFrameAt: testerLastFrameAt.get(Number(row.user_id)) ?? null,
+      })) });
     } catch (error) {
       res.status(500).json({ ok: false, error: "Could not load tester accounts." });
     }
@@ -829,14 +979,15 @@ async function start() {
 
   // Admin-user management for the imported FaMiLis operator UI. These routes
   // keep the deployment's cookie authentication and MySQL pool intact.
-  app.get("/api/users", requireAuth, requireTabAccess("users"), async (_req, res) => {
+  app.get("/api/users", requireAuth, requireAdmin, async (_req, res) => {
     try {
       const [rows] = await pool.query(
-        "SELECT user_id, username, email, contact_number, gcash_number, role, is_active, created_at FROM users ORDER BY user_id DESC",
+        "SELECT user_id, username, email, contact_number, gcash_number, role, is_active, created_at, last_login, kiosk_enabled, camera_enabled FROM users ORDER BY user_id DESC",
       );
       return res.json({ ok: true, users: rows.map((user) => ({
         id: Number(user.user_id), username: user.username, email: user.email, contactNumber: user.contact_number ?? null, gcashNumber: user.gcash_number ?? null,
-        role: user.role, isActive: Boolean(user.is_active), createdAt: toIsoOrNull(user.created_at),
+        role: user.role, isActive: Boolean(user.is_active), createdAt: toIsoOrNull(user.created_at), lastLogin: toIsoOrNull(user.last_login),
+        kioskEnabled: Boolean(user.kiosk_enabled), cameraEnabled: Boolean(user.camera_enabled),
       })) });
     } catch (err) {
       console.error("GET /api/users error:", err);
@@ -852,6 +1003,7 @@ async function start() {
   }
   async function hasRoleTabAccess(role, tab) {
     if (role === "admin") return true;
+    if (tab === "users") return false; // user management is administrator-only
     const preferences = await readPreferences();
     return Boolean(preferences.roleTabAccess?.[role]?.includes(tab));
   }
@@ -931,7 +1083,7 @@ async function start() {
     if (!p || consentEntries.length === 0 || consentEntries.some(([key, field]) => !/^[a-zA-Z0-9_-]{1,64}$/.test(key) || typeof field?.label !== "string" || !field.label.trim() || field.label.length > 1000 || typeof field.helper !== "string" || field.helper.length > 3000) || !Array.isArray(p.additionalRoles) || !Number.isInteger(Number(p.frameRetentionDays)) || Number(p.frameRetentionDays) < 1 || Number(p.frameRetentionDays) > 3650 || !["daily","weekly","monthly"].includes(p.backup?.frequency) || !["local","cloud"].includes(p.backup?.destination) || (p.backup?.destination === "cloud" && !String(p.backup?.cloudUrl || "").startsWith("https://"))) return res.status(400).json({ok:false,error:"Keep a valid consent field and check the retention, role, and backup settings. Cloud backups require an HTTPS upload endpoint."});
     try {
       const additionalRoles = [...new Set(p.additionalRoles.map(v=>String(v).trim().toLowerCase()).filter(v=>/^[a-z][a-z0-9_-]{1,24}$/.test(v) && !BASE_USER_ROLES.includes(v)))];
-      const grantableTabs = new Set(["food", "participants", "stats", "monitor", "users", "preferences"]);
+      const grantableTabs = new Set(["food", "participants", "stats", "monitor", "preferences"]);
       const accessInput = p.roleTabAccess && typeof p.roleTabAccess === "object" ? p.roleTabAccess : {};
       const roleTabAccess = {
         staff: (Array.isArray(accessInput.staff) ? accessInput.staff : DEFAULT_PREFERENCES.roleTabAccess.staff).filter(tab=>grantableTabs.has(tab)),
@@ -945,7 +1097,7 @@ async function start() {
     } catch (err) { console.error("Save preferences failed:", err); return res.status(500).json({ok:false,error:"Could not save preferences."}); }
   });
 
-  app.post("/api/users", requireAuth, requireTabAccess("users"), async (req, res) => {
+  app.post("/api/users", requireAuth, requireAdmin, async (req, res) => {
     const username = String(req.body?.username || "").trim();
     const email = String(req.body?.email || "").trim().toLowerCase();
     const password = String(req.body?.password || "");
@@ -970,7 +1122,7 @@ async function start() {
     }
   });
 
-  app.patch("/api/users/:userId", requireAuth, requireTabAccess("users"), async (req, res) => {
+  app.patch("/api/users/:userId", requireAuth, requireAdmin, async (req, res) => {
     const userId = Number.parseInt(req.params.userId, 10);
     if (!Number.isFinite(userId)) return res.status(400).json({ ok: false, error: "Invalid user id." });
     const fields = [];
@@ -983,14 +1135,172 @@ async function start() {
     if (req.body?.role != null && [...BASE_USER_ROLES, ...(await readPreferences()).additionalRoles].includes(req.body.role)) { fields.push("role = ?"); values.push(req.body.role); }
     if (req.body?.isActive != null) { fields.push("is_active = ?"); values.push(req.body.isActive ? 1 : 0); }
     if (!fields.length) return res.status(400).json({ ok: false, error: "No valid changes supplied." });
+    const passwordIdx = fields.indexOf("password_hash = ?");
+    const roleIdx = fields.indexOf("role = ?");
+    const activeIdx = fields.indexOf("is_active = ?");
+    if (passwordIdx >= 0 && String(req.body.password).length < 6) {
+      return res.status(400).json({ ok: false, error: "Password must be at least 6 characters." });
+    }
     try {
+      const [[target]] = await pool.query("SELECT role, is_active FROM users WHERE user_id = ?", [userId]);
+      if (!target) return res.status(404).json({ ok: false, error: "User not found." });
+      const isSelf = userId === Number(req.auth.id);
+      const targetActive = Boolean(target.is_active);
+      const newRole = roleIdx >= 0 ? values[roleIdx] : target.role;
+      const newActive = activeIdx >= 0 ? Number(values[activeIdx]) === 1 : targetActive;
+      if (isSelf && (newRole !== target.role || newActive !== targetActive)) {
+        return res.status(400).json({ ok: false, error: "You cannot change your own role or active status." });
+      }
+      if (target.role === "admin" && targetActive && (newRole !== "admin" || !newActive)) {
+        const [admins] = await pool.query("SELECT user_id FROM users WHERE role = 'admin' AND is_active = 1");
+        if (wouldLeaveNoAdmin(admins.map((r) => Number(r.user_id)), userId)) {
+          return res.status(409).json({ ok: false, error: "At least one active administrator must remain." });
+        }
+      }
+      const revoke = !isSelf && (passwordIdx >= 0 || newRole !== target.role || !newActive);
+      if (revoke) fields.push("access_revoked_at = NOW()");
       values.push(userId);
       const [result] = await pool.query(`UPDATE users SET ${fields.join(", ")} WHERE user_id = ?`, values);
       if (!result.affectedRows) return res.status(404).json({ ok: false, error: "User not found." });
-      return res.json({ ok: true });
+      invalidateAccessCache(userId);
+      const notified = revoke ? disconnectUserSockets(userId, "revoked") > 0 : false;
+      return res.json({ ok: true, revoked: revoke, notified });
     } catch (err) {
       if (err?.code === "ER_DUP_ENTRY") return res.status(409).json({ ok: false, error: "That email is already in use." });
       console.error("PATCH /api/users error:", err);
+      return res.status(500).json({ ok: false, error: "Server error." });
+    }
+  });
+
+  // Admin-only: set a temporary password and sign the account out everywhere.
+  app.post("/api/users/:userId/reset-access", requireAuth, requireAdmin, async (req, res) => {
+    const userId = Number.parseInt(req.params.userId, 10);
+    if (!Number.isFinite(userId)) return res.status(400).json({ ok: false, error: "Invalid user id." });
+    const password = String(req.body?.password || "");
+    if (password.length < 6) return res.status(400).json({ ok: false, error: "Password must be at least 6 characters." });
+    try {
+      const isSelf = userId === Number(req.auth.id);
+      const hash = await bcrypt.hash(password, 10);
+      // Resetting your own access only changes the password; revoking would sign you out mid-action.
+      const [result] = await pool.query(
+        `UPDATE users SET password_hash = ?${isSelf ? "" : ", access_revoked_at = NOW()"} WHERE user_id = ?`,
+        [hash, userId],
+      );
+      if (!result.affectedRows) return res.status(404).json({ ok: false, error: "User not found." });
+      invalidateAccessCache(userId);
+      const notified = isSelf ? false : disconnectUserSockets(userId, "revoked") > 0;
+      return res.json({ ok: true, revoked: !isSelf, notified });
+    } catch (err) {
+      console.error("POST /api/users/:userId/reset-access error:", err);
+      return res.status(500).json({ ok: false, error: "Server error." });
+    }
+  });
+
+  // Admin-only hard delete. Removes the account, its sessions/frames, and its participant row.
+  app.delete("/api/users/:userId", requireAuth, requireAdmin, async (req, res) => {
+    const userId = Number.parseInt(req.params.userId, 10);
+    if (!Number.isFinite(userId)) return res.status(400).json({ ok: false, error: "Invalid user id." });
+    if (userId === Number(req.auth.id)) {
+      return res.status(400).json({ ok: false, error: "You cannot delete your own account." });
+    }
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [[target]] = await connection.query("SELECT user_id, email, role, is_active FROM users WHERE user_id = ? FOR UPDATE", [userId]);
+      if (!target) {
+        await connection.rollback();
+        return res.status(404).json({ ok: false, error: "User not found." });
+      }
+      if (target.role === "admin" && target.is_active) {
+        const [admins] = await connection.query("SELECT user_id FROM users WHERE role = 'admin' AND is_active = 1 FOR UPDATE");
+        if (wouldLeaveNoAdmin(admins.map((r) => Number(r.user_id)), userId)) {
+          await connection.rollback();
+          return res.status(409).json({ ok: false, error: "At least one active administrator must remain." });
+        }
+      }
+      const [sessions] = await connection.query("SELECT session_id FROM sessions WHERE user_id = ?", [userId]);
+      const sessionIds = sessions.map((s) => Number(s.session_id));
+      let frameUrls = [];
+      if (sessionIds.length) {
+        const [frames] = await connection.query("SELECT frame_image_url FROM frame_logs WHERE session_id IN (?)", [sessionIds]);
+        frameUrls = frames.map((f) => f.frame_image_url);
+        await connection.query("DELETE FROM emotion_results WHERE session_id IN (?)", [sessionIds.map(String)]);
+      }
+      let photoUrl = null;
+      if (target.email) {
+        const [[participant]] = await connection.query("SELECT participant_id, photo_url FROM participants WHERE LOWER(email) = LOWER(?) FOR UPDATE", [target.email]);
+        if (participant) {
+          photoUrl = participant.photo_url;
+          await connection.query("DELETE FROM participants WHERE participant_id = ?", [participant.participant_id]);
+        }
+      }
+      // Keep rooms this admin created alive by handing them to the acting admin.
+      await connection.query("UPDATE testing_rooms SET created_by = ? WHERE created_by = ?", [Number(req.auth.id), userId]);
+      await connection.query("DELETE FROM users WHERE user_id = ?", [userId]);
+      await connection.commit();
+      invalidateAccessCache(userId);
+      for (const sessionId of sessionIds) sessionLastFrameActivity.delete(sessionId);
+      clearTesterReconnectTimer(userId);
+      const notified = disconnectUserSockets(userId, "deleted") > 0;
+      await removeUploadedFiles([...frameUrls, photoUrl].filter(Boolean));
+      return res.json({ ok: true, deletedUserId: userId, deletedSessions: sessionIds.length, notified });
+    } catch (err) {
+      try { await connection.rollback(); } catch { /* keep original error */ }
+      console.error("DELETE /api/users/:userId error:", err);
+      return res.status(500).json({ ok: false, error: "Server error." });
+    } finally {
+      connection.release();
+    }
+  });
+
+  // Admin-only kiosk/camera switches for a tester account. Enforcement lives on the
+  // server (sessions/start, frames, room validation, socket join), not just in the UI.
+  app.patch("/api/users/:userId/kiosk-controls", requireAuth, requireAdmin, async (req, res) => {
+    const userId = Number.parseInt(req.params.userId, 10);
+    if (!Number.isFinite(userId)) return res.status(400).json({ ok: false, error: "Invalid user id." });
+    const { kioskEnabled, cameraEnabled } = req.body ?? {};
+    if ((kioskEnabled !== undefined && typeof kioskEnabled !== "boolean") || (cameraEnabled !== undefined && typeof cameraEnabled !== "boolean")
+      || (kioskEnabled === undefined && cameraEnabled === undefined)) {
+      return res.status(400).json({ ok: false, error: "Provide kioskEnabled and/or cameraEnabled as booleans." });
+    }
+    try {
+      const [[target]] = await pool.query("SELECT role, kiosk_enabled, camera_enabled FROM users WHERE user_id = ?", [userId]);
+      if (!target) return res.status(404).json({ ok: false, error: "User not found." });
+      if (target.role !== "tester") return res.status(400).json({ ok: false, error: "Kiosk controls apply to tester accounts only." });
+      const nextKiosk = kioskEnabled ?? Boolean(target.kiosk_enabled);
+      const nextCamera = cameraEnabled ?? Boolean(target.camera_enabled);
+      await pool.query("UPDATE users SET kiosk_enabled = ?, camera_enabled = ? WHERE user_id = ?", [nextKiosk ? 1 : 0, nextCamera ? 1 : 0, userId]);
+      invalidateAccessCache(userId);
+      let ended = { sessionIds: [], notified: false };
+      if (!nextKiosk || !nextCamera) {
+        ended = await endLiveSessionsForUser(pool, userId, !nextKiosk ? "kiosk-disabled" : "camera-disabled");
+      }
+      if (!nextKiosk) removeTesterFromRooms(userId);
+      const sockets = testerSockets(userId);
+      for (const s of sockets) s.emit("kiosk-controls-changed", { kioskEnabled: nextKiosk, cameraEnabled: nextCamera });
+      io.to(ADMIN_PRESENCE_ROOM).emit("kiosk-controls-updated", { testerId: userId, kioskEnabled: nextKiosk, cameraEnabled: nextCamera });
+      return res.json({
+        ok: true, kioskEnabled: nextKiosk, cameraEnabled: nextCamera,
+        endedSessions: ended.sessionIds.length, notified: sockets.length > 0,
+      });
+    } catch (err) {
+      console.error("PATCH /api/users/:userId/kiosk-controls error:", err);
+      return res.status(500).json({ ok: false, error: "Server error." });
+    }
+  });
+
+  // Admin-only: end a tester's live recording session (stored as incomplete).
+  app.post("/api/users/:userId/end-session", requireAuth, requireAdmin, async (req, res) => {
+    const userId = Number.parseInt(req.params.userId, 10);
+    if (!Number.isFinite(userId)) return res.status(400).json({ ok: false, error: "Invalid user id." });
+    try {
+      const [[target]] = await pool.query("SELECT role FROM users WHERE user_id = ?", [userId]);
+      if (!target) return res.status(404).json({ ok: false, error: "User not found." });
+      if (target.role !== "tester") return res.status(400).json({ ok: false, error: "Only tester sessions can be ended here." });
+      const ended = await endLiveSessionsForUser(pool, userId, "ended-by-admin");
+      return res.json({ ok: true, endedSessions: ended.sessionIds.length, notified: ended.notified });
+    } catch (err) {
+      console.error("POST /api/users/:userId/end-session error:", err);
       return res.status(500).json({ ok: false, error: "Server error." });
     }
   });
@@ -1318,7 +1628,7 @@ async function start() {
   app.use("/api", requireAuth);
 
   app.get("/api/auth/me", (req, res) => {
-    return res.json({ ok: true, user: req.auth });
+    return res.json({ ok: true, user: req.auth, access: req.access });
   });
 
   app.post("/api/logout", (req, res) => {
@@ -2475,6 +2785,9 @@ async function start() {
         error: "Select an active food test and enter its six-digit room code.",
       });
     }
+    if (req.auth.role === "tester" && !req.access?.kioskEnabled) {
+      return res.status(403).json({ ok: false, code: "KIOSK_DISABLED", error: "This kiosk was disabled by an administrator." });
+    }
 
     try {
       const [rows] = await pool.query(
@@ -2676,6 +2989,10 @@ async function start() {
 
     if (!Number.isFinite(uId) || !Number.isFinite(fId) || (pId != null && !Number.isFinite(pId)) || (kId != null && !Number.isFinite(kId))) {
       return res.status(400).json({ ok: false, error: "userId, foodId, and optional participantId/kioskId are required." });
+    }
+    if (req.auth.role === "tester") {
+      if (!req.access?.kioskEnabled) return res.status(403).json({ ok: false, code: "KIOSK_DISABLED", error: "This kiosk was disabled by an administrator." });
+      if (!req.access?.cameraEnabled) return res.status(403).json({ ok: false, code: "CAMERA_DISABLED", error: "Recording is disabled for this kiosk by an administrator." });
     }
 
     try {
@@ -3068,9 +3385,13 @@ async function start() {
           return res.status(409).json({ ok: false, error: "Session is not active; cannot record frames." });
         }
         if (sess.invalidated_at) return res.status(409).json({ ok: false, error: "Session was invalidated; recording is disabled." });
+        if (req.auth.role === "tester" && (!req.access?.kioskEnabled || !req.access?.cameraEnabled)) {
+          return res.status(403).json({ ok: false, code: "CAMERA_DISABLED", error: "Recording is disabled for this kiosk by an administrator." });
+        }
         // Frame traffic also renews the shared deadline, including legacy recording pages.
         const serverNow = Date.now();
         sessionLastFrameActivity.set(Number(sessionId), serverNow);
+        if (req.auth.role === "tester") testerLastFrameAt.set(Number(req.auth.id), serverNow);
         for (const room of rooms.values()) {
           for (const [peerId, entry] of room) {
             if (entry.status?.status === "recording" && Number(entry.status.sessionId) === Number(sessionId)) {

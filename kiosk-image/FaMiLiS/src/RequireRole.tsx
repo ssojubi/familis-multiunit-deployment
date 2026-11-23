@@ -61,7 +61,7 @@ export function RequireTabAccess() {
             : "food";
   if (role === "admin") return <Outlet />;
   if (!access) return <div className="min-h-screen grid place-items-center text-sm text-gray-500">Checking tab access…</div>;
-  const roleTabs = access[role] || [];
+  const roleTabs = (access[role] || []).filter(tab => tab !== "users"); // users tab is administrator-only
   if (roleTabs.includes(currentTab)) return <Outlet />;
   const fallbackTab = roleTabs.find(tab => ["participants", "stats", "monitor", "users", "preferences"].includes(tab));
   if (fallbackTab) {

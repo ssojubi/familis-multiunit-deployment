@@ -143,6 +143,11 @@ export async function initDb() {
   await addColumnIfMissing(pool, "users", "gcash_number", "VARCHAR(50) NULL");
   await addColumnIfMissing(pool, "session_consents", "consent_copy", "JSON NULL");
   await addColumnIfMissing(pool, "users", "is_active", "TINYINT(1) NOT NULL DEFAULT 1");
+  // Admin access controls: forced sign-out marker and per-tester kiosk/camera switches.
+  await addColumnIfMissing(pool, "users", "access_revoked_at", "TIMESTAMP NULL");
+  await addColumnIfMissing(pool, "users", "last_login", "TIMESTAMP NULL");
+  await addColumnIfMissing(pool, "users", "kiosk_enabled", "TINYINT(1) NOT NULL DEFAULT 1");
+  await addColumnIfMissing(pool, "users", "camera_enabled", "TINYINT(1) NOT NULL DEFAULT 1");
   await addIndexIfMissing(
     pool,
     "sessions",
@@ -158,65 +163,67 @@ export async function initDb() {
 
   await pool.query(`ALTER TABLE users MODIFY role VARCHAR(50) NOT NULL DEFAULT 'tester'`);
 
+  // Seed defaults only when they are genuinely missing. Existing accounts are never
+  // modified here, so an administrator's deletes, role changes, and password resets
+  // survive restarts.
   const initialAdminPassword = "admin123";
-  const [[admin]] = await pool.query(
-    "SELECT user_id, password_hash, role FROM users WHERE email = ? LIMIT 1",
-    ["admin@familis.com"],
+  const [[adminCount]] = await pool.query(
+    "SELECT COUNT(*) AS admin_count FROM users WHERE role = 'admin' AND is_active = 1",
   );
-  if (!admin) {
+  const forceDefaultAdmin = process.env.RESET_DEFAULT_ADMIN === "true";
+  if (Number(adminCount?.admin_count ?? 0) === 0 || forceDefaultAdmin) {
+    // Recovery path: no active administrator exists (fresh database, or explicit reset).
     const adminPasswordHash = await bcrypt.hash(initialAdminPassword, 10);
-    await pool.query(
-      `
-      INSERT INTO users (username, email, password_hash, role)
-      VALUES (?, ?, ?, 'admin')
-      `,
-      ["admin", "admin@familis.com", adminPasswordHash],
+    const [[admin]] = await pool.query(
+      "SELECT user_id FROM users WHERE email = ? LIMIT 1",
+      ["admin@familis.com"],
     );
-  } else if (!(await bcrypt.compare(initialAdminPassword, admin.password_hash))) {
-    const replacementHash = await bcrypt.hash(initialAdminPassword, 10);
-    await pool.query(
-      "UPDATE users SET password_hash = ?, role = 'admin' WHERE user_id = ?",
-      [replacementHash, admin.user_id],
-    );
-    console.log("Restored the default administrator password.");
-  } else if (admin.role !== "admin") {
-    await pool.query("UPDATE users SET role = 'admin' WHERE user_id = ?", [
-      admin.user_id,
-    ]);
+    if (!admin) {
+      await pool.query(
+        "INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, 'admin')",
+        ["admin", "admin@familis.com", adminPasswordHash],
+      );
+    } else {
+      await pool.query(
+        "UPDATE users SET password_hash = ?, role = 'admin', is_active = 1, access_revoked_at = NOW() WHERE user_id = ?",
+        [adminPasswordHash, admin.user_id],
+      );
+      console.log("Restored the default administrator account.");
+    }
   }
 
-  const initialTesterPassword = "Tester123!";
-  const testerPasswordHash = await bcrypt.hash(initialTesterPassword, 10);
-  for (let number = 1; number <= 30; number += 1) {
-    const suffix = String(number).padStart(2, "0");
-    const username = `Tester ${suffix}`;
-    const email = `tester${suffix}@familis.com`;
-    const [[tester]] = await pool.query(
-      "SELECT user_id, password_hash, role FROM users WHERE email = ? LIMIT 1",
-      [email],
+  // Default tester accounts are created once. A settings flag records that seeding ran,
+  // so deleted testers are not re-created on the next start.
+  const [[seededFlag]] = await pool.query(
+    "SELECT setting_key FROM app_settings WHERE setting_key = 'default_testers_seeded' LIMIT 1",
+  );
+  if (!seededFlag) {
+    const [[existingDefaults]] = await pool.query(
+      "SELECT COUNT(*) AS default_count FROM users WHERE email REGEXP '^tester[0-9]{2}@familis[.]com$'",
     );
-    if (!tester) {
-      await pool.query(
-        "INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, 'tester')",
-        [username, email, testerPasswordHash],
-      );
-    } else if (!(await bcrypt.compare(initialTesterPassword, tester.password_hash))) {
-      await pool.query(
-        "UPDATE users SET password_hash = ?, role = 'tester' WHERE user_id = ?",
-        [testerPasswordHash, tester.user_id],
-      );
-    } else if (tester.role !== "tester") {
-      await pool.query("UPDATE users SET role = 'tester' WHERE user_id = ?", [
-        tester.user_id,
-      ]);
+    if (Number(existingDefaults?.default_count ?? 0) === 0) {
+      const initialTesterPassword = "Tester123!";
+      const testerPasswordHash = await bcrypt.hash(initialTesterPassword, 10);
+      for (let number = 1; number <= 30; number += 1) {
+        const suffix = String(number).padStart(2, "0");
+        const username = `Tester ${suffix}`;
+        const email = `tester${suffix}@familis.com`;
+        await pool.query(
+          "INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, 'tester')",
+          [username, email, testerPasswordHash],
+        );
+        await pool.query(
+          `INSERT INTO participants (name, email, tester_label)
+           SELECT ?, ?, ?
+           WHERE NOT EXISTS (
+             SELECT 1 FROM participants WHERE LOWER(email) = LOWER(?)
+           )`,
+          [username, email, `T-${suffix}`, email],
+        );
+      }
     }
     await pool.query(
-      `INSERT INTO participants (name, email, tester_label)
-       SELECT ?, ?, ?
-       WHERE NOT EXISTS (
-         SELECT 1 FROM participants WHERE LOWER(email) = LOWER(?)
-       )`,
-      [username, email, `T-${suffix}`, email],
+      "INSERT INTO app_settings (setting_key, setting_value) VALUES ('default_testers_seeded', JSON_QUOTE('true'))",
     );
   }
 

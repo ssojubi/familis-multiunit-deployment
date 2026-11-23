@@ -3,6 +3,7 @@ import {
   Outlet,
   type NavigateFunction,
   useLocation,
+  useNavigate,
 } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { useRef } from "react";
@@ -139,6 +140,9 @@ type PresenceStage = "logged_in" | "consent_pending" | "ready" | "survey";
 
 function TesterPresence() {
   const location = useLocation();
+  const navigate = useNavigate();
+  const navigateRef = useRef(navigate);
+  useEffect(() => { navigateRef.current = navigate; }, [navigate]);
   const socketRef = useRef<Socket | null>(null);
   const latestRef = useRef<{ stage: PresenceStage; roomCode: string }>({
     stage: "logged_in",
@@ -180,8 +184,15 @@ function TesterPresence() {
     socketRef.current = socket;
     const publish = () => socket.emit("tester-presence-update", latestRef.current);
     socket.on("connect", publish);
+    // An administrator deleted, deactivated, or reset this account: sign out here too.
+    const endSession = () => performLogout(navigateRef.current, { clearSession: true });
+    socket.on("access-revoked", endSession);
+    socket.on("connect_error", (error) => {
+      if (error?.message === "Authentication required.") endSession();
+    });
     return () => {
       socket.off("connect", publish);
+      socket.off("access-revoked", endSession);
       socket.disconnect();
       socketRef.current = null;
     };

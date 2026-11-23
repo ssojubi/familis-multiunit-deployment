@@ -30,6 +30,9 @@ type ServerToClientEvents = {
   "stream-stop": (data: { from?: string }) => void;
   "user-disconnected": (peerId: string) => void;
   "session-reconnect-expired": (data: { sessionId?: number }) => void;
+  "session-ended-by-admin": (data: { sessionIds: number[]; reason: string }) => void;
+  "kiosk-controls-changed": (data: { kioskEnabled: boolean; cameraEnabled: boolean }) => void;
+  "room-error": (data: { error: string; code?: string }) => void;
   signal: (data: {
     from?: string;
     sdp?: RTCSessionDescriptionInit;
@@ -37,7 +40,10 @@ type ServerToClientEvents = {
   }) => void;
 };
 
+type CameraState = "on" | "off" | "blocked" | "unavailable";
+
 type ClientToServerEvents = {
+  "tester-camera-status": (data: { state: CameraState }) => void;
   "tester-recording-heartbeat": () => void;
   "join-room": (roomId: string) => void;
   signal: (data: {
@@ -117,6 +123,80 @@ export default function TesterSession() {
   const [testerContext] = useState(() =>
     captureTesterContext(window.location.search),
   );
+
+  const [controls, setControls] = useState({ kioskEnabled: true, cameraEnabled: true });
+  const controlsRef = useRef(controls);
+  const cameraStateRef = useRef<CameraState | null>(null);
+  const lastAdminEndRef = useRef(0);
+
+  function reportCameraState(state: CameraState) {
+    cameraStateRef.current = state;
+    socketRef.current?.emit("tester-camera-status", { state });
+  }
+
+  function stopCameraStream() {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    reportCameraState("off");
+  }
+
+  // Called when an administrator ends the live session (or the server refuses frames).
+  function handleAdminEnded(reason: string, endedSessionId?: number | null) {
+    const endedId = endedSessionId ?? sessionIdRef.current;
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    const wasRecording = isRecordingRef.current;
+    isRecordingRef.current = false;
+    sessionIdRef.current = null;
+    latestStatusRef.current = null;
+    lastAdminEndRef.current = Date.now();
+    localStorage.removeItem(ACTIVE_TESTER_SESSION_KEY);
+    cleanupPeerConnection();
+    setIsRecording(false);
+    setSessionId(null);
+    setStatus("ready");
+    if (reason === "camera-disabled" || reason === "kiosk-disabled") stopCameraStream();
+    setMessage(
+      reason === "camera-disabled"
+        ? "An administrator disabled recording for this kiosk. Your session was ended as incomplete. Taking you to the survey…"
+        : reason === "kiosk-disabled"
+          ? "An administrator disabled this kiosk. Your session was ended as incomplete. Taking you to the survey…"
+          : wasRecording
+            ? "An administrator ended your recording session. It was saved as incomplete. Taking you to the survey…"
+            : "Your recording session was ended by an administrator.",
+    );
+    // Like a normal stop, move the tester on to the product evaluation survey.
+    if (endedId != null) {
+      window.setTimeout(() => navigate("/tester-survey", { state: { sessionId: endedId } }), 1500);
+    }
+  }
+
+  function applyControls(next: { kioskEnabled: boolean; cameraEnabled: boolean }) {
+    controlsRef.current = next;
+    setControls(next);
+    // Disabling the kiosk removed this browser from its room server-side; rejoin when it is back on
+    // so the admin sees this kiosk (and gets a fresh video offer) again.
+    if (!next.kioskEnabled) viewerIdsRef.current.clear();
+    else socketRef.current?.emit("join-room", roomId);
+    const justEnded = Date.now() - lastAdminEndRef.current < 3000;
+    if (!next.kioskEnabled || !next.cameraEnabled) {
+      if (!justEnded) {
+        setMessage(
+          !next.kioskEnabled
+            ? "This kiosk was disabled by an administrator. You cannot join rooms or record until it is re-enabled."
+            : "Recording was disabled by an administrator. You cannot start a session until it is re-enabled.",
+        );
+      }
+      if (!next.kioskEnabled || !next.cameraEnabled) stopCameraStream();
+    } else {
+      setMessage("Access restored. You can start a session when you're ready.");
+      void ensureCameraStream().catch(() => undefined);
+    }
+  }
+
   const roomId = testerContext.roomId || "default-tester-room";
   const foodId = testerContext.foodId;
   const kioskId = getOrCreateBrowserKioskId(testerContext.kioskId);
@@ -203,6 +283,7 @@ export default function TesterSession() {
         `[TesterSession] Socket.IO connected. Joining room "${roomId}" as host`,
       );
       socket.emit("join-room", roomId);
+      if (cameraStateRef.current) socket.emit("tester-camera-status", { state: cameraStateRef.current });
     });
 
     socket.on("session-reconnect-lease", ({ sessionId: leaseSessionId, deadline, serverNow }) => {
@@ -267,6 +348,20 @@ export default function TesterSession() {
       cleanupPeerConnection(peerId);
     });
     socket.on("session-reconnect-expired", () => expireDisconnectedSession());
+    socket.on("session-ended-by-admin", ({ reason, sessionIds }) => handleAdminEnded(reason, sessionIds?.[0]));
+    socket.on("kiosk-controls-changed", (next) => applyControls(next));
+    socket.on("room-error", ({ code, error }) => {
+      if (code === "KIOSK_DISABLED") applyControls({ kioskEnabled: false, cameraEnabled: controlsRef.current.cameraEnabled });
+      else setMessage(error);
+    });
+    void fetch("/api/auth/me", { credentials: "include" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (disposed || !data?.access) return;
+        const next = { kioskEnabled: Boolean(data.access.kioskEnabled), cameraEnabled: Boolean(data.access.cameraEnabled) };
+        if (!next.kioskEnabled || !next.cameraEnabled) applyControls(next);
+      })
+      .catch(() => undefined);
 
     const handleOffline = () => {
       if (isRecordingRef.current) {
@@ -367,7 +462,9 @@ export default function TesterSession() {
       return streamRef.current;
     }
 
-    const stream = await navigator.mediaDevices.getUserMedia({
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
       video: {
         width: { ideal: 640, max: 960 },
         height: { ideal: 480, max: 720 },
@@ -375,7 +472,17 @@ export default function TesterSession() {
       },
       audio: false,
     });
+    } catch (err) {
+      reportCameraState("blocked");
+      throw err;
+    }
     streamRef.current = stream;
+    reportCameraState("on");
+    stream.getVideoTracks().forEach((track) =>
+      track.addEventListener("ended", () => {
+        if (streamRef.current === stream) reportCameraState("off");
+      }),
+    );
 
     if (videoRef.current) {
       videoRef.current.srcObject = stream;
@@ -456,6 +563,10 @@ export default function TesterSession() {
   const handleStartSession = async () => {
     if (isRecording || isStarting) return;
     setStartError(null);
+    if (!controlsRef.current.kioskEnabled || !controlsRef.current.cameraEnabled) {
+      setStartError("An administrator has disabled recording for this kiosk.");
+      return;
+    }
 
     const uId = getStoredUserId();
     const fId = foodId ? Number(foodId) : NaN;
@@ -620,6 +731,21 @@ export default function TesterSession() {
         method: "POST",
         body: fd,
       });
+      if (res.status === 401) {
+        performLogout(navigate);
+        return;
+      }
+      if (res.status === 403) {
+        const body = await res.json().catch(() => null);
+        if (body?.code === "CAMERA_DISABLED" || body?.code === "KIOSK_DISABLED") {
+          applyControls({
+            kioskEnabled: body.code !== "KIOSK_DISABLED",
+            cameraEnabled: false,
+          });
+          handleAdminEnded(body.code === "KIOSK_DISABLED" ? "kiosk-disabled" : "camera-disabled");
+          return;
+        }
+      }
       if (!res.ok) throw new Error(`Frame upload HTTP ${res.status}`);
       setFrameCount((prev) => prev + 1);
     } catch (err) {
@@ -628,6 +754,8 @@ export default function TesterSession() {
       frameInFlightRef.current = false;
     }
   };
+
+  const startBlocked = !controls.kioskEnabled || !controls.cameraEnabled;
 
   return (
     <div
@@ -680,6 +808,11 @@ export default function TesterSession() {
                 {startError && (
                   <p className="text-sm text-red-600 mt-2">{startError}</p>
                 )}
+                {startBlocked && (
+                  <p className="text-sm text-amber-700 mt-2">
+                    {!controls.kioskEnabled ? "This kiosk is disabled by an administrator." : "Recording is disabled by an administrator."}
+                  </p>
+                )}
               </div>
 
               <div className="mt-6">
@@ -698,8 +831,8 @@ export default function TesterSession() {
                   )}
                 </div>
                 <p className="text-xs text-gray-500 mt-2 text-center">
-                  Your camera is on. Start recording whenever you're ready to
-                  taste — the administrator can only watch, not control it.
+                  Your camera preview is shown here. Start recording whenever you're ready to
+                  taste — an administrator can watch, and can disable recording or end a session if needed.
                 </p>
               </div>
 
@@ -708,9 +841,9 @@ export default function TesterSession() {
                   <button
                     type="button"
                     onClick={handleStartSession}
-                    disabled={isStarting}
+                    disabled={isStarting || startBlocked}
                     className={`flex-1 py-3 rounded-lg text-sm font-semibold transition-colors ${
-                      isStarting
+                      isStarting || startBlocked
                         ? "bg-gray-200 text-gray-400 cursor-not-allowed"
                         : "bg-[#e8174a] hover:bg-[#c9143f] text-white"
                     }`}
