@@ -272,6 +272,24 @@ function getLocalIP() {
 const localIP = getLocalIP();
 const hostLanIP = process.env.HOST_LAN_IP?.trim() || "";
 const publicAccessUrl = process.env.PUBLIC_ACCESS_URL?.trim() || "";
+
+// Cached reachability of the public (Cloudflare) URL, so admin pages polling every 15 s do not
+// each trigger an outbound request. A dead Quick Tunnel fails DNS or returns a Cloudflare 5xx.
+const PUBLIC_URL_CHECK_TTL_MS = 30_000;
+const publicUrlChecks = new Map();
+async function isPublicUrlReachable(url) {
+  const cached = publicUrlChecks.get(url);
+  if (cached && Date.now() - cached.checkedAt < PUBLIC_URL_CHECK_TTL_MS) return cached.pending ?? cached.ok;
+  const pending = fetch(`${url}/api/health`, { signal: AbortSignal.timeout(4000), redirect: "manual" })
+    .then((response) => response.status < 500)
+    .catch(() => false)
+    .then((ok) => {
+      publicUrlChecks.set(url, { ok, checkedAt: Date.now() });
+      return ok;
+    });
+  publicUrlChecks.set(url, { ok: cached?.ok ?? false, checkedAt: Date.now(), pending });
+  return pending;
+}
 console.log('Using IO:', localIP);
 
 app.get('/config', (req, res) => {
@@ -883,7 +901,11 @@ async function start() {
     } catch {
       // Deployments without the local discovery service retain startup configuration.
     }
-    const url = requestTunnelUrl || (discoveredUrl ?? publicAccessUrl);
+    const configuredUrl = requestTunnelUrl || (discoveredUrl ?? publicAccessUrl);
+    // Quick Tunnel URLs die with the cloudflared process, but PUBLIC_ACCESS_URL stays set until
+    // stop-familis.ps1 clears it. Only advertise a configured URL that still reaches this app.
+    // (A request that arrived through the tunnel already proves it is up.)
+    const url = configuredUrl && (requestTunnelUrl || await isPublicUrlReachable(configuredUrl)) ? configuredUrl : "";
     res.set("Cache-Control", "no-store");
 
     return res.json({
