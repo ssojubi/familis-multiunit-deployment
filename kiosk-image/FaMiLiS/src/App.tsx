@@ -18,6 +18,7 @@ import VideoMonitoring from "./pages/VideoMonitoring";
 import TesterJoin from "./pages/TesterJoin";
 import TesterConsent from "./pages/TesterConsent";
 import TesterSession from "./pages/TesterSession";
+import TesterProfile from "./pages/TesterProfile";
 import TesterSurvey from "./pages/TesterSurvey";
 
 export default function App() {
@@ -52,6 +53,8 @@ export default function App() {
             <Route path="/session" element={<Session />} />
             <Route path="/survey" element={<Survey />} />
             {/* Retained browser-kiosk routes keep the central FER/Socket.IO pipeline available. */}
+            <Route path="/tester-history" element={<TesterProfile historyOnly />} />
+            <Route path="/tester-profile" element={<TesterProfile />} />
             <Route path="/tester-join" element={<TesterJoin />} />
             <Route path="/tester-consent" element={<TesterConsent />} />
             <Route path="/tester-session" element={<TesterSession />} />

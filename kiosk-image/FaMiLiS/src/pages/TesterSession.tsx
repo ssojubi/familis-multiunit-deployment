@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { io, Socket } from "socket.io-client";
 import { performLogout } from "../auth";
+import TesterSurvey from "./TesterSurvey";
 import logo from "../assets/logo.png";
 
 import {
@@ -653,44 +654,15 @@ export default function TesterSession() {
     }
   };
 
-  const handleStopSession = async () => {
-    const completedSessionId = sessionIdRef.current;
-    if (!isRecordingRef.current || completedSessionId == null) return;
-
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-
+  const handleCompleted = () => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    intervalRef.current = null;
     isRecordingRef.current = false;
     sessionIdRef.current = null;
     localStorage.removeItem(ACTIVE_TESTER_SESSION_KEY);
     cleanupPeerConnection();
-    setIsRecording(false);
-    setSessionId(null);
-    setStatus("completed");
-    setMessage("Recording ended. Please complete the survey to finish your session.");
-
-    try {
-      const res = await fetch(
-        `${SESSIONS_API_BASE}/api/sessions/${completedSessionId}/stop`,
-        { method: "POST" },
-      );
-      if (!res.ok) {
-        console.error("Failed to stop session on server:", res.status);
-      }
-    } catch (err) {
-      console.error("Failed to stop session:", err);
-    }
-
-    // The recording has ended, but the session is not complete until its survey is submitted.
-    broadcastStatus("ready", completedSessionId, foodName);
-
-    setTimeout(() => {
-      navigate("/tester-survey", {
-        state: { sessionId: completedSessionId },
-      });
-    }, 1500);
+    stopCameraStream();
+    broadcastStatus("completed", sessionId ?? undefined, foodName);
   };
 
   const sendFrame = async () => {
@@ -785,22 +757,17 @@ export default function TesterSession() {
       </header>
 
       <main className="px-6 py-8">
-        <div className="max-w-3xl mx-auto">
+        <div className="max-w-6xl mx-auto">
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div className="p-6">
               <h1 className="text-2xl font-bold text-gray-900 mb-2">
                 Product Testing Session
               </h1>
-              <p className="text-gray-500 text-sm">Kiosk ID: {kioskId}</p>
-              <p className="text-gray-500 text-sm">Room ID: {roomId}</p>
+              <p className="text-gray-500 text-sm">Food: {foodName || "Selected food test"}</p>
+              <p className="text-gray-500 text-sm">Session ID: {roomId}</p>
 
               <div className="mt-4 p-4 bg-gray-50 rounded-lg">
                 <p className="text-gray-700">{message}</p>
-                {sessionId && (
-                  <p className="text-sm text-gray-500 mt-2">
-                    Active session: #{sessionId}
-                  </p>
-                )}
                 {status === "recording" && (
                   <p className="text-sm text-green-600 mt-2">
                     Frames captured: {frameCount}
@@ -816,7 +783,8 @@ export default function TesterSession() {
                 )}
               </div>
 
-              <div className="mt-6">
+              <div className="grid gap-6 lg:grid-cols-2 items-start">
+              <div className="mt-6 lg:sticky lg:top-6">
                 <div className="relative bg-black rounded-lg overflow-hidden aspect-video">
                   <video
                     ref={videoRef}
@@ -837,6 +805,9 @@ export default function TesterSession() {
                 </p>
               </div>
 
+              {isRecording && sessionId && <TesterSurvey key={sessionId} recordingSessionId={sessionId} onCompleted={handleCompleted} />}
+              </div>
+
               <div className="mt-6 flex gap-4">
                 {!isRecording ? (
                   <button
@@ -852,13 +823,7 @@ export default function TesterSession() {
                     {isStarting ? "Starting..." : "▶ Start Session"}
                   </button>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={handleStopSession}
-                    className="flex-1 border border-gray-300 hover:bg-gray-50 text-gray-700 py-3 rounded-lg font-semibold transition-colors"
-                  >
-                    ⏹ Stop Session
-                  </button>
+                  <p className="text-sm text-gray-600">Complete the ratings below, then end your session.</p>
                 )}
               </div>
             </div>

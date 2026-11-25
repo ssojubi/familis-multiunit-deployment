@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { performLogout } from "../auth";
+
 import logo from "../assets/logo.png";
 
 import { getApiBase } from "../apiConfig";
@@ -8,19 +8,27 @@ import { getApiBase } from "../apiConfig";
 const API_BASE = getApiBase();
 const RATING_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
 
-export default function TesterSurvey() {
+export default function TesterSurvey({ recordingSessionId, onCompleted }: { recordingSessionId?: number; onCompleted?: () => void } = {}) {
   const location = useLocation();
   const navigate = useNavigate();
-  const sessionId = location.state?.sessionId;
+  const sessionId = recordingSessionId ?? location.state?.sessionId;
 
-  const [ratings, setRatings] = useState({
-    color: null as number | null,
-    flavorAroma: null as number | null,
-    saltSweet: null as number | null,
-    texture: null as number | null,
-    overall: null as number | null,
+  const draftKey = `familis.surveyDraft.${sessionId}`;
+  const [draft] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem(draftKey) || "null"); }
+    catch { return null; }
   });
-  const [remarks, setRemarks] = useState("");
+  const emptyRatings = { color: null, flavorAroma: null, saltSweet: null, texture: null, overall: null };
+  const [ratings, setRatings] = useState<Record<keyof typeof emptyRatings, number | null>>(() =>
+    Object.fromEntries(Object.keys(emptyRatings).map(key => {
+      const value = draft?.ratings?.[key];
+      return [key, Number.isInteger(value) && value >= 1 && value <= 9 ? value : null];
+    })) as Record<keyof typeof emptyRatings, number | null>);
+  const [remarks, setRemarks] = useState(typeof draft?.remarks === "string" ? draft.remarks : "");
+  useEffect(() => {
+    if (!sessionId) return;
+    try { sessionStorage.setItem(draftKey, JSON.stringify({ ratings, remarks })); } catch { /* Storage may be unavailable. */ }
+  }, [draftKey, sessionId, ratings, remarks]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
@@ -47,6 +55,7 @@ export default function TesterSurvey() {
     try {
       const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/survey`, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           colorRating: ratings.color,
@@ -63,12 +72,12 @@ export default function TesterSurvey() {
         throw new Error(json?.error || "Failed to submit survey.");
       }
 
+      try { sessionStorage.removeItem(draftKey); } catch { /* Optional draft storage. */ }
       setSubmitted(true);
-      setTimeout(() => {
-        performLogout(navigate);
-      }, 3000);
-    } catch (err: any) {
-      setError(err.message);
+      onCompleted?.();
+      navigate("/tester-join", { replace: true });
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not submit your ratings. Please try again.");
     } finally {
       setSubmitting(false);
     }
@@ -99,7 +108,7 @@ export default function TesterSurvey() {
           <div className="text-6xl mb-4">🎉</div>
           <h2 className="text-2xl font-bold text-gray-900 mb-2">Thank You!</h2>
           <p className="text-gray-600">Your feedback has been recorded.</p>
-          <p className="text-gray-500 text-sm mt-4">Redirecting to logout...</p>
+          <p className="text-gray-500 text-sm mt-4">Returning to active food tests...</p>
         </div>
       </div>
     );
@@ -107,10 +116,10 @@ export default function TesterSurvey() {
 
   return (
     <div
-      className="min-h-screen bg-[#f6f7fb]"
+      className={recordingSessionId ? "bg-white" : "min-h-screen bg-[#f6f7fb]"}
       style={{ fontFamily: "'Montserrat', sans-serif" }}
     >
-      <header className="bg-[#e8174a] text-white">
+      {!recordingSessionId && <header className="bg-[#e8174a] text-white">
         <div className="h-[72px] px-6 flex items-center">
           <img
             src={logo}
@@ -121,21 +130,21 @@ export default function TesterSurvey() {
             FaMiLis
           </span>
         </div>
-      </header>
+      </header>}
 
-      <main className="px-6 py-8">
+      <main className={recordingSessionId ? "py-4" : "px-6 py-8"}>
         <div className="max-w-3xl mx-auto">
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div className="bg-[#e8174a] px-6 py-4">
               <h1 className="text-white text-xl font-bold">
-                Product Evaluation Survey
+                Hedonic Scale
               </h1>
             </div>
 
             <div className="p-6">
               <div className="bg-gray-50 p-4 rounded-lg mb-6 text-center">
                 <p className="text-sm text-gray-600">
-                  Please rate the product you just tasted
+                  Rate the product while you eat. You can change your answers before ending the session.
                 </p>
                 <div className="text-xs text-gray-500 mt-2">
                   1 = Dislike Extremely &nbsp;&nbsp;|&nbsp;&nbsp; 5 = Neutral
@@ -200,7 +209,7 @@ export default function TesterSurvey() {
                       : "bg-gray-400 cursor-not-allowed"
                   }`}
                 >
-                  {submitting ? "Submitting..." : "Submit Feedback"}
+                  {submitting ? "Submitting..." : recordingSessionId ? "End Session & Submit Ratings" : "Submit Feedback"}
                 </button>
               </div>
             </div>

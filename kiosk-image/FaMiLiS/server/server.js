@@ -537,7 +537,7 @@ io.on('connection', (socket) => {
   });
   socket.on('tester-presence-update', async (data) => {
     if (socket.data.auth.role !== "tester") return;
-    const allowedStages = new Set(["logged_in", "consent_pending", "ready", "survey"]);
+    const allowedStages = new Set(["logged_in", "consent_pending", "ready", "survey", "profile", "history"]);
     let stage = allowedStages.has(data?.stage) ? data.stage : "logged_in";
     const revision = (socket.data.presenceRevision ?? 0) + 1;
     socket.data.presenceRevision = revision;
@@ -989,14 +989,53 @@ async function start() {
 
   app.get("/api/kiosks/testers", requireAuth, requireTabAccess("monitor"), async (_req, res) => {
     try {
-      const [rows] = await pool.query("SELECT user_id, username, kiosk_enabled, camera_enabled FROM users WHERE role = 'tester' AND is_active = 1 ORDER BY username, user_id");
+      const [rows] = await pool.query("SELECT user_id, username, kiosk_number, kiosk_enabled, camera_enabled FROM users WHERE role = 'tester' AND is_active = 1 ORDER BY username, user_id");
       res.json({ ok: true, testers: rows.map(row => ({
-        id: Number(row.user_id), username: String(row.username),
+        id: Number(row.user_id), username: String(row.username), kioskNumber: row.kiosk_number,
         kioskEnabled: Boolean(row.kiosk_enabled), cameraEnabled: Boolean(row.camera_enabled),
         lastFrameAt: testerLastFrameAt.get(Number(row.user_id)) ?? null,
       })) });
     } catch (error) {
       res.status(500).json({ ok: false, error: "Could not load tester accounts." });
+    }
+  });
+
+  app.post("/api/users/:userId/kiosk-number/auto", requireAuth, requireAdmin, async (req, res) => {
+    let connection;
+    try {
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
+      // Lock in a fixed order so simultaneous assignments cannot choose the same number.
+      const [users] = await connection.query("SELECT user_id, role, kiosk_number FROM users ORDER BY user_id FOR UPDATE");
+      const user = users.find(row => Number(row.user_id) === Number(req.params.userId) && row.role === "tester");
+      if (!user) { await connection.rollback(); return res.status(404).json({ ok: false, error: "Tester not found." }); }
+      let number = user.kiosk_number == null ? null : Number(user.kiosk_number);
+      if (number === null) {
+        const used = new Set(users.filter(row => row.kiosk_number != null).map(row => Number(row.kiosk_number)));
+        number = 1;
+        while (used.has(number)) number++;
+        if (number > 999999) { await connection.rollback(); return res.status(409).json({ ok: false, error: "No kiosk numbers available." }); }
+        await connection.query("UPDATE users SET kiosk_number = ? WHERE user_id = ?", [number, user.user_id]);
+      }
+      await connection.commit();
+      return res.json({ ok: true, kioskNumber: number });
+    } catch (error) {
+      if (connection) await connection.rollback();
+      return res.status(500).json({ ok: false, error: "Could not assign kiosk number. Please retry." });
+    } finally { connection?.release(); }
+  });
+
+  app.patch("/api/users/:userId/kiosk-number", requireAuth, requireAdmin, async (req, res) => {
+    const number = req.body?.kioskNumber;
+    if (number !== null && (!Number.isInteger(number) || number < 1 || number > 999999)) {
+      return res.status(400).json({ ok: false, error: "Enter a kiosk number from 001 to 999999." });
+    }
+    try {
+      const [result] = await pool.query("UPDATE users SET kiosk_number = ? WHERE user_id = ? AND role = 'tester'", [number, req.params.userId]);
+      if (!result.affectedRows) return res.status(404).json({ ok: false, error: "Tester not found." });
+      return res.json({ ok: true, kioskNumber: number });
+    } catch (error) {
+      return res.status(error.code === "ER_DUP_ENTRY" ? 409 : 500).json({ ok: false, error: error.code === "ER_DUP_ENTRY" ? "This kiosk number is already bound to another account." : "Could not bind kiosk." });
     }
   });
 
@@ -1691,6 +1730,39 @@ async function start() {
 
   app.get("/api/auth/me", (req, res) => {
     return res.json({ ok: true, user: req.auth, access: req.access });
+  });
+
+  // The authenticated account is the sole source of the history owner.
+  app.get("/api/tester/profile", async (req, res) => {
+    try {
+      const [[profile]] = await pool.query("SELECT username, email, contact_number AS contactNumber, kiosk_number AS kioskNumber FROM users WHERE user_id = ?", [req.auth.id]);
+      const [history] = await pool.query(`SELECT s.session_id AS id, f.name AS foodName, s.kiosk_number_snapshot AS kioskNumber,
+        tr.room_code AS sessionCode, s.start_time AS startedAt, s.end_time AS endedAt,
+        CASE WHEN s.admin_end_reason IS NOT NULL THEN 'incomplete'
+          WHEN sr.session_id IS NOT NULL THEN 'completed'
+          WHEN s.status = 'active' THEN 'active' ELSE 'incomplete' END AS status,
+        sr.final_overall_rating AS overall, s.food_id AS foodId, f.category AS foodCategory,
+        f.image_url AS foodImageUrl, s.invalidated_at AS invalidatedAt,
+        sr.color_rating AS color, sr.flavor_aroma_rating AS flavorAroma,
+        sr.salt_sweet_rating AS saltSweet, sr.texture_rating AS texture, sr.remarks,
+        (SELECT COUNT(*) FROM frame_logs fl WHERE fl.session_id = s.session_id) AS frameCount,
+        EXISTS(SELECT 1 FROM session_consents sc WHERE sc.session_id = s.session_id) AS hasConsent
+        FROM sessions s JOIN food_products f ON f.food_id = s.food_id
+        LEFT JOIN testing_rooms tr ON tr.testing_room_id = s.testing_room_id
+        LEFT JOIN survey_results sr ON sr.session_id = s.session_id
+        WHERE s.user_id = ? ORDER BY s.session_id DESC`, [req.auth.id]);
+      return res.json({ ok: true, profile, history: history.map(row => ({
+        ...row, startTime: toIsoOrNull(row.startedAt), endTime: toIsoOrNull(row.endedAt),
+        invalidatedAt: toIsoOrNull(row.invalidatedAt), frameCount: Number(row.frameCount || 0),
+        hasConsent: Boolean(row.hasConsent), hasSurvey: row.overall != null,
+        survey: row.overall == null ? null : {
+          color: row.color, flavorAroma: row.flavorAroma, saltSweet: row.saltSweet,
+          texture: row.texture, overall: Number(row.overall),
+        },
+      })) });
+    } catch (error) {
+      return res.status(500).json({ ok: false, error: "Could not load your profile and history." });
+    }
   });
 
   app.post("/api/logout", (req, res) => {
@@ -3152,10 +3224,10 @@ async function start() {
       const [result] = await pool.query(
         `
         INSERT INTO sessions
-          (user_id, kiosk_id, participant_id, food_id, testing_room_id, start_time, status)
-        VALUES (?, ?, ?, ?, ?, NOW(), 'active')
+          (user_id, kiosk_id, participant_id, food_id, testing_room_id, kiosk_number_snapshot, start_time, status)
+        VALUES (?, ?, ?, ?, ?, (SELECT kiosk_number FROM users WHERE user_id = ?), NOW(), 'active')
       `,
-        [uId, kId, pId, fId, testingRoomId]
+        [uId, kId, pId, fId, testingRoomId, uId]
       );
       const sessionId = Number(result.insertId);
 

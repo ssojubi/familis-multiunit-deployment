@@ -136,7 +136,7 @@ export function hasStoredUser(): boolean {
   }
 }
 
-type PresenceStage = "logged_in" | "consent_pending" | "ready" | "survey";
+type PresenceStage = "logged_in" | "consent_pending" | "ready" | "survey" | "profile" | "history";
 
 function TesterPresence() {
   const location = useLocation();
@@ -171,8 +171,9 @@ function TesterPresence() {
       ? consentComplete ? "ready" : "consent_pending"
       : pathname.startsWith("/tester-survey") || pathname.startsWith("/survey")
         ? "survey"
-        : "logged_in";
-  const roomCode = captureTesterContext(location.search).roomId;
+        : pathname.startsWith("/tester-profile") ? "profile"
+          : pathname.startsWith("/tester-history") ? "history" : "logged_in";
+  const roomCode = ["logged_in", "profile", "history"].includes(stage) ? "" : captureTesterContext(location.search).roomId;
   latestRef.current = { stage, roomCode };
 
   useEffect(() => {

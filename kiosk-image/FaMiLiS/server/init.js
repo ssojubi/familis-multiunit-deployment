@@ -138,6 +138,8 @@ export async function initDb() {
   }
 
   await addColumnIfMissing(pool, "sessions", "testing_room_id", "INT NULL");
+  // Historical snapshot: never backfill from the account's current assignment.
+  await addColumnIfMissing(pool, "sessions", "kiosk_number_snapshot", "INT UNSIGNED NULL");
   await addColumnIfMissing(pool, "sessions", "invalidated_at", "TIMESTAMP NULL");
   // Why an administrator ended this session (kiosk-disabled, camera-disabled, ended-by-admin).
   // Such sessions stay incomplete even after the tester submits the survey.
@@ -151,6 +153,7 @@ export async function initDb() {
   await addColumnIfMissing(pool, "users", "last_login", "TIMESTAMP NULL");
   await addColumnIfMissing(pool, "users", "kiosk_enabled", "TINYINT(1) NOT NULL DEFAULT 1");
   await addColumnIfMissing(pool, "users", "camera_enabled", "TINYINT(1) NOT NULL DEFAULT 1");
+  await addColumnIfMissing(pool, "users", "kiosk_number", "INT UNSIGNED NULL UNIQUE");
   await addIndexIfMissing(
     pool,
     "sessions",

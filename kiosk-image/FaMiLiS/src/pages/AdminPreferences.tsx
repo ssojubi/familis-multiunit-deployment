@@ -17,7 +17,7 @@ const CONFIGURABLE_TABS = [
   { key: "food", label: "Food Management", adminOnly: false },
   { key: "participants", label: "Taster Management", adminOnly: false },
   { key: "stats", label: "Statistics & Analytics", adminOnly: false },
-  { key: "monitor", label: "Monitor Kiosks", adminOnly: false },
+  { key: "monitor", label: "Kiosk Management", adminOnly: false },
   { key: "preferences", label: "Preferences", adminOnly: false },
 ];
 

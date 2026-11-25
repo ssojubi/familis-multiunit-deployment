@@ -6,6 +6,7 @@
 CREATE TABLE IF NOT EXISTS users (
   user_id INT AUTO_INCREMENT PRIMARY KEY,
   username VARCHAR(50) NOT NULL,
+  kiosk_number INT UNSIGNED NULL UNIQUE,
   email VARCHAR(255) NOT NULL UNIQUE,
   contact_number VARCHAR(50) NULL,
   gcash_number VARCHAR(50) NULL,
@@ -81,6 +82,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   participant_id INT NULL,
   food_id INT NOT NULL,
   testing_room_id INT NULL,
+  kiosk_number_snapshot INT UNSIGNED NULL,
   start_time TIMESTAMP NULL,
   end_time TIMESTAMP NULL,
   invalidated_at TIMESTAMP NULL,

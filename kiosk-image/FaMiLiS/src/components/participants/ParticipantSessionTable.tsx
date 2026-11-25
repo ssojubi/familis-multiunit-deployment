@@ -3,11 +3,13 @@ import { InfoTip } from "../InfoTip";
 
 export type ParticipantSessionRow = {
   id: number;
+  sessionCode?: string | null;
+  kioskNumber?: number | null;
   foodId: number | null;
   foodName: string | null;
   foodCategory: string | null;
   foodImageUrl: string | null;
-  status: "pending" | "active" | "completed" | "cancelled";
+  status: "pending" | "active" | "completed" | "cancelled" | "incomplete";
   invalidatedAt: string | null;
   startTime: string | null;
   endTime: string | null;
@@ -58,14 +60,16 @@ function formatStatus(status: string) {
 export function ParticipantSessionTable({
   sessions,
   onOpenSession,
+  testerView = false,
 }: {
   sessions: ParticipantSessionRow[];
+  testerView?: boolean;
   onOpenSession: (sessionId: number) => void;
 }) {
   if (sessions.length === 0) {
     return (
       <div className="text-sm text-gray-500 py-8 text-center">
-        This taster has no sessions yet.
+        {testerView ? "You have not taken any tests yet." : "This taster has no sessions yet."}
       </div>
     );
   }
@@ -76,7 +80,8 @@ export function ParticipantSessionTable({
         <thead>
           <tr className="text-xs text-gray-500 bg-gray-50">
             <th className="px-3 py-3 font-semibold">Food</th>
-            <th className="px-3 py-3 font-semibold">Session</th>
+            <th className="px-3 py-3 font-semibold">{testerView ? "Session ID" : "Session"}</th>
+            {testerView && <th className="px-3 py-3 font-semibold">Kiosk ID</th>}
             <th className="px-3 py-3 font-semibold">Started</th>
             <th className="px-3 py-3 font-semibold">Ended</th>
             <th className="px-3 py-3 font-semibold">Status</th>
@@ -115,7 +120,8 @@ export function ParticipantSessionTable({
                     </div>
                   </div>
                 </td>
-                <td className="px-3 py-3 text-xs text-gray-700 font-semibold">S-{session.id}</td>
+                <td className="px-3 py-3 text-xs text-gray-700 font-semibold">{testerView ? session.sessionCode || "—" : `S-${session.id}`}</td>
+                {testerView && <td className="px-3 py-3 text-xs text-gray-700">{session.kioskNumber == null ? "Not recorded" : String(session.kioskNumber).padStart(3, "0")}</td>}
                 <td className="px-3 py-3 text-xs text-gray-600">{formatDate(session.startTime)}</td>
                 <td className="px-3 py-3 text-xs text-gray-600">{formatDate(session.endTime)}</td>
                 <td className="px-3 py-3">

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { performLogout } from "../auth";
-import logo from "../assets/logo.png";
+import TesterShell from "../components/TesterShell";
+
 import { getApiBase, toApiUrl } from "../apiConfig";
 import {
   captureTesterContext,
@@ -72,7 +72,7 @@ export default function TesterJoin() {
 
   const handleJoin = async () => {
     if (!foodId || !/^\d{6}$/.test(roomCode)) {
-      setError("Select a food test and enter the six-digit room code.");
+      setError("Select a food test and enter the six-digit session ID.");
       return;
     }
 
@@ -87,7 +87,7 @@ export default function TesterJoin() {
       const payload = await response.json();
       if (!response.ok || !payload?.ok) {
         throw new Error(
-          payload?.error || "The room code could not be validated.",
+          payload?.error || "The session ID could not be validated.",
         );
       }
 
@@ -101,7 +101,7 @@ export default function TesterJoin() {
       setError(
         err instanceof Error
           ? err.message
-          : "The room code could not be validated.",
+          : "The session ID could not be validated.",
       );
     } finally {
       setJoining(false);
@@ -109,30 +109,7 @@ export default function TesterJoin() {
   };
 
   return (
-    <div
-      className="min-h-screen bg-[#f6f7fb]"
-      style={{ fontFamily: "'Montserrat', sans-serif" }}
-    >
-      <header className="bg-[#e8174a] text-white">
-        <div className="h-[72px] px-6 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <img
-              src={logo}
-              alt="FaMiLis logo"
-              className="w-[44px] h-[44px] object-contain"
-            />
-            <span className="text-[22px] font-bold">FaMiLis</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => performLogout(navigate)}
-            className="bg-white text-[#e8174a] px-4 py-2 rounded-md text-sm font-semibold"
-          >
-            Log Out
-          </button>
-        </div>
-      </header>
-
+    <TesterShell>
       <main className="px-6 py-10">
         <div className="max-w-2xl mx-auto bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
           <div className="bg-[#e8174a] px-6 py-4">
@@ -196,7 +173,7 @@ export default function TesterJoin() {
                 htmlFor="room-code"
                 className="block text-sm font-bold text-gray-900 mb-2"
               >
-                Room code
+                Session ID
               </label>
               <input
                 id="room-code"
@@ -228,6 +205,6 @@ export default function TesterJoin() {
           </div>
         </div>
       </main>
-    </div>
+    </TesterShell>
   );
 }

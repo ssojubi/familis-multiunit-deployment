@@ -105,13 +105,16 @@ function IconSidebarToggle({ className, collapsed }: { className?: string; colla
   );
 }
 
-type NavKey = "food" | "stats" | "monitor" | "users" | "participants" | "preferences";
+type NavKey = "tester-tests" | "tester-history" | "tester-profile" | "food" | "stats" | "monitor" | "users" | "participants" | "preferences";
 
 function useActiveNav(): NavKey | null {
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const path = location.pathname;
 
+  if (path === "/tester-join") return "tester-tests";
+  if (path === "/tester-history") return "tester-history";
+  if (path === "/tester-profile") return "tester-profile";
   if (path.startsWith("/admin/users")) return "users";
   if (path.startsWith("/admin/preferences")) return "preferences";
   if (path.startsWith("/participants")) return "participants";
@@ -130,7 +133,7 @@ interface PageHeaderProps {
    * `full` — admin/staff shell with nav + account footer.
    * `minimal` — brand strip + collapse only (e.g. Login).
    */
-  shell?: "full" | "minimal";
+  shell?: "full" | "minimal" | "tester";
   onLogoClick?: () => void;
   logoAriaLabel?: string;
   /** When set, renders a thin top bar above page content (collapsed flows). */
@@ -155,13 +158,13 @@ export function PageHeader({
   const active = useActiveNav();
   const [roleTabAccess, setRoleTabAccess] = useState<Record<string, string[]>>({ staff: ["food", "participants"], tester: [] });
   useEffect(() => {
-    if (!role || role === "admin") return;
+    if (!role || role === "admin" || shell === "tester") return;
     const controller = new AbortController();
     void apiFetch("/api/preferences", { signal: controller.signal }).then(response => response.json()).then(payload => {
       if (payload?.ok && payload.preferences?.roleTabAccess) setRoleTabAccess(payload.preferences.roleTabAccess);
     }).catch(() => {});
     return () => controller.abort();
-  }, [role]);
+  }, [role, shell]);
   const hasTabAccess = (tab: string) => role === "admin" || Boolean(role && roleTabAccess[role]?.includes(tab));
   const canSeeParticipants = hasTabAccess("participants");
   const canSeeUsers = role === "admin"; // user management is administrator-only
@@ -170,7 +173,7 @@ export function PageHeader({
   const isMinimal = shell === "minimal";
 
   const handleLogo =
-    onLogoClick ?? (() => navigate(isMinimal ? "/" : "/dashboard"));
+    onLogoClick ?? (() => navigate(isMinimal ? "/" : shell === "tester" ? "/tester-join" : "/dashboard"));
   const handleBack = onBack ?? (() => navigate(backTo));
   const handleLogout = () => performLogout(navigate);
 
@@ -180,7 +183,11 @@ export function PageHeader({
     to: string;
     visible: boolean;
     icon: (props: { className?: string }) => ReactNode;
-  }> = [
+  }> = shell === "tester" ? [
+    { key: "tester-tests", label: "Active Food Tests", to: "/tester-join", visible: true, icon: IconHome },
+    { key: "tester-history", label: "Test History", to: "/tester-history", visible: true, icon: IconStats },
+    { key: "tester-profile", label: "My Profile", to: "/tester-profile", visible: true, icon: IconUsers },
+  ] : [
     {
       key: "food",
       label: "Food Management",
@@ -197,7 +204,7 @@ export function PageHeader({
     },
     {
       key: "monitor",
-      label: "Monitor Kiosks",
+      label: "Kiosk Management",
       to: "/video-monitoring",
       visible: hasTabAccess("monitor"),
       icon: IconMonitor,
@@ -260,6 +267,7 @@ export function PageHeader({
                     <NavLink
                       to={item.to}
                       title={item.label}
+                      aria-label={item.label}
                       className={`
                         flex items-center rounded-md transition-colors
                         ${collapsed ? "justify-center p-2.5" : "justify-between gap-3 px-3 py-3"}

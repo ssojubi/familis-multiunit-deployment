@@ -9,9 +9,9 @@ import { WEBRTC_CONFIGURATION } from "../webrtcConfig";
 import { receivePeerSignal } from "../lib/peerSignaling";
 
 type RecordingStatus = "ready" | "recording" | "paused" | "completed";
-type PresenceStage = "logged_in" | "consent_pending" | "ready" | "survey";
+type PresenceStage = "logged_in" | "consent_pending" | "ready" | "survey" | "profile" | "history";
 type CameraState = "on" | "off" | "blocked" | "unavailable";
-type TesterAccount = { id: number; username: string; kioskEnabled?: boolean; cameraEnabled?: boolean; lastFrameAt?: number | null };
+type TesterAccount = { id: number; username: string; kioskNumber?: number | null; kioskEnabled?: boolean; cameraEnabled?: boolean; lastFrameAt?: number | null };
 type ControlNotice = { testerId: number; kind: "ok" | "error"; text: string };
 type TesterPresence = {
   testerId: number;
@@ -84,6 +84,7 @@ type RemoteKiosk = {
   workflowStage?: PresenceStage | null;
   roomCode?: string | null;
   reconnectDeadline?: number | null;
+  accountName?: string;
   kioskEnabled?: boolean;
   cameraEnabled?: boolean;
   lastFrameAt?: number | null;
@@ -179,6 +180,8 @@ function workflowLabel(kiosk: RemoteKiosk, now = Date.now()): string {
     const seconds = kiosk.reconnectDeadline == null ? 90 : Math.max(0, Math.ceil((kiosk.reconnectDeadline - now) / 1000));
     return `Connection lost · offline in ${seconds}s`;
   }
+  if (kiosk.workflowStage === "profile") return "Viewing profile";
+  if (kiosk.workflowStage === "history") return "Viewing test history";
   if (kiosk.status === "recording") return "Recording";
   if (kiosk.status === "paused") return "Recording paused";
   if (kiosk.workflowStage === "consent_pending") return "In room · consent pending";
@@ -186,6 +189,13 @@ function workflowLabel(kiosk: RemoteKiosk, now = Date.now()): string {
   if (kiosk.workflowStage === "survey") return "Completing survey";
   if (kiosk.status === "completed") return "Session complete";
   return "Logged in · choosing room";
+}
+
+function KioskTestInfo({ kiosk }: { kiosk: RemoteKiosk }) {
+  return <div className="mt-1 mb-2 space-y-0.5 text-xs text-gray-600">
+    <p>Session ID: <span className="font-medium text-gray-800">{kiosk.roomCode || "—"}</span></p>
+    <p className="break-words">Food: <span className="font-medium text-gray-800">{kiosk.foodName || "No food being tested"}</span></p>
+  </div>;
 }
 
 function WorkflowStatus({ kiosk }: { kiosk: RemoteKiosk }) {
@@ -239,15 +249,11 @@ function KioskStatusTile({
               <span className="text-sm font-bold text-gray-900 truncate">{kiosk.label}</span>
             </div>
             <StatusBadge state={kiosk.connectionState} />
+            <p className="text-base font-semibold text-gray-800 mt-1">{kiosk.accountName}</p>
+            <KioskTestInfo kiosk={kiosk} />
             <WorkflowStatus kiosk={kiosk} />
             <KioskFlags kiosk={kiosk} />
-            {kiosk.foodName ? (
-              <p className="text-[11px] text-gray-500 mt-1.5 truncate">
-                🍽️ {kiosk.foodName}
-                {kiosk.roomCode ? <span className="text-gray-400"> · Room {kiosk.roomCode}</span> : null}
-                {kiosk.sessionId != null ? <span className="text-gray-400"> · S-{kiosk.sessionId}</span> : null}
-              </p>
-            ) : null}
+
           </div>
 
           {/* Action buttons */}
@@ -428,16 +434,12 @@ function VideoModal({
             <IconCamera className="w-5 h-5 text-[#e8174a] shrink-0" />
             <div className="min-w-0">
               <h3 className="text-sm font-bold text-gray-900 truncate">{kiosk.label}</h3>
-              <div className="flex items-center gap-2 mt-0.5">
+              <div className="mt-0.5">
                 <StatusBadge state={kiosk.connectionState} />
+            <p className="text-base font-semibold text-gray-800 mt-1">{kiosk.accountName}</p>
+            <KioskTestInfo kiosk={kiosk} />
             <WorkflowStatus kiosk={kiosk} />
-                {kiosk.foodName ? (
-                  <span className="text-[11px] text-gray-500">
-                    🍽️ {kiosk.foodName}
-                    {kiosk.roomCode ? ` · Room ${kiosk.roomCode}` : ""}
-                    {kiosk.sessionId != null ? ` · S-${kiosk.sessionId}` : ""}
-                  </span>
-                ) : null}
+
               </div>
             </div>
           </div>
@@ -707,8 +709,9 @@ function KioskMonitorDetail() {
       cameraEnabled: account?.cameraEnabled ?? true,
       lastFrameAt: account?.lastFrameAt ?? null,
       cameraState: presence?.cameraState ?? null,
-      label: presence?.testerName || kiosk.label,
-      foodName: kiosk.foodName || presence?.foodName || null,
+      label: account?.kioskNumber ? `Kiosk ${String(account.kioskNumber).padStart(3, "0")}` : "Unassigned kiosk",
+      accountName: account?.username || presence?.testerName || kiosk.label,
+      foodName: presence ? presence.foodName : kiosk.foodName || null,
       workflowStage: presence?.stage ?? (kiosk.status === "recording" ? "ready" : null),
       roomCode: presence?.roomCode ?? null,
     };
@@ -718,7 +721,7 @@ function KioskMonitorDetail() {
     .map((account): RemoteKiosk => {
       const presence = presenceByTester.get(account.id);
       return { peerId: `account:${account.id}`, testerId: account.id,
-        label: presence?.testerName || account.username, stream: new MediaStream(), status: null, sessionId: null,
+        label: account.kioskNumber ? `Kiosk ${String(account.kioskNumber).padStart(3, "0")}` : "Unassigned kiosk", accountName: account.username, stream: new MediaStream(), status: null, sessionId: null,
         foodName: presence?.foodName ?? null, connectionState: presence ? "idle" : "offline",
         workflowStage: presence?.stage ?? null, roomCode: presence?.roomCode ?? null,
         kioskEnabled: account.kioskEnabled ?? true, cameraEnabled: account.cameraEnabled ?? true,
@@ -732,6 +735,7 @@ function KioskMonitorDetail() {
       const q = searchQuery.toLowerCase();
       return (
         k.label.toLowerCase().includes(q) ||
+        (k.accountName?.toLowerCase().includes(q) ?? false) ||
         k.peerId.toLowerCase().includes(q) ||
         (k.foodName?.toLowerCase().includes(q) ?? false)
       );
@@ -824,6 +828,23 @@ function KioskMonitorDetail() {
   };
 
   const renderControls = (kiosk: RemoteKiosk) => role === "viewer" && kiosk.testerId != null ? (
+    <div onClick={event => event.stopPropagation()}>
+      {!testerAccounts.find(a => a.id === kiosk.testerId)?.kioskNumber && <button className="px-3 py-2 text-sm font-semibold text-[#e8174a]" disabled={controlBusy} onClick={() => {
+        void runControl(kiosk, () => apiFetch(`/api/users/${kiosk.testerId}/kiosk-number/auto`, { method: "POST" }), (json) => {
+          setTesterAccounts(current => current.map(a => a.id === kiosk.testerId ? { ...a, kioskNumber: json.kioskNumber } : a));
+          return `Assigned kiosk ${String(json.kioskNumber).padStart(3, "0")}.`;
+        });
+      }}>Assign next kiosk</button>}
+      <button className="px-3 py-2 text-sm font-semibold text-[#e8174a]" disabled={controlBusy} onClick={() => {
+        const value = window.prompt("Bind account to kiosk number (001 onwards). Leave blank to unbind.", String(testerAccounts.find(a => a.id === kiosk.testerId)?.kioskNumber ?? ""));
+        if (value === null) return;
+        const kioskNumber = value.trim() === "" ? null : Number(value);
+        if (kioskNumber !== null && (!Number.isInteger(kioskNumber) || kioskNumber < 1 || kioskNumber > 999999)) { window.alert("Enter a whole number from 001 to 999999."); return; }
+        void runControl(kiosk, () => apiFetch(`/api/users/${kiosk.testerId}/kiosk-number`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kioskNumber }) }), (json) => {
+          setTesterAccounts(current => current.map(a => a.id === kiosk.testerId ? { ...a, kioskNumber: json.kioskNumber } : a));
+          return "Kiosk binding saved.";
+        });
+      }}>Change / remove binding</button>
     <KioskControlPanel
       kiosk={kiosk}
       busy={controlBusy}
@@ -831,7 +852,7 @@ function KioskMonitorDetail() {
       onToggleCamera={() => setKioskControl(kiosk, { cameraEnabled: kiosk.cameraEnabled === false })}
       onToggleKiosk={() => setKioskControl(kiosk, { kioskEnabled: kiosk.kioskEnabled === false })}
       onEndSession={() => endKioskSession(kiosk)}
-    />
+    /></div>
   ) : null;
 
   // ── Data fetching (unchanged) ──
@@ -903,7 +924,7 @@ function KioskMonitorDetail() {
   const copyRoomCodeToClipboard = () => {
     if (!roomId) return;
     navigator.clipboard.writeText(roomId);
-    alert("Room code copied.");
+    alert("Session ID copied.");
   };
 
   const deactivateTestingRoom = async () => {
@@ -1329,9 +1350,9 @@ function KioskMonitorDetail() {
         <div className="max-w-[1400px] mx-auto">
           {/* Title section */}
           <div className="mb-5">
-            <PageTitle title="Monitor Kiosks" subtitle="Watch connected tasters while they record. Camera frames continue through the central FER pipeline." />
+            <PageTitle title="Kiosk Management" subtitle="Assign kiosk numbers, manage access, and view live testing sessions." />
             <p className="text-[12px] text-gray-500 mt-1">
-              Activate a food on the dashboard, share its room code, then tasters log in, join, consent, and start recording. Their camera feed and captured frames go through the existing kiosk and FER pipeline.
+              Activate a food on the dashboard, share its session ID, then tasters log in, join, consent, and start recording. Their camera feed and captured frames go through the existing kiosk and FER pipeline.
             </p>
           </div>
 
@@ -1347,7 +1368,7 @@ function KioskMonitorDetail() {
                 </p>
 
                 <div className="inline-flex items-center gap-2 flex-wrap">
-                  <span className="text-xs text-gray-500">Manage room:</span>
+                  <span className="text-xs text-gray-500">Manage session:</span>
                   <select aria-label="Active food test" value={roomId} onChange={(event) => setRoomId(event.target.value)} className="max-w-[260px] rounded-md border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700" disabled={!activeRooms.length || deactivatingRoom}>
                     {activeRooms.length ? activeRooms.map((room) => <option key={room.id} value={room.roomCode}>{room.foodName} · {room.roomCode}</option>) : <option value="">No active food tests</option>}
                   </select>
@@ -1365,7 +1386,7 @@ function KioskMonitorDetail() {
                     disabled={!roomId}
                     className="inline-flex items-center gap-2 bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200 px-3 py-2 rounded-md text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                   >
-                    Copy Room Code
+                    Copy Session ID
                   </button>
                   {role === "viewer" ? <button type="button" onClick={() => void deactivateTestingRoom()} disabled={!selectedRoom || deactivatingRoom} className="rounded-md border border-red-200 bg-white px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed">
                     {deactivatingRoom ? "Deactivating…" : "Deactivate Room"}
@@ -1453,14 +1474,14 @@ function KioskMonitorDetail() {
                         <IconCamera className="w-5 h-5 text-[#e8174a] shrink-0" />
                         <div className="min-w-0">
                           <h3 className="text-sm font-bold text-gray-900 truncate">{spotlightKiosk.label}</h3>
-                          <div className="flex items-center gap-2 mt-0.5">
+                          <div className="mt-0.5">
                             <StatusBadge state={spotlightKiosk.connectionState} />
                             <WorkflowStatus kiosk={spotlightKiosk} />
                             {spotlightKiosk.foodName ? (
                               <span className="text-[11px] text-gray-500">
                                 🍽️ {spotlightKiosk.foodName}
-                                {spotlightKiosk.roomCode ? ` · Room ${spotlightKiosk.roomCode}` : ""}
-                                {spotlightKiosk.sessionId != null ? ` · S-${spotlightKiosk.sessionId}` : ""}
+                                {spotlightKiosk.roomCode ? ` · Session ID ${spotlightKiosk.roomCode}` : ""}
+                                {spotlightKiosk.sessionId != null ? ` · Attempt #${spotlightKiosk.sessionId}` : ""}
                               </span>
                             ) : null}
                           </div>
@@ -1500,10 +1521,12 @@ function KioskMonitorDetail() {
                             {kiosk.label}
                           </span>
                           <StatusBadge state={kiosk.connectionState} />
+            <p className="text-base font-semibold text-gray-800 mt-1">{kiosk.accountName}</p>
+            <KioskTestInfo kiosk={kiosk} />
             <WorkflowStatus kiosk={kiosk} />
                           {kiosk.sessionId != null && (
                             <span className="absolute top-2 right-2 text-[10px] text-white bg-green-600/80 px-2 py-0.5 rounded font-semibold">
-                              Recording{kiosk.foodName ? ` · ${kiosk.foodName}` : ""} · S-{kiosk.sessionId}
+                              Recording{kiosk.foodName ? ` · ${kiosk.foodName}` : ""} · Attempt #{kiosk.sessionId}
                             </span>
                           )}
                           <div className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
