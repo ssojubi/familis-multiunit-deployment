@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, useCallback, type ReactNode } from "react"
 import { io, Socket } from "socket.io-client";
 import { useSearchParams } from "react-router-dom";
 import { getApiBase, getSocketUrl } from "../apiConfig";
+import AnnouncementComposer from "../components/AnnouncementComposer";
+import KioskMessageForm from "../components/KioskMessageForm";
 import { apiFetch } from "../lib/api";
 import { PageHeader, PageTitle } from "../components/PageHeader";
 import { getAdminRoomContext, saveAdminRoomContext } from "../adminRoomContext";
@@ -852,7 +854,9 @@ function KioskMonitorDetail() {
       onToggleCamera={() => setKioskControl(kiosk, { cameraEnabled: kiosk.cameraEnabled === false })}
       onToggleKiosk={() => setKioskControl(kiosk, { kioskEnabled: kiosk.kioskEnabled === false })}
       onEndSession={() => endKioskSession(kiosk)}
-    /></div>
+    />
+    <KioskMessageForm key={kiosk.testerId} testerId={kiosk.testerId} />
+    </div>
   ) : null;
 
   // ── Data fetching (unchanged) ──
@@ -1394,6 +1398,7 @@ function KioskMonitorDetail() {
                 </div>
               </div>
 
+              {role === "viewer" && <AnnouncementComposer tasters={testerAccounts} />}
               {roomMessage ? <p role="status" className={`text-xs ${(roomMessage.startsWith("Room ready") || roomMessage.startsWith("Room deactivated")) ? "text-green-700" : "text-red-600"}`}>{roomMessage}</p> : null}
             </div>
           </section>

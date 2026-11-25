@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('../server/server.js', import.meta.url), 'utf8');
-function route(method, path, pool) {
+function route(method, path, pool, extras = {}) {
   const start = source.indexOf(`  app.${method}("${path}"`);
   assert.ok(start >= 0);
   const end = source.indexOf('\n  });', start) + 6;
@@ -14,6 +14,7 @@ function route(method, path, pool) {
     app: { [method]: (_path, ...handlers) => { handler = handlers.at(-1); } },
     pool, requireAuth: middleware, requireAdmin: middleware, console,
     toIsoOrNull: value => value == null ? null : new Date(value).toISOString(),
+    ...extras,
   });
   return handler;
 }
@@ -117,3 +118,5 @@ test('profile and history presence labels take precedence over stale completed s
   assert.equal(context.workflowLabel({ connectionState: 'idle', status: 'completed', workflowStage: 'history' }), 'Viewing test history');
   assert.equal(context.workflowLabel({ connectionState: 'offline', workflowStage: 'profile' }), 'Not logged in');
 });
+
+

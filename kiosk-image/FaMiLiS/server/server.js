@@ -1,3 +1,4 @@
+import { queueAnnouncement, deliverAnnouncements } from "./announcements.js";
 import express from "express";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
@@ -582,6 +583,13 @@ io.on('connection', (socket) => {
     });
     emitTesterPresenceSnapshot();
   });
+  socket.on("announcement-dismissed", async ({ id } = {}) => {
+    if (socket.data.auth?.role !== "tester" || typeof id !== "string") return;
+    try {
+      const pool = await poolPromise;
+      await pool.query("UPDATE tester_announcements SET dismissed_at = NOW(3) WHERE announcement_id = ? AND user_id = ? AND scheduled_at <= NOW(3)", [id, socket.data.auth.id]);
+    } catch (error) { console.error("Announcement dismissal failed:", error); }
+  });
   const sharedRoom = (peerId) => [...(socket.data.roomIds ?? [])].find((id) => rooms.get(id)?.has(socket.id) && rooms.get(id)?.has(peerId));
 
   socket.on('signal', (data) => {
@@ -794,6 +802,17 @@ async function start() {
     poolPromise = initDb();
   }
   const pool = await poolPromise;
+  let dispatchingAnnouncements = false;
+  async function dispatchAnnouncements() {
+    if (dispatchingAnnouncements) return;
+    dispatchingAnnouncements = true;
+    try {
+      const sockets = [...testerPresenceSockets.keys()].map(id => io.sockets.sockets.get(id)).filter(Boolean);
+      await deliverAnnouncements(pool, sockets);
+    } catch (error) { console.error("Announcement delivery failed:", error); }
+    finally { dispatchingAnnouncements = false; }
+  }
+  setInterval(() => void dispatchAnnouncements(), 3000).unref();
 
   async function runFrameRetentionCleanup() {
     try {
@@ -1326,6 +1345,19 @@ async function start() {
 
   // Admin-only kiosk/camera switches for a tester account. Enforcement lives on the
   // server (sessions/start, frames, room validation, socket join), not just in the UI.
+  const saveAnnouncement = async (req, res, body) => {
+    try {
+      const result = await queueAnnouncement(pool, Number(req.auth.id), body);
+      void dispatchAnnouncements();
+      return res.json({ ok: true, ...result });
+    } catch (error) {
+      return res.status(error.code ? 500 : 400).json({ ok: false, error: error.code ? "Could not queue announcement." : error.message });
+    }
+  };
+  app.post("/api/users/:userId/announcement", requireAuth, requireAdmin, (req, res) =>
+    saveAnnouncement(req, res, { message: req.body?.message, recipientIds: [Number(req.params.userId)] }));
+  app.post("/api/announcements", requireAuth, requireAdmin, (req, res) => saveAnnouncement(req, res, req.body));
+
   app.patch("/api/users/:userId/kiosk-controls", requireAuth, requireAdmin, async (req, res) => {
     const userId = Number.parseInt(req.params.userId, 10);
     if (!Number.isFinite(userId)) return res.status(400).json({ ok: false, error: "Invalid user id." });

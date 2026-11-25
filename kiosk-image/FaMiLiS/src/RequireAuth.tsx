@@ -8,6 +8,7 @@ import {
 import { useEffect, useState } from "react";
 import { useRef } from "react";
 import { io, type Socket } from "socket.io-client";
+import TesterAnnouncement, { type Announcement } from "./components/TesterAnnouncement";
 import { getSocketUrl } from "./apiConfig";
 import { captureTesterContext } from "./testerContext";
 
@@ -139,6 +140,7 @@ export function hasStoredUser(): boolean {
 type PresenceStage = "logged_in" | "consent_pending" | "ready" | "survey" | "profile" | "history";
 
 function TesterPresence() {
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const location = useLocation();
   const navigate = useNavigate();
   const navigateRef = useRef(navigate);
@@ -185,6 +187,9 @@ function TesterPresence() {
     socketRef.current = socket;
     const publish = () => socket.emit("tester-presence-update", latestRef.current);
     socket.on("connect", publish);
+    socket.on("admin-announcement", (announcement: Announcement) => {
+      setAnnouncements(current => current.some(item => item.id === announcement.id) ? current : [...current, announcement]);
+    });
     // An administrator deleted, deactivated, or reset this account: sign out here too.
     const endSession = () => performLogout(navigateRef.current, { clearSession: true });
     socket.on("access-revoked", endSession);
@@ -205,7 +210,10 @@ function TesterPresence() {
     }
   }, [pathname, location.search, stage, roomCode]);
 
-  return null;
+  return <TesterAnnouncement announcement={announcements[0] ?? null} onDismiss={() => {
+    if (announcements[0]) socketRef.current?.emit("announcement-dismissed", { id: announcements[0].id });
+    setAnnouncements(current => current.slice(1));
+  }} />;
 }
 
 /**

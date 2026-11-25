@@ -205,3 +205,18 @@ CREATE TABLE IF NOT EXISTS emotion_results (
 -- sessions             1 ──▶ M frame_logs
 -- sessions             1 ──▶ M system_logs
 -- sessions             1 ──▶ 1 survey_results
+
+-- Persistent, per-taster announcement inbox, including scheduled deliveries.
+CREATE TABLE IF NOT EXISTS tester_announcements (
+  announcement_id CHAR(36) NOT NULL,
+  user_id INT NOT NULL,
+  sender_id INT NULL,
+  message VARCHAR(150) NOT NULL,
+  scheduled_at DATETIME(3) NOT NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  dismissed_at DATETIME(3) NULL,
+  PRIMARY KEY (announcement_id, user_id),
+  INDEX idx_announcement_delivery (user_id, dismissed_at, scheduled_at),
+  FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+  FOREIGN KEY (sender_id) REFERENCES users(user_id) ON DELETE SET NULL
+);
